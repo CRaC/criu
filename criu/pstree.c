@@ -222,6 +222,8 @@ struct pstree_item *__alloc_pstree_item(bool rst)
 	item->pid->item = item;
 	futex_init(&item->task_st);
 
+	item->pr = NULL;
+
 	return item;
 }
 

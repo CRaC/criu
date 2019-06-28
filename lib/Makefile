@@ -17,7 +17,7 @@ lib/c/%: .FORCE
 	$(Q) $(MAKE) $(build)=lib/c $@
 
 cflags-so		+= $(CFLAGS) -rdynamic -Wl,-soname,$(CRIU_SO).$(CRIU_SO_VERSION_MAJOR)
-ldflags-so		+= -lprotobuf-c
+ldflags-so		+= -Bstatic -lprotobuf-c -Bdynamic
 
 lib/c/$(CRIU_SO): lib/c/built-in.o
 	$(call msg-link, $@)

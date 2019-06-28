@@ -6,6 +6,8 @@
 #include "pid.h"
 #include "images/core.pb-c.h"
 
+struct page_read;
+
 /*
  * That's the init process which usually inherit
  * all orphaned children in the system.
@@ -29,6 +31,8 @@ struct pstree_item {
 		futex_t		task_st;
 		unsigned long	task_st_le_bits;
 	};
+
+	struct page_read 	*pr; /* page read that is accessed in different parts of criu */
 };
 
 static inline pid_t vpid(const struct pstree_item *i)

@@ -692,13 +692,15 @@ static int restore_priv_vma_content(struct pstree_item *t)
 	unsigned int nr_droped = 0;
 	unsigned int nr_compared = 0;
 	unsigned long va;
-	struct page_read pr;
+	struct page_read *pr = xzalloc(sizeof(*pr));
 
 	vma = list_first_entry(vmas, struct vma_area, list);
 
-	ret = open_page_read(vpid(t), &pr, PR_TASK);
+	ret = open_page_read(vpid(t), pr, PR_TASK);
 	if (ret <= 0)
 		return -1;
+
+	const bool mmap_page_image = opts.mmap_page_image;
 
 	/*
 	 * Read page contents.
@@ -706,12 +708,12 @@ static int restore_priv_vma_content(struct pstree_item *t)
 	while (1) {
 		unsigned long off, i, nr_pages;
 
-		ret = pr.advance(&pr);
+		ret = pr->advance(pr);
 		if (ret <= 0)
 			break;
 
-		va = (unsigned long)decode_pointer(pr.pe->vaddr);
-		nr_pages = pr.pe->nr_pages;
+		va = (unsigned long)decode_pointer(pr->pe->vaddr);
+		nr_pages = pr->pe->nr_pages;
 
 		for (i = 0; i < nr_pages; i++) {
 			unsigned char buf[PAGE_SIZE];
@@ -748,7 +750,7 @@ static int restore_priv_vma_content(struct pstree_item *t)
 			if (vma->ppage_bitmap) { /* inherited vma */
 				clear_bit(off, vma->ppage_bitmap);
 
-				ret = pr.read_pages(&pr, va, 1, buf, 0);
+				ret = pr->read_pages(pr, va, 1, buf, 0);
 				if (ret < 0)
 					goto err_read;
 
@@ -776,7 +778,13 @@ static int restore_priv_vma_content(struct pstree_item *t)
 
 				nr = min_t(int, nr_pages - i, (vma->e->end - va) / PAGE_SIZE);
 
-				ret = pr.read_pages(&pr, va, nr, p, PR_ASYNC);
+				if (!mmap_page_image) {
+					ret = pr->read_pages(pr, va, nr, p, PR_ASYNC);
+				} else {
+					pr->prot = vma->e->prot;
+					ret = pr->read_pages(pr, va, nr, p, 0);
+				}
+
 				if (ret < 0)
 					goto err_read;
 
@@ -791,10 +799,14 @@ static int restore_priv_vma_content(struct pstree_item *t)
 	}
 
 err_read:
-	if (pr.sync(&pr))
+	if (pr->sync(pr))
 		return -1;
 
-	pr.close(&pr);
+	if (!mmap_page_image) {
+		pr->close(pr);
+	} else {
+		t->pr = pr;
+	}
 	if (ret < 0)
 		return ret;
 
@@ -935,7 +947,7 @@ int open_vmas(struct pstree_item *t)
 	return 0;
 }
 
-int prepare_vmas(struct pstree_item *t, struct task_restore_args *ta)
+int prepare_vmas_read(struct pstree_item *t, struct task_restore_args *ta)
 {
 	struct vma_area *vma;
 	struct vm_area_list *vmas = &rsti(t)->vmas;
@@ -963,3 +975,104 @@ int prepare_vmas(struct pstree_item *t, struct task_restore_args *ta)
 	return 0;
 }
 
+static int add_vme(struct vma_area *vma, unsigned long newstart, unsigned long newend, int *vmas_n) {
+	VmaEntry *vme = rst_mem_alloc(sizeof(*vme), RM_PRIVATE);
+	if (!vme) {
+		pr_err("Can't alloc vma");
+		return -1;
+	}
+	*vme = *vma->e;
+	if (newstart) {
+		vme->start = newstart;
+	}
+	if (newend) {
+		vme->end = newend;
+	}
+
+	if (vma_area_is_private(vma, kdat.task_size)) {
+		unsigned long startoff = newstart ? newstart - vma->e->start : 0;
+		vma_premmaped_start(vme) = vma->premmaped_addr + startoff;
+	}
+
+	pr_debug("VME: %#" PRIx64 " len %#" PRIx64 " map %#" PRIx64 " status %#" PRIx32 "\n",
+			vme->start, vma_entry_len(vme), vma_premmaped_start(vme), vme->status);
+	(*vmas_n)++;
+	return 0;
+}
+
+static int prepare_vmas_mmap(struct pstree_item *t, struct task_restore_args *ta)
+{
+	struct vma_area *vma;
+	struct vm_area_list *vmas = &rsti(t)->vmas;
+	int vmas_n = 0;
+
+	struct page_read *pr = t->pr;
+	pr->seek0(pr);
+
+	ta->vmas = (VmaEntry *)rst_mem_align_cpos(RM_PRIVATE);
+
+	int ret = 0;
+
+	vma = list_first_entry(&vmas->h, struct vma_area, list);
+	unsigned long p = vma->e->start;
+	while (1) {
+		unsigned long i, nr_pages;
+
+		if ((ret = pr->advance(pr) <= 0)) {
+			if (p < vma->e->end) {
+				if (add_vme(vma, p, 0, &vmas_n)) {
+					return -1;
+				}
+			}
+			break;
+		}
+
+		unsigned long va = (unsigned long)decode_pointer(pr->pe->vaddr);
+		nr_pages = pr->pe->nr_pages;
+
+		for (i = 0; i < nr_pages;) {
+			while (vma->e->end <= va) {
+				if (vma->list.next == &vmas->h) {
+					pr_err("Page entry address %lx outside of VMA %lx-%lx\n",
+							va, (long)vma->e->start, (long)vma->e->end);
+					return -1;
+				}
+				if (p < vma->e->end) {
+					add_vme(vma, p, 0, &vmas_n);
+				}
+				vma = list_entry(vma->list.next, struct vma_area, list);
+				p = vma->e->start;
+			}
+			int nr = min_t(int, nr_pages - i, (vma->e->end - va) / PAGE_SIZE);
+
+			if (p < va) {
+				if (add_vme(vma, p, va, &vmas_n)) {
+					return -1;
+				}
+				p = va;
+			}
+
+			if (add_vme(vma, va, va + nr * PAGE_SIZE, &vmas_n)) {
+				return -1;
+			}
+			va += nr * PAGE_SIZE;
+			i += nr;
+			p = va;
+		}
+	}
+
+	ta->vmas_n = vmas_n;
+	return 0;
+}
+
+int prepare_vmas(struct pstree_item *t, struct task_restore_args *ta) {
+	if (t->pr) {
+		int ret = prepare_vmas_mmap(t, ta);
+		t->pr->close(t->pr);
+		xfree(t->pr);
+		t->pr = NULL;
+		return ret;
+	}
+
+	return prepare_vmas_read(t, ta);
+}

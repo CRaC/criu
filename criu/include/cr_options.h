@@ -119,6 +119,7 @@ struct cr_options {
 	bool			weak_sysctls;
 	int			status_fd;
 	bool			orphan_pts_master;
+	bool			mmap_page_image;
 };
 
 extern struct cr_options opts;

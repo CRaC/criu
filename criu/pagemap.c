@@ -4,6 +4,7 @@
 #include <linux/falloc.h>
 #include <sys/uio.h>
 #include <limits.h>
+#include <sys/mman.h>
 
 #include "types.h"
 #include "image.h"
@@ -129,6 +130,14 @@ static int advance(struct page_read *pr)
 	pr->pe = pr->pmes[pr->curr_pme];
 	pr->cvaddr = pr->pe->vaddr;
 
+	return 1;
+}
+
+static int seek0(struct page_read *pr)
+{
+	pr->curr_pme = -1;
+	pr->pe = NULL;
+	pr->cvaddr = 0;
 	return 1;
 }
 
@@ -259,15 +268,23 @@ static int read_local_page(struct page_read *pr, unsigned long vaddr,
 		return -1;
 
 	pr_debug("\tpr%u Read page from self %lx/%"PRIx64"\n", pr->id, pr->cvaddr, pr->pi_off);
-	while (1) {
-		ret = pread(fd, buf + curr, len - curr, pr->pi_off + curr);
-		if (ret < 1) {
-			pr_perror("Can't read mapping page %d", ret);
+	if (!opts.mmap_page_image) {
+		while (1) {
+			ret = pread(fd, buf + curr, len - curr, pr->pi_off + curr);
+			if (ret < 1) {
+				pr_perror("Can't read mapping page %d", ret);
+				return -1;
+			}
+			curr += ret;
+			if (curr == len)
+				break;
+		}
+	} else {
+		if (MAP_FAILED == mmap(buf, len, pr->prot, MAP_FIXED | MAP_PRIVATE, fd, pr->pi_off)) {
+			pr_perror("Can't mmap %p (%x) from offset %x",
+					buf, (unsigned)len, (unsigned)(pr->pi_off));
 			return -1;
 		}
-		curr += ret;
-		if (curr == len)
-			break;
 	}
 
 	if (opts.auto_dedup) {
@@ -661,6 +678,18 @@ int open_page_read_at(int dfd, int pid, struct page_read *pr, int pr_flags)
 		return -1;
 	}
 
+	// The image fd will be needed later, when we'll do prepare_vmas.
+	// All fds except service will be closed at that point, so make
+	// image fd service one.
+	if (opts.mmap_page_image && pr->pi->type == CR_FD_PAGES) {
+		int *fdp = &pr->pi->_x.fd;
+		if (install_service_fd(PAGES_FD_OFF, *fdp) < 0) {
+			return -1;
+		}
+		close(*fdp);
+		*fdp = get_service_fd(PAGES_FD_OFF);
+	}
+
 	if (init_pagemaps(pr)) {
 		close_page_read(pr);
 		return -1;
@@ -668,6 +697,7 @@ int open_page_read_at(int dfd, int pid, struct page_read *pr, int pr_flags)
 
 	pr->read_pages = read_pagemap_page;
 	pr->advance = advance;
+	pr->seek0 = seek0;
 	pr->close = close_page_read;
 	pr->sync = process_async_reads;
 	pr->seek_pagemap = seek_pagemap;
