@@ -628,6 +628,18 @@ int main(int argc, char *argv[], char *envp[])
 		}
 	}
 
+	if (!strcmp(argv[optind], "restore")) {
+		if (!getenv("DISABLE_CRAC_OPTIMIZATION")) {
+			opts.mmap_page_image = true;
+		}
+		if (inherit_fd_parse("fd[0]:fd[0]") < 0)
+			return 1;
+		if (inherit_fd_parse("fd[1]:fd[1]") < 0)
+			return 1;
+		if (inherit_fd_parse("fd[2]:fd[2]") < 0)
+			return 1;
+	}
+
 	if (getenv("CRIU_DEPRECATED")) {
 		pr_msg("Turn deprecated stuff ON via env\n");
 		opts.deprecated_ok = true;
