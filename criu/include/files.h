@@ -119,11 +119,18 @@ void collect_task_fd(struct fdinfo_list_entry *new_fle, struct rst_info *ri);
 unsigned int find_unused_fd(struct pstree_item *, int hint_fd);
 struct fdinfo_list_entry *find_used_fd(struct pstree_item *, int fd);
 
+enum fd_inherit_state {
+	FDIH_UNINHERITED = -2,
+	FDIH_UNKNOWN     = -1,
+	FDIH_FROM_0      = 0,
+};
+
 struct file_desc {
 	u32			id;		/* File id, unique */
 	struct hlist_node	hash;		/* Descriptor hashing and lookup */
 	struct list_head	fd_info_head;	/* Chain of fdinfo_list_entry-s with same ID and type but different pids */
 	struct file_desc_ops	*ops;		/* Associated operations */
+	enum fd_inherit_state 	fds_inherited;
 };
 
 struct fdtype_ops {

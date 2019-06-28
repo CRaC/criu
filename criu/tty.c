@@ -130,6 +130,10 @@ static bool stdin_isatty = false;
 static LIST_HEAD(all_tty_info_entries);
 static LIST_HEAD(all_ttys);
 
+static bool tolerate_tty_error(int fd) {
+	return true;
+}
+
 /*
  * Usually an application has not that many ttys opened.
  * If this won't be enough in future we simply need to
@@ -669,7 +673,13 @@ static int tty_set_sid(int fd)
 
 static int tty_set_prgp(int fd, int group)
 {
+
 	if (ioctl(fd, TIOCSPGRP, &group)) {
+#if 1
+		if (tolerate_tty_error(fd)) {
+			return 0;
+		}
+#endif
 		pr_perror("Failed to set group %d on %d", group, fd);
 		return -1;
 	}
@@ -817,7 +827,12 @@ static int do_restore_tty_parms(void *arg, int fd, pid_t pid)
 	return 0;
 
 err:
-	pr_perror("Can't set tty params on %#x", p->tty_id);
+	if (tolerate_tty_error(fd)) {
+		pr_perror("Can't set tty params on %#x, trying to skip...", p->tty_id);
+		return 0;
+	}
+
+	pr_perror("Can't set tty params on %#x(%d)", p->tty_id, fd);
 	return -1;
 }
 
@@ -983,11 +998,16 @@ static int pty_open_unpaired_slave(struct file_desc *d, struct tty_info *slave)
 			}
 		}
 
+#if 0
 		if (!stdin_isatty) {
 			pr_err("Don't have tty to inherit session from, aborting\n");
 			return -1;
 		}
+#else
+		pr_err("Don't have tty to inherit, trying to reuse current session\n");
+#endif
 
+#if 0
 		fd = dup(get_service_fd(SELF_STDIN_OFF));
 		if (fd < 0) {
 			pr_perror("Can't dup SELF_STDIN_OFF");
@@ -996,6 +1016,10 @@ static int pty_open_unpaired_slave(struct file_desc *d, struct tty_info *slave)
 
 		pr_info("Migrated slave peer %#x -> to fd %d\n",
 			slave->tfe->id, fd);
+#else
+		fd = inherit_fd_lookup_id("fd[0]");
+		pr_info("Possible shell job tty in inherit fd: %d\n", fd);
+#endif
 	} else {
 		fake = pty_alloc_fake_master(slave);
 		if (!fake)
@@ -2125,6 +2149,7 @@ int tty_post_actions(void)
 
 int tty_prep_fds(void)
 {
+#if 0
 	if (!opts.shell_job)
 		return 0;
 
@@ -2137,13 +2162,18 @@ int tty_prep_fds(void)
 		pr_err("Can't dup stdin to SELF_STDIN_OFF\n");
 		return -1;
 	}
+#else
+	stdin_isatty = true;
+#endif
 
 	return 0;
 }
 
 void tty_fini_fds(void)
 {
+#if 0
 	close_service_fd(SELF_STDIN_OFF);
+#endif
 }
 
 static int open_pty(void *arg, int flags)

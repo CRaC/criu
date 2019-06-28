@@ -71,6 +71,7 @@ void file_desc_init(struct file_desc *d, u32 id, struct file_desc_ops *ops)
 
 	d->id	= id;
 	d->ops	= ops;
+	d->fds_inherited = FDIH_UNKNOWN;
 }
 
 int file_desc_add(struct file_desc *d, u32 id, struct file_desc_ops *ops)
@@ -715,6 +716,16 @@ static int collect_fd(int pid, FdinfoEntry *e, struct rst_info *rst_info)
 		fdesc->ops->collect_fd(fdesc, new_le, rst_info);
 
 	collect_task_fd(new_le, rst_info);
+
+	char inh_id[32];
+	snprintf(inh_id, sizeof(inh_id), "fd[%d]", e->fd);
+	const bool fd_inherited = 0 <= inherit_fd_lookup_id(inh_id);
+
+	if (!fd_inherited) {
+		fdesc->fds_inherited = FDIH_UNINHERITED;
+	} else if (fdesc->fds_inherited == FDIH_UNKNOWN) {
+		fdesc->fds_inherited = FDIH_FROM_0 + e->fd;
+	}
 
 	list_add_tail(&new_le->desc_list, &le->desc_list);
 	new_le->desc = fdesc;
@@ -1533,6 +1544,19 @@ bool inherited_fd(struct file_desc *d, int *fd_p)
 	char buf[32], *id_str;
 	int i_fd;
 
+	if (FDIH_FROM_0 <= d->fds_inherited) {
+		if (fd_p) {
+			snprintf(buf, sizeof(buf), "fd[%d]", d->fds_inherited);
+			i_fd = inherit_fd_lookup_id(buf);
+			if (i_fd < 0)
+				return false;
+			*fd_p = dup(i_fd);
+		}
+		pr_info("File id %" PRIu32 " will not be tried restored as all fd's are inherited\n",
+				d->id);
+		return true;
+	}
+
 	if (!d->ops->name)
 		return false;
 
@@ -1625,10 +1649,16 @@ int inherit_fd_fini()
 			return -1;
 
 		if (!reused) {
-			pr_debug("Closing inherit fd %d -> %s\n", inh->inh_fd,
-				inh->inh_id);
-			if (close_safe(&inh->inh_fd) < 0)
-				return -1;
+			int fd;
+			if (1 == sscanf(inh->inh_id, "fd[%d]", &fd)) {
+				pr_debug("Inherit fd %d(%s) -> %d\n", inh->inh_fd, inh->inh_id, fd);
+				reopen_fd_as_nocheck(fd, inh->inh_fd);
+			} else {
+				pr_debug("Closing inherit fd %d -> %s\n", inh->inh_fd,
+					inh->inh_id);
+				if (close_safe(&inh->inh_fd) < 0)
+					return -1;
+			}
 		}
 	}
 	return 0;
