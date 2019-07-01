@@ -681,7 +681,7 @@ int open_page_read_at(int dfd, int pid, struct page_read *pr, int pr_flags)
 	// The image fd will be needed later, when we'll do prepare_vmas.
 	// All fds except service will be closed at that point, so make
 	// image fd service one.
-	if (opts.mmap_page_image && pr->pi->type == CR_FD_PAGES) {
+	if (opts.mmap_page_image) {
 		int *fdp = &pr->pi->_x.fd;
 		if (install_service_fd(PAGES_FD_OFF, *fdp) < 0) {
 			return -1;
