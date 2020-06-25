@@ -7,10 +7,25 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container:
-      image: antonkozlov/docker-build
-
+    defaults:
+      run:
+        shell: docker exec build bash -e {0}
     steps:
+    - run: echo ${GITHUB_TOKEN} | docker login -u ${GITHUB_ACTOR} --password-stdin docker.pkg.github.com
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      shell: bash
+    - run:  docker pull docker.pkg.github.com/org-crac/docker-build/image:latest
+      shell: bash
+    - name: Start build container
+      run: docker run -d --name build
+        -w $PWD
+        -v /home/runner:/home/runner
+        --entrypoint tail
+        docker.pkg.github.com/org-crac/docker-build/image:latest
+        -f /dev/null
+      shell: bash
+
     - uses: actions/checkout@v2
     - run: make DESTDIR=. PREFIX=/criu-dist install-criu V=1
     - run: tar -zcf criu-dist.tar.gz criu-dist
@@ -20,8 +35,8 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: HEAD
-        release_name: Release HEAD
+        tag_name: release-crac
+        release_name: Release crac
         draft: false
         prerelease: false
     - name: Upload Release Asset
