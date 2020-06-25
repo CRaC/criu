@@ -2,7 +2,8 @@ name: Build
 
 on:
   push:
-    branches: [ crac ]
+    tags:
+      - 'release-*'
 
 jobs:
   build:
@@ -35,8 +36,8 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
-        tag_name: release-crac
-        release_name: Release crac
+        tag_name: ${{ github.ref }}
+        release_name: ${{ github.ref }}
         draft: false
         prerelease: false
     - name: Upload Release Asset
