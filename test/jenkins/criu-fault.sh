@@ -10,6 +10,11 @@ prep
 ./test/zdtm.py run -t zdtm/static/env00 --fault 129 -f uns || fail
 ./test/zdtm.py run -t zdtm/transition/fork --fault 130 -f h || fail
 ./test/zdtm.py run -t zdtm/static/vdso01 --fault 127 || fail
+./test/zdtm.py run -t zdtm/static/vdso-proxy --fault 127 --iters 3 || fail
+
+if [ "${COMPAT_TEST}" != "y" ] ; then
+	./test/zdtm.py run -t zdtm/static/vdso01 --fault 133 -f h || fail
+fi
 
 ./test/zdtm.py run -t zdtm/static/mntns_ghost --fault 2 --keep-going --report report || fail
 ./test/zdtm.py run -t zdtm/static/mntns_ghost --fault 4 --keep-going --report report || fail
@@ -21,3 +26,4 @@ prep
 ./test/zdtm.py run -t zdtm/static/env00 --fault 5 --keep-going --report report || fail
 ./test/zdtm.py run -t zdtm/static/maps04 --fault 131 --keep-going --report report --pre 2:1 || fail
 ./test/zdtm.py run -t zdtm/transition/maps008 --fault 131 --keep-going --report report --pre 2:1 || fail
+./test/zdtm.py run -t zdtm/static/maps01 --fault 132 -f h || fail

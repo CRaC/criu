@@ -1,6 +1,5 @@
-ccflags-y		+= -iquote criu/$(ARCH)
-ccflags-y		+= $(COMPEL_UAPI_INCLUDES)
 CFLAGS_REMOVE_clone-noasan.o += $(CFLAGS-ASAN)
+CFLAGS_kerndat.o	+= -DKDAT_MAGIC_2=${shell echo $${SOURCE_DATE_EPOCH:-$$(date +%s)}} -DKDAT_RUNDIR=\"$(RUNDIR)\"
 ldflags-y		+= -r
 
 obj-y			+= action-scripts.o
@@ -38,6 +37,7 @@ obj-y			+= libnetlink.o
 obj-y			+= log.o
 obj-y			+= lsm.o
 obj-y			+= mem.o
+obj-y			+= memfd.o
 obj-y			+= mount.o
 obj-y			+= filesystems.o
 obj-y			+= namespaces.o
@@ -74,6 +74,7 @@ obj-y			+= string.o
 obj-y			+= sysctl.o
 obj-y			+= sysfs_parse.o
 obj-y			+= timerfd.o
+obj-$(CONFIG_GNUTLS)	+= tls.o
 obj-y			+= tty.o
 obj-y			+= tun.o
 obj-y			+= util.o
@@ -81,15 +82,16 @@ obj-y			+= uts_ns.o
 obj-y			+= path.o
 obj-y			+= autofs.o
 obj-y			+= fdstore.o
-
-ifeq ($(VDSO),y)
+obj-y			+= uffd.o
+obj-y			+= config.o
+obj-y			+= servicefd.o
 obj-y			+= pie-util-vdso.o
 obj-y			+= vdso.o
-obj-y			+= pie-util-vdso-elf32.o
+obj-y			+= timens.o
+obj-$(CONFIG_COMPAT)	+= pie-util-vdso-elf32.o
 CFLAGS_pie-util-vdso-elf32.o	+= -DCONFIG_VDSO_32
 obj-$(CONFIG_COMPAT)	+= vdso-compat.o
 CFLAGS_REMOVE_vdso-compat.o	+= $(CFLAGS-ASAN) $(CFLAGS-GCOV)
-endif
 
 PROTOBUF_GEN := scripts/protobuf-gen.sh
 

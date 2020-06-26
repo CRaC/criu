@@ -34,8 +34,24 @@ struct f_owner_ex {
 # define F_GETPIPE_SZ	(F_LINUX_SPECIFIC_BASE + 8)
 #endif
 
+#ifndef F_ADD_SEALS
+# define F_ADD_SEALS (F_LINUX_SPECIFIC_BASE + 9)
+#endif
+
+#ifndef F_GET_SEALS
+# define F_GET_SEALS (F_LINUX_SPECIFIC_BASE + 10)
+#endif
+
 #ifndef O_PATH
 # define O_PATH		010000000
+#endif
+
+#ifndef __O_TMPFILE
+#define __O_TMPFILE     020000000
+#endif
+
+#ifndef O_TMPFILE
+#define O_TMPFILE (__O_TMPFILE | O_DIRECTORY)
 #endif
 
 #endif /* __CR_ASM_GENERIC_FCNTL_H__ */

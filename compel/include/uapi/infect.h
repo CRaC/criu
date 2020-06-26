@@ -13,36 +13,38 @@
 
 #define PARASITE_START_AREA_MIN	(4096)
 
-extern int compel_interrupt_task(int pid);
+extern int __must_check compel_interrupt_task(int pid);
 
 struct seize_task_status {
-	char			state;
-	int			ppid;
 	unsigned long long	sigpnd;
 	unsigned long long	shdpnd;
+	char			state;
+	int			ppid;
 	int			seccomp_mode;
 };
 
-extern int compel_wait_task(int pid, int ppid,
-		int (*get_status)(int pid, struct seize_task_status *),
-		struct seize_task_status *st);
+extern int __must_check compel_wait_task(int pid, int ppid,
+		int (*get_status)(int pid, struct seize_task_status *, void *data),
+		void (*free_status)(int pid, struct seize_task_status *, void *data),
+		struct seize_task_status *st, void *data);
 
-extern int compel_stop_task(int pid);
+extern int __must_check compel_stop_task(int pid);
 extern int compel_resume_task(pid_t pid, int orig_state, int state);
 
 struct parasite_ctl;
 struct parasite_thread_ctl;
 
-extern struct parasite_ctl *compel_prepare(int pid);
-extern struct parasite_ctl *compel_prepare_noctx(int pid);
-extern int compel_infect(struct parasite_ctl *ctl, unsigned long nr_threads, unsigned long args_size);
-extern struct parasite_thread_ctl *compel_prepare_thread(struct parasite_ctl *ctl, int pid);
+extern struct parasite_ctl __must_check *compel_prepare(int pid);
+extern struct parasite_ctl __must_check *compel_prepare_noctx(int pid);
+extern int __must_check compel_infect(struct parasite_ctl *ctl,
+		unsigned long nr_threads, unsigned long args_size);
+extern struct parasite_thread_ctl __must_check *compel_prepare_thread(struct parasite_ctl *ctl, int pid);
 extern void compel_release_thread(struct parasite_thread_ctl *);
 
-extern int compel_stop_daemon(struct parasite_ctl *ctl);
-extern int compel_cure_remote(struct parasite_ctl *ctl);
-extern int compel_cure_local(struct parasite_ctl *ctl);
-extern int compel_cure(struct parasite_ctl *ctl);
+extern int __must_check compel_stop_daemon(struct parasite_ctl *ctl);
+extern int __must_check compel_cure_remote(struct parasite_ctl *ctl);
+extern int __must_check compel_cure_local(struct parasite_ctl *ctl);
+extern int __must_check compel_cure(struct parasite_ctl *ctl);
 
 #define PARASITE_ARG_SIZE_MIN	( 1 << 12)
 
@@ -55,17 +57,18 @@ extern int compel_cure(struct parasite_ctl *ctl);
 	})
 
 extern void *compel_parasite_args_p(struct parasite_ctl *ctl);
-extern void *compel_parasite_args_s(struct parasite_ctl *ctl, int args_size);
+extern void *compel_parasite_args_s(struct parasite_ctl *ctl, unsigned long args_size);
 
-extern int compel_syscall(struct parasite_ctl *ctl, int nr, long *ret,
+extern int __must_check compel_syscall(struct parasite_ctl *ctl,
+		int nr, long *ret,
 		unsigned long arg1,
 		unsigned long arg2,
 		unsigned long arg3,
 		unsigned long arg4,
 		unsigned long arg5,
 		unsigned long arg6);
-extern int compel_run_in_thread(struct parasite_thread_ctl *tctl, unsigned int cmd);
-extern int compel_run_at(struct parasite_ctl *ctl, unsigned long ip, user_regs_struct_t *ret_regs);
+extern int __must_check compel_run_in_thread(struct parasite_thread_ctl *tctl, unsigned int cmd);
+extern int __must_check compel_run_at(struct parasite_ctl *ctl, unsigned long ip, user_regs_struct_t *ret_regs);
 
 /*
  * The PTRACE_SYSCALL will trap task twice -- on
@@ -79,12 +82,13 @@ enum trace_flags {
 	TRACE_EXIT,
 };
 
-extern int compel_stop_on_syscall(int tasks, int sys_nr,
+extern int __must_check compel_stop_on_syscall(int tasks, int sys_nr,
 		int sys_nr_compat, enum trace_flags trace);
 
-extern int compel_stop_pie(pid_t pid, void *addr, enum trace_flags *tf, bool no_bp);
+extern int __must_check compel_stop_pie(pid_t pid, void *addr,
+		enum trace_flags *tf, bool no_bp);
 
-extern int compel_unmap(struct parasite_ctl *ctl, unsigned long addr);
+extern int __must_check compel_unmap(struct parasite_ctl *ctl, unsigned long addr);
 
 extern int compel_mode_native(struct parasite_ctl *ctl);
 
@@ -95,6 +99,8 @@ struct rt_sigframe;
 
 typedef int (*open_proc_fn)(int pid, int mode, const char *fmt, ...)
 	__attribute__ ((__format__ (__printf__, 3, 4)));
+typedef int (*save_regs_t)(void *, user_regs_struct_t *, user_fpregs_struct_t *);
+typedef int (*make_sigframe_t)(void *, struct rt_sigframe *, struct rt_sigframe *, k_rtsigset_t *);
 
 struct infect_ctx {
 	int	sock;
@@ -102,8 +108,8 @@ struct infect_ctx {
 	/*
 	 * Regs manipulation context.
 	 */
-	int (*save_regs)(void *, user_regs_struct_t *, user_fpregs_struct_t *);
-	int (*make_sigframe)(void *, struct rt_sigframe *, struct rt_sigframe *, k_rtsigset_t *);
+	save_regs_t		save_regs;
+	make_sigframe_t		make_sigframe;
 	void *regs_arg;
 
 	unsigned long		task_size;
@@ -120,10 +126,16 @@ struct infect_ctx {
 
 extern struct infect_ctx *compel_infect_ctx(struct parasite_ctl *);
 
-#define INFECT_NO_MEMFD		0x1	/* don't use memfd() */
-#define INFECT_FAIL_CONNECT	0x2	/* make parasite connect() fail */
-#define INFECT_NO_BREAKPOINTS	0x4	/* no breakpoints in pie tracking */
-#define INFECT_HAS_COMPAT_SIGRETURN 0x8
+/* Don't use memfd() */
+#define INFECT_NO_MEMFD			(1UL << 0)
+/* Make parasite connect() fail */
+#define INFECT_FAIL_CONNECT		(1UL << 1)
+/* No breakpoints in pie tracking */
+#define INFECT_NO_BREAKPOINTS		(1UL << 2)
+/* Can run parasite inside compat tasks */
+#define INFECT_COMPATIBLE		(1UL << 3)
+/* Workaround for ptrace bug on Skylake CPUs with kernels older than v4.14 */
+#define INFECT_X86_PTRACE_MXCSR_BUG	(1UL << 4)
 
 /*
  * There are several ways to describe a blob to compel
@@ -150,11 +162,13 @@ struct parasite_blob_desc {
 
 extern struct parasite_blob_desc *compel_parasite_blob_desc(struct parasite_ctl *);
 
-typedef int (*save_regs_t)(void *, user_regs_struct_t *, user_fpregs_struct_t *);
-extern int compel_get_thread_regs(struct parasite_thread_ctl *, save_regs_t, void *);
+extern int __must_check compel_get_thread_regs(struct parasite_thread_ctl *, save_regs_t, void *);
 
 extern void compel_relocs_apply(void *mem, void *vbase, size_t size, compel_reloc_t *elf_relocs, size_t nr_relocs);
 
 extern unsigned long compel_task_size(void);
+
+extern uint64_t compel_get_leader_sp(struct parasite_ctl *ctl);
+extern uint64_t compel_get_thread_sp(struct parasite_thread_ctl *tctl);
 
 #endif

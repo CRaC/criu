@@ -8,6 +8,7 @@
 # error "Direct inclusion is forbidden, use <compel/asm/sigframe.h> instead"
 #endif
 
+#include "common/compiler.h"
 #include <signal.h>
 #include <compel/plugins/std/asm/syscall-types.h>
 
@@ -52,11 +53,11 @@ struct rt_ucontext {
 	rt_stack_t		uc_stack;
 	struct rt_sigcontext	uc_mcontext;
 	k_rtsigset_t		uc_sigmask;	/* mask last for extensibility */
-	int                     __unused[32 - (sizeof (k_rtsigset_t) / sizeof (int))];
-	unsigned long           uc_regspace[128] __attribute__((aligned(8)));
+	int			_unused[32 - (sizeof (k_rtsigset_t) / sizeof (int))];
+	unsigned long		uc_regspace[128] __attribute__((aligned(8)));
 };
 
-extern int sigreturn_prep_fpu_frame(struct rt_sigframe *frame,
-				    struct rt_sigframe *rframe);
+extern int __must_check sigreturn_prep_fpu_frame(struct rt_sigframe *frame,
+						 struct rt_sigframe *rframe);
 
 #endif /* UAPI_COMPEL_SIGFRAME_COMMON_H__ */

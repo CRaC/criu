@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <sys/ptrace.h>
 #include <sys/types.h>
 #include <sys/uio.h>
@@ -9,6 +10,9 @@
 #include "errno.h"
 #include "infect.h"
 #include "infect-priv.h"
+
+unsigned __page_size = 0;
+unsigned __page_shift = 0;
 
 /*
  * Injected syscall instruction
@@ -56,7 +60,8 @@ int sigreturn_prep_fpu_frame_plain(struct rt_sigframe *sigframe,
 	return 0;
 }
 
-int get_task_regs(pid_t pid, user_regs_struct_t *regs, save_regs_t save, void *arg)
+int get_task_regs(pid_t pid, user_regs_struct_t *regs, save_regs_t save,
+		  void *arg, __maybe_unused unsigned long flags)
 {
 	struct iovec iov;
 	user_fpregs_struct_t fpsimd;

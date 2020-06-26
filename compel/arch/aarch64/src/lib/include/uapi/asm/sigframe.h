@@ -27,7 +27,7 @@ struct aux_context {
 
 struct rt_sigframe {
 	siginfo_t			info;
-	struct ucontext			uc;
+	ucontext_t			uc;
 	uint64_t			fp;
 	uint64_t			lr;
 };
@@ -39,13 +39,31 @@ struct rt_sigframe {
 			"svc #0						\n"	\
 			:							\
 			: "r"(new_sp)						\
-			: "sp", "x8", "memory")
+			: "x8", "memory")
+
+/* cr_sigcontext is copied from arch/arm64/include/uapi/asm/sigcontext.h */
+struct cr_sigcontext {
+        __u64 fault_address;
+        /* AArch64 registers */
+        __u64 regs[31];
+        __u64 sp;
+        __u64 pc;
+        __u64 pstate;
+        /* 4K reserved for FP/SIMD state and future expansion */
+        __u8 __reserved[4096] __attribute__((__aligned__(16)));
+};
 
 #define RT_SIGFRAME_UC(rt_sigframe)		(&rt_sigframe->uc)
 #define RT_SIGFRAME_REGIP(rt_sigframe)		((long unsigned int)(rt_sigframe)->uc.uc_mcontext.pc)
 #define RT_SIGFRAME_HAS_FPU(rt_sigframe)	(1)
-#define RT_SIGFRAME_AUX_CONTEXT(rt_sigframe)	((struct aux_context*)&(rt_sigframe)->uc.uc_mcontext.__reserved)
+#define RT_SIGFRAME_SIGCONTEXT(rt_sigframe)	((struct cr_sigcontext *)&(rt_sigframe)->uc.uc_mcontext)
+#define RT_SIGFRAME_AUX_CONTEXT(rt_sigframe)	((struct aux_context*)&(RT_SIGFRAME_SIGCONTEXT(rt_sigframe)->__reserved))
 #define RT_SIGFRAME_FPU(rt_sigframe)		(&RT_SIGFRAME_AUX_CONTEXT(rt_sigframe)->fpsimd)
 #define RT_SIGFRAME_OFFSET(rt_sigframe)		0
+
+#define rt_sigframe_erase_sigset(sigframe)				\
+	memset(&sigframe->uc.uc_sigmask, 0, sizeof(k_rtsigset_t))
+#define rt_sigframe_copy_sigset(sigframe, from)				\
+	memcpy(&sigframe->uc.uc_sigmask, from, sizeof(k_rtsigset_t))
 
 #endif /* UAPI_COMPEL_ASM_SIGFRAME_H__ */

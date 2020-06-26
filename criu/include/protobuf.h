@@ -36,8 +36,27 @@ struct collect_image_info {
 };
 
 #define COLLECT_SHARED		0x1	/* use shared memory for obj-s */
+#define COLLECT_NOFREE		0x2	/* don't free entry after callback */
 #define COLLECT_HAPPENED	0x4	/* image was opened and collected */
 
 extern int collect_image(struct collect_image_info *);
+extern int collect_entry(ProtobufCMessage *base, struct collect_image_info *cinfo);
+
+static inline int collect_images(struct collect_image_info **array, unsigned size)
+{
+	int i;
+	for (i = 0; i < size; i++) {
+		if (collect_image(array[i]))
+			return -1;
+	}
+	return 0;
+}
+
+/*
+ * To speed up reading of packed objects
+ * by providing space on stack, this should
+ * be more than enough for most objects.
+ */
+#define PB_PKOBJ_LOCAL_SIZE	1024
 
 #endif /* __CR_PROTOBUF_H__ */

@@ -3,6 +3,7 @@
 #include <sys/auxv.h>
 #include <sys/mman.h>
 #include <sys/user.h>
+#include <errno.h>
 
 #include <compel/asm/fpu.h>
 
@@ -19,6 +20,13 @@
 #include "infect.h"
 #include "infect-priv.h"
 #include "log.h"
+
+#ifndef NT_X86_XSTATE
+#define NT_X86_XSTATE	0x202		/* x86 extended state using xsave */
+#endif
+#ifndef NT_PRSTATUS
+#define NT_PRSTATUS	1		/* Contains copy of prstatus struct */
+#endif
 
 /*
  * Injected syscall instruction
@@ -109,7 +117,7 @@ void compel_convert_from_fxsr(struct user_i387_ia32_struct *env,
 			      struct i387_fxsave_struct *fxsave)
 {
 	struct fpxreg *from = (struct fpxreg *)&fxsave->st_space[0];
-	struct fpreg *to = (struct fpreg *)&env->st_space[0];
+	struct fpreg *to = (struct fpreg *)env->st_space;
 	int i;
 
 	env->cwd = fxsave->cwd | 0xffff0000u;
@@ -212,7 +220,7 @@ int sigreturn_prep_fpu_frame_plain(struct rt_sigframe *sigframe,
 			return -1;
 		}
 
-		sigframe->native.uc.uc_mcontext.fpstate = (void *)addr;
+		sigframe->native.uc.uc_mcontext.fpstate = (uint64_t)addr;
 	} else if (!sigframe->is_native) {
 		sigframe->compat.uc.uc_mcontext.fpstate =
 			(uint32_t)(unsigned long)(void *)&fpu_state->fpu_state_ia32;
@@ -225,11 +233,35 @@ int sigreturn_prep_fpu_frame_plain(struct rt_sigframe *sigframe,
 	((user_regs_native(pregs)) ? (int64_t)((pregs)->native.name) :	\
 				(int32_t)((pregs)->compat.name))
 
-int get_task_regs(pid_t pid, user_regs_struct_t *regs, save_regs_t save, void *arg)
+static int get_task_xsave(pid_t pid, user_fpregs_struct_t *xsave)
 {
-	user_fpregs_struct_t xsave	= {  }, *xs = NULL;
-
 	struct iovec iov;
+
+	iov.iov_base = xsave;
+	iov.iov_len = sizeof(*xsave);
+
+	if (ptrace(PTRACE_GETREGSET, pid, (unsigned int)NT_X86_XSTATE, &iov) < 0) {
+		pr_perror("Can't obtain FPU registers for %d", pid);
+		return -1;
+	}
+
+	return 0;
+}
+
+static int get_task_fpregs(pid_t pid, user_fpregs_struct_t *xsave)
+{
+	if (ptrace(PTRACE_GETFPREGS, pid, NULL, xsave)) {
+		pr_perror("Can't obtain FPU registers for %d", pid);
+		return -1;
+	}
+
+	return 0;
+}
+
+int get_task_regs(pid_t pid, user_regs_struct_t *regs, save_regs_t save,
+		  void *arg, unsigned long flags)
+{
+	user_fpregs_struct_t xsave = { }, *xs = NULL;
 	int ret = -1;
 
 	pr_info("Dumping general registers for %d in %s mode\n", pid,
@@ -262,20 +294,23 @@ int get_task_regs(pid_t pid, user_regs_struct_t *regs, save_regs_t save, void *a
 
 	pr_info("Dumping GP/FPU registers for %d\n", pid);
 
-	if (compel_cpu_has_feature(X86_FEATURE_OSXSAVE)) {
-		iov.iov_base = &xsave;
-		iov.iov_len = sizeof(xsave);
-
-		if (ptrace(PTRACE_GETREGSET, pid, (unsigned int)NT_X86_XSTATE, &iov) < 0) {
-			pr_perror("Can't obtain FPU registers for %d", pid);
-			goto err;
-		}
+	if (!compel_cpu_has_feature(X86_FEATURE_OSXSAVE)) {
+		ret = get_task_fpregs(pid, &xsave);
+	} else if (unlikely(flags & INFECT_X86_PTRACE_MXCSR_BUG)) {
+		/*
+		 * get_task_fpregs() will fill FP state,
+		 * get_task_xsave() will overwrite rightly sse/mmx/etc
+		 */
+		pr_warn("Skylake xsave fpu bug workaround used\n");
+		ret = get_task_fpregs(pid, &xsave);
+		if (!ret)
+			ret = get_task_xsave(pid, &xsave);
 	} else {
-		if (ptrace(PTRACE_GETFPREGS, pid, NULL, &xsave)) {
-			pr_perror("Can't obtain FPU registers for %d", pid);
-			goto err;
-		}
+		ret = get_task_xsave(pid, &xsave);
 	}
+
+	if (ret)
+		goto err;
 
 	xs = &xsave;
 out:
@@ -293,9 +328,10 @@ int compel_syscall(struct parasite_ctl *ctl, int nr, long *ret,
 		unsigned long arg6)
 {
 	user_regs_struct_t regs = ctl->orig.regs;
+	bool native = user_regs_native(&regs);
 	int err;
 
-	if (user_regs_native(&regs)) {
+	if (native) {
 		user_regs_struct64 *r = &regs.native;
 
 		r->ax  = (uint64_t)nr;
@@ -321,7 +357,9 @@ int compel_syscall(struct parasite_ctl *ctl, int nr, long *ret,
 		err = compel_execute_syscall(ctl, &regs, code_int_80);
 	}
 
-	*ret = get_user_reg(&regs, ax);
+	*ret = native ?
+		(long)get_user_reg(&regs, ax) :
+		(int)get_user_reg(&regs, ax);
 	return err;
 }
 
@@ -338,12 +376,22 @@ void *remote_mmap(struct parasite_ctl *ctl,
 	if (err < 0)
 		return NULL;
 
-	if (IS_ERR_VALUE(map)) {
-		if (map == -EACCES && (prot & PROT_WRITE) && (prot & PROT_EXEC))
-			pr_warn("mmap(PROT_WRITE | PROT_EXEC) failed for %d, "
-				"check selinux execmem policy\n", ctl->rpid);
+	if (map == -EACCES && (prot & PROT_WRITE) && (prot & PROT_EXEC)) {
+		pr_warn("mmap(PROT_WRITE | PROT_EXEC) failed for %d, "
+			"check selinux execmem policy\n", ctl->rpid);
 		return NULL;
 	}
+	if (IS_ERR_VALUE(map)) {
+		pr_err("remote mmap() failed: %s\n", strerror(-map));
+		return NULL;
+	}
+
+	/*
+	 * For compat tasks the address in foreign process
+	 * must lay inside 4 bytes.
+	 */
+	if (compat_task)
+		map &= 0xfffffffful;
 
 	return (void *)map;
 }
@@ -406,7 +454,7 @@ bool arch_can_dump_task(struct parasite_ctl *ctl)
 	if (ret < 0)
 		return false;
 
-	if (ret && !(ctl->ictx.flags & INFECT_HAS_COMPAT_SIGRETURN)) {
+	if (ret && !(ctl->ictx.flags & INFECT_COMPATIBLE)) {
 		pr_err("Can't dump task %d running in 32-bit mode\n", pid);
 		return false;
 	}
@@ -437,15 +485,15 @@ int arch_fetch_sas(struct parasite_ctl *ctl, struct rt_sigframe *s)
 /* Copied from the gdb header gdb/nat/x86-dregs.h */
 
 /* Debug registers' indices.  */
-#define DR_FIRSTADDR 0
-#define DR_LASTADDR  3
-#define DR_NADDR     4  /* The number of debug address registers.  */
-#define DR_STATUS    6  /* Index of debug status register (DR6).  */
-#define DR_CONTROL   7  /* Index of debug control register (DR7).  */
+#define DR_FIRSTADDR	0
+#define DR_LASTADDR	3
+#define DR_NADDR	4  /* The number of debug address registers.  */
+#define DR_STATUS	6  /* Index of debug status register (DR6).  */
+#define DR_CONTROL	7  /* Index of debug control register (DR7).  */
 
-#define DR_LOCAL_ENABLE_SHIFT   0 /* Extra shift to the local enable bit.  */
-#define DR_GLOBAL_ENABLE_SHIFT  1 /* Extra shift to the global enable bit.  */
-#define DR_ENABLE_SIZE          2 /* Two enable bits per debug register.  */
+#define DR_LOCAL_ENABLE_SHIFT	0 /* Extra shift to the local enable bit.  */
+#define DR_GLOBAL_ENABLE_SHIFT	1 /* Extra shift to the global enable bit.  */
+#define DR_ENABLE_SIZE		2 /* Two enable bits per debug register.  */
 
 /* Locally enable the break/watchpoint in the I'th debug register.  */
 #define X86_DR_LOCAL_ENABLE(i) (1 << (DR_LOCAL_ENABLE_SHIFT + DR_ENABLE_SIZE * (i)))

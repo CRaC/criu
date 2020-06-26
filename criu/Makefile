@@ -1,31 +1,34 @@
-.PHONY: .FORCE
-
 # here is a workaround for a bug in libnl-3:
-# 6a8d90f5fec4 "attr: Allow attribute type 0" 
+# 6a8d90f5fec4 "attr: Allow attribute type 0"
 WRAPFLAGS		+= -Wl,--wrap=nla_parse,--wrap=nlmsg_parse
 
-ARCH_DIR		:= criu/arch/$(SRCARCH)
+ARCH_DIR		:= criu/arch/$(ARCH)
 PIE_DIR			:= criu/pie
 export ARCH_DIR PIE_DIR
 
 ifeq ($(filter clean mrproper,$(MAKECMDGOALS)),)
-	COMPEL_UAPI_INCLUDES	:= $(shell $(COMPEL_BIN) includes)
-	export COMPEL_UAPI_INCLUDES
-	COMPEL_LIBS		:= $(shell $(COMPEL_BIN) --static libs)
+        CFLAGS		+= $(shell $(COMPEL_BIN) includes)
+        COMPEL_LIBS	:= $(shell $(COMPEL_BIN) --static libs)
+        CFLAGS_PIE	+= $(shell $(COMPEL_BIN) cflags)
 endif
 
 #
-# General flags.
-ccflags-y		+= -fno-strict-aliasing
-ccflags-y		+= -iquote criu/include
-ccflags-y		+= -iquote include
-ccflags-y		+= -iquote images
-ccflags-y		+= -iquote $(ARCH_DIR)/include
-ccflags-y		+= -iquote .
-ccflags-y		+= -I/usr/include/libnl3
-ccflags-y		+= $(COMPEL_UAPI_INCLUDES)
+# Configuration file paths
+CONFIG-DEFINES		+= -DSYSCONFDIR='"/etc"'
+CONFIG-DEFINES		+= -DGLOBAL_CONFIG_DIR='"/etc/criu/"'
+CONFIG-DEFINES		+= -DDEFAULT_CONFIG_FILENAME='"default.conf"'
+CONFIG-DEFINES		+= -DUSER_CONFIG_DIR='".criu/"'
 
-export ccflags-y
+#
+# General flags.
+CFLAGS			+= -fno-strict-aliasing
+CFLAGS			+= -iquote criu/include
+CFLAGS			+= -iquote include
+CFLAGS			+= -iquote images
+CFLAGS			+= -iquote $(ARCH_DIR)/include
+CFLAGS			+= -iquote .
+CFLAGS			+= $(shell pkg-config --cflags libnl-3.0)
+CFLAGS			+= $(CONFIG-DEFINES)
 
 ifeq ($(GMON),1)
 	CFLAGS		+= -pg

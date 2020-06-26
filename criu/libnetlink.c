@@ -10,8 +10,9 @@
 #include "libnetlink.h"
 #include "util.h"
 
-static int nlmsg_receive(char *buf, int len, int (*cb)(struct nlmsghdr *, void *), 
-		int (*err_cb)(int, void *), void *arg)
+static int nlmsg_receive(char *buf, int len,
+		int (*cb)(struct nlmsghdr *, struct ns_id *ns, void *),
+		int (*err_cb)(int, struct ns_id *, void *), struct ns_id *ns, void *arg)
 {
 	struct nlmsghdr *hdr;
 
@@ -20,13 +21,8 @@ static int nlmsg_receive(char *buf, int len, int (*cb)(struct nlmsghdr *, void *
 			continue;
 		if (hdr->nlmsg_type == NLMSG_DONE) {
 			int *len = (int *)NLMSG_DATA(hdr);
-
-			if (*len < 0) {
-				pr_err("ERROR %d reported by netlink (%s)\n",
-					*len, strerror(-*len));
-				return *len;
-			}
-
+			if (*len < 0)
+				return err_cb(*len, ns, arg);
 			return 0;
 		}
 		if (hdr->nlmsg_type == NLMSG_ERROR) {
@@ -40,24 +36,29 @@ static int nlmsg_receive(char *buf, int len, int (*cb)(struct nlmsghdr *, void *
 			if (err->error == 0)
 				return 0;
 
-			return err_cb(err->error, arg);
+			return err_cb(err->error, ns, arg);
 		}
-		if (cb(hdr, arg))
+		if (cb(hdr, ns, arg))
 			return -1;
 	}
 
 	return 1;
 }
 
-static int rtnl_return_err(int err, void *arg)
+/*
+ * Default errror handler: just point our an error
+ * and pass up to caller.
+ */
+static int rtnl_return_err(int err, struct ns_id *ns, void *arg)
 {
-	pr_warn("ERROR %d reported by netlink\n", err);
+	errno = -err;
+	pr_perror("%d reported by netlink", err);
 	return err;
 }
 
 int do_rtnl_req(int nl, void *req, int size,
-		int (*receive_callback)(struct nlmsghdr *h, void *),
-		int (*error_callback)(int err, void *), void *arg)
+		int (*receive_callback)(struct nlmsghdr *h, struct ns_id *ns, void *),
+		int (*error_callback)(int err, struct ns_id *ns, void *arg), struct ns_id *ns, void *arg)
 {
 	struct msghdr msg;
 	struct sockaddr_nl nladdr;
@@ -116,7 +117,7 @@ int do_rtnl_req(int nl, void *req, int size,
 			goto err;
 		}
 
-		err = nlmsg_receive(buf, err, receive_callback, error_callback, arg);
+		err = nlmsg_receive(buf, err, receive_callback, error_callback, ns, arg);
 		if (err < 0)
 			goto err;
 		if (err == 0)
@@ -217,4 +218,9 @@ int __wrap_nlmsg_parse(struct nlmsghdr *nlh, int hdrlen, struct nlattr *tb[],
 
 	return nla_parse(tb, maxtype, nlmsg_attrdata(nlh, hdrlen),
 			 nlmsg_attrlen(nlh, hdrlen), policy);
+}
+
+int32_t nla_get_s32(const struct nlattr *nla)
+{
+	return *(const int32_t *) nla_data(nla);
 }

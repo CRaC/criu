@@ -62,25 +62,53 @@ int autofs_parse(struct mount_info *pm)
 {
 	long pipe_ino = AUTOFS_OPT_UNKNOWN;
 	char **opts;
-	int nr_opts, i;
+	int nr_opts, i, ret;
 
 	split(pm->options, ',', &opts, &nr_opts);
 	if (!opts)
 		return -1;
+
 	for (i = 0; i < nr_opts; i++) {
 		if (!strncmp(opts[i], "pipe_ino=", strlen("pipe_ino=")))
-			pipe_ino = atoi(opts[i] + strlen("pipe_ino="));
+			if (xatol(opts[i] + strlen("pipe_ino="), &pipe_ino)) {
+				pr_err("pipe_ino (%s) mount option parse failed\n", opts[i] + strlen("pipe_ino="));
+				ret = -1;
+				goto free;
+			}
 	}
-	for (i = 0; i < nr_opts; i++)
-		xfree(opts[i]);
-	free(opts);
+
+	/*
+	 * We must inform user about bug if pipe_ino is greater than UINT32_MAX,
+	 * because it means that something changed in Linux Kernel virtual fs
+	 * inode numbers generation mechanism. What we have at the moment:
+	 * 1. struct inode i_ino field (include/linux/fs.h in Linux kernel)
+	 * has unsigned long type.
+	 * 2. get_next_ino() function (fs/inode.c), that used for generating inode
+	 * numbers on virtual filesystems (pipefs, debugfs for instance)
+	 * has unsigned int as return type.
+	 * So, it means that ATM it is safe to keep uint32 type for pipe_id field
+	 * in pipe-data.proto.
+	 */
+	if (pipe_ino > UINT32_MAX) {
+		pr_err("overflow: pipe_ino > UINT32_MAX\n");
+		ret = -1;
+		goto free;
+	}
 
 	if (pipe_ino == AUTOFS_OPT_UNKNOWN) {
 		pr_warn("Failed to find pipe_ino option (old kernel?)\n");
-		return 0;
+		ret = 0;
+		goto free;
 	}
 
-	return autofs_gather_pipe(pipe_ino);
+	ret = autofs_gather_pipe(pipe_ino);
+
+free:
+	for (i = 0; i < nr_opts; i++)
+		xfree(opts[i]);
+	xfree(opts);
+
+	return ret;
 }
 
 static int autofs_check_fd_stat(struct stat *stat, int prgp, int fd,
@@ -92,7 +120,7 @@ static int autofs_check_fd_stat(struct stat *stat, int prgp, int fd,
 		return 0;
 	if (stat->st_ino != ino)
 		return 0;
-	if (parse_fdinfo_pid(prgp, fd, FD_TYPES__UND, NULL, &fdinfo))
+	if (parse_fdinfo_pid(prgp, fd, FD_TYPES__UND, &fdinfo))
 		return -1;
 
 	*mode = fdinfo.flags & O_WRONLY;
@@ -110,8 +138,10 @@ static int autofs_kernel_pipe_alive(int pgrp, int fd, int ino)
 		return -1;
 
 	if (stat(path, &buf) < 0) {
-		if (errno == ENOENT)
+		if (errno == ENOENT) {
+			xfree(path);
 			return 0;
+		}
 		pr_perror("Failed to stat %s", path);
 		return -1;
 	}
@@ -149,7 +179,9 @@ static int autofs_find_pipe_read_end(int pgrp, long ino, int *read_fd)
 			goto out;
 		}
 
-		fd = atoi(de->d_name);
+		ret = xatoi(de->d_name, &fd);
+		if (ret)
+			goto out;
 
 		found = autofs_check_fd_stat(&buf, pgrp, fd, ino, &mode);
 		if (found < 0)
@@ -206,6 +238,7 @@ static int parse_options(char *options, AutofsEntry *entry, long *pipe_ino)
 {
 	char **opts;
 	int nr_opts, i;
+	int parse_error = 0;
 
 	entry->fd = AUTOFS_OPT_UNKNOWN;
 	entry->timeout = AUTOFS_OPT_UNKNOWN;
@@ -223,19 +256,20 @@ static int parse_options(char *options, AutofsEntry *entry, long *pipe_ino)
 
 	for (i = 0; i < nr_opts; i++) {
 		char *opt = opts[i];
+		int err = 0;
 
 		if (!strncmp(opt, "fd=", strlen("fd=")))
-			entry->fd = atoi(opt + strlen("fd="));
+			err = xatoi(opt + strlen("fd="), &entry->fd);
 		else if (!strncmp(opt, "pipe_ino=", strlen("pipe_ino=")))
-			*pipe_ino = atoi(opt + strlen("pipe_ino="));
+			err = xatol(opt + strlen("pipe_ino="), pipe_ino);
 		else if (!strncmp(opt, "pgrp=", strlen("pgrp=")))
-			entry->pgrp = atoi(opt + strlen("pgrp="));
+			err = xatoi(opt + strlen("pgrp="), &entry->pgrp);
 		else if (!strncmp(opt, "timeout=", strlen("timeout=")))
-			entry->timeout = atoi(opt + strlen("timeout="));
+			err = xatoi(opt + strlen("timeout="), &entry->timeout);
 		else if (!strncmp(opt, "minproto=", strlen("minproto=")))
-			entry->minproto = atoi(opt + strlen("minproto="));
+			err = xatoi(opt + strlen("minproto="), &entry->minproto);
 		else if (!strncmp(opt, "maxproto=", strlen("maxproto=")))
-			entry->maxproto = atoi(opt + strlen("maxproto="));
+			err = xatoi(opt + strlen("maxproto="), &entry->maxproto);
 		else if (!strcmp(opt, "indirect"))
 			entry->mode = AUTOFS_MODE_INDIRECT;
 		else if (!strcmp(opt, "offset"))
@@ -243,14 +277,22 @@ static int parse_options(char *options, AutofsEntry *entry, long *pipe_ino)
 		else if (!strcmp(opt, "direct"))
 			entry->mode = AUTOFS_MODE_DIRECT;
 		else if (!strncmp(opt, "uid=", strlen("uid=")))
-			entry->uid = atoi(opt + strlen("uid="));
+			err = xatoi(opt + strlen("uid="), &entry->uid);
 		else if (!strncmp(opt, "gid=", strlen("gid=")))
-			entry->gid = atoi(opt + strlen("gid="));
+			err = xatoi(opt + strlen("gid="), &entry->gid);
+
+		if (err) {
+			parse_error = 1;
+			break;
+		}
 	}
 
 	for (i = 0; i < nr_opts; i++)
 		xfree(opts[i]);
 	xfree(opts);
+
+	if (parse_error)
+		return -1;
 
 	if (entry->fd == AUTOFS_OPT_UNKNOWN) {
 		pr_err("Failed to find fd option\n");
@@ -308,7 +350,9 @@ static int autofs_revisit_options(struct mount_info *pm)
 
 		while ((token = strsep(&str, " ")) != NULL) {
 			if (mnt_id == -1) {
-				mnt_id = atoi(token);
+				ret = xatoi(token, &mnt_id);
+				if (ret)
+					goto close_proc;
 				if (mnt_id != pm->mnt_id)
 					break;
 			} else if (strstr(token, "pipe_ino=")) {
@@ -337,7 +381,7 @@ free_str:
 
 /*
  * To access the mount point we have to set proper mount namespace.
- * But, unfortunatelly, we have to set proper pid namespace as well,
+ * But, unfortunately, we have to set proper pid namespace as well,
  * because otherwise autofs driver won't find the autofs master.
  */
 static int access_autofs_mount(struct mount_info *pm)
@@ -531,6 +575,8 @@ typedef struct autofs_info_s {
 	AutofsEntry *entry;
 	char *mnt_path;
 	dev_t mnt_dev;
+	struct mount_info *mi;
+	struct pprep_head ph;
 } autofs_info_t;
 
 static int dup_pipe_info(struct pipe_info *pi, int flags,
@@ -632,7 +678,7 @@ static int autofs_mnt_set_pipefd(const autofs_info_t *i, int mnt_fd)
 {
 	struct autofs_dev_ioctl param;
 
-	/* Restore pipe and pgrp only for non-cataonic mounts */
+	/* Restore pipe and pgrp only for non-catatonic mounts */
 	if (i->entry->fd == AUTOFS_CATATONIC_FD)
 		return 0;
 
@@ -706,6 +752,7 @@ static int autofs_create_dentries(const struct mount_info *mi, char *mnt_path)
 			return -1;
 		if (mkdir(path, 0555) < 0) {
 			pr_perror("Failed to create autofs dentry %s", path);
+			free(path);
 			return -1;
 		}
 		free(path);
@@ -818,7 +865,7 @@ static autofs_info_t *autofs_create_info(const struct mount_info *mi,
 	memcpy(i->entry, info->entry, sizeof(*info->entry));
 	i->mnt_dev = info->mnt_dev;
 
-	/* We need mountpoint to be able to opne mount in autofs_post_open()
+	/* We need mountpoint to be able to open mount in autofs_post_open()
 	 * callback. And this have to be internal path, because process cwd
 	 * will be changed already. That's why ns_mountpoint is used. */
 	strcpy(i->mnt_path, mi->ns_mountpoint);
@@ -847,29 +894,6 @@ static struct fdinfo_list_entry *autofs_pipe_le(struct pstree_item *master,
 		return NULL;
 	}
 	return ple;
-}
-
-static int autofs_create_fle(struct pstree_item *task, FdinfoEntry *fe,
-			     struct file_desc *desc)
-{
-	struct fdinfo_list_entry *le;
-	struct rst_info *rst_info = rsti(task);
-
-	le = shmalloc(sizeof(*le) + sizeof(int));
-	if (!le)
-		return -1;
-	le = (void *)ALIGN((long)le, sizeof(int));
-
-	fle_init(le, vpid(task), fe);
-
-	collect_task_fd(le, rst_info);
-
-	list_add_tail(&le->desc_list, &desc->fd_info_head);
-	le->desc = desc;
-
-	pr_info("autofs: added pipe fd %d, flags %#x to %d (with post_open)\n",
-			le->fe->fd, le->fe->flags, le->pid);
-	return 0;
 }
 
 static int autofs_open_pipefd(struct file_desc *d, int *new_fd)
@@ -905,6 +929,7 @@ static int autofs_create_pipe(struct pstree_item *task, autofs_info_t *i,
 		return -1;
 	memcpy(ops, pi->d.ops, sizeof(*ops));
 	ops->open = autofs_open_pipefd;
+	ops->type = FD_TYPES__AUTOFS_PIPE;
 
 	pe = shmalloc(sizeof(*pe));
 	if (!pe)
@@ -923,13 +948,17 @@ static int autofs_create_pipe(struct pstree_item *task, autofs_info_t *i,
 	fe = dup_fdinfo(ple->fe, fd, flags);
 	if (!fe)
 		return -1;
+	fe->type = FD_TYPES__AUTOFS_PIPE;
 
-	return autofs_create_fle(task, fe, &i->pi.d);
+	pr_info("autofs: adding pipe fd %d, flags %#x to %d (with post_open)\n",
+		fe->fd, fe->flags, vpid(task));
+	return collect_fd(vpid(task), fe, rsti(task), false);
 }
 
-static int autofs_add_mount_info(void *data)
+static int autofs_add_mount_info(struct pprep_head *ph)
 {
-	struct mount_info *mi = data;
+	autofs_info_t *ai = container_of(ph, autofs_info_t, ph);
+	struct mount_info *mi = ai->mi;
 	autofs_info_t *info = mi->private;
 	AutofsEntry *entry = info->entry;
 	autofs_info_t *i;
@@ -975,6 +1004,7 @@ static int autofs_add_mount_info(void *data)
 static int autofs_restore_entry(struct mount_info *mi, AutofsEntry **entry)
 {
 	struct cr_img *img;
+	int ret;
 
 	img = open_image(CR_FD_AUTOFS, O_RSTR, mi->s_dev);
 	if (!img)
@@ -984,10 +1014,11 @@ static int autofs_restore_entry(struct mount_info *mi, AutofsEntry **entry)
 		return -1;
 	}
 
-	if (pb_read_one_eof(img, entry, PB_AUTOFS) < 0)
-		return -1;
+	ret = pb_read_one_eof(img, entry, PB_AUTOFS);
 
 	close_image(img);
+	if (ret < 0)
+		return -1;
 	return 0;
 }
 
@@ -1063,11 +1094,11 @@ int autofs_mount(struct mount_info *mi, const char *source, const
 
 	/* Otherwise we have to add shared object creation callback */
 	if (entry->fd != AUTOFS_CATATONIC_FD) {
-		ret = add_post_prepare_cb(autofs_add_mount_info, mi);
-		if (ret < 0)
-			goto free_info;
+		info->ph.actor = autofs_add_mount_info;
+		add_post_prepare_cb(&info->ph);
 	}
 
+	info->mi = mi;
 	mi->private = info;
 
 free_opts:

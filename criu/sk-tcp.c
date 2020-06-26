@@ -8,6 +8,8 @@
 
 #include "../soccr/soccr.h"
 
+#include "common/config.h"
+#include "cr_options.h"
 #include "util.h"
 #include "common/list.h"
 #include "log.h"
@@ -18,7 +20,6 @@
 #include "image.h"
 #include "namespaces.h"
 #include "xmalloc.h"
-#include "config.h"
 #include "kerndat.h"
 #include "restorer.h"
 #include "rst-malloc.h"
@@ -26,11 +27,13 @@
 #include "protobuf.h"
 #include "images/tcp-stream.pb-c.h"
 
+#undef  LOG_PREFIX
+#define LOG_PREFIX "tcp: "
 
 static LIST_HEAD(cpt_tcp_repair_sockets);
 static LIST_HEAD(rst_tcp_repair_sockets);
 
-static int tcp_repair_establised(int fd, struct inet_sk_desc *sk)
+static int tcp_repair_established(int fd, struct inet_sk_desc *sk)
 {
 	int ret;
 	struct libsoccr_sk *socr;
@@ -112,8 +115,10 @@ static int dump_tcp_conn_state(struct inet_sk_desc *sk)
 	struct libsoccr_sk_data data;
 
 	ret = libsoccr_save(socr, &data, sizeof(data));
-	if (ret < 0)
+	if (ret < 0) {
+		pr_err("libsoccr_save() failed with %d\n", ret);
 		goto err_r;
+	}
 	if (ret != sizeof(data)) {
 		pr_err("This libsocr is not supported (%d vs %d)\n",
 				ret, (int)sizeof(data));
@@ -213,14 +218,32 @@ err_r:
 	return ret;
 }
 
-int dump_one_tcp(int fd, struct inet_sk_desc *sk)
+int dump_one_tcp(int fd, struct inet_sk_desc *sk, SkOptsEntry *soe)
 {
+	soe->has_tcp_keepcnt = true;
+	if (dump_opt(fd, SOL_TCP, TCP_KEEPCNT, &soe->tcp_keepcnt)) {
+		pr_perror("Can't read TCP_KEEPCNT");
+		return -1;
+	}
+
+	soe->has_tcp_keepidle = true;
+	if (dump_opt(fd, SOL_TCP, TCP_KEEPIDLE, &soe->tcp_keepidle)) {
+		pr_perror("Can't read TCP_KEEPIDLE");
+		return -1;
+	}
+
+	soe->has_tcp_keepintvl = true;
+	if (dump_opt(fd, SOL_TCP, TCP_KEEPINTVL, &soe->tcp_keepintvl)) {
+		pr_perror("Can't read TCP_KEEPINTVL");
+		return -1;
+	}
+
 	if (sk->dst_port == 0)
 		return 0;
 
 	pr_info("Dumping TCP connection\n");
 
-	if (tcp_repair_establised(fd, sk))
+	if (tcp_repair_established(fd, sk))
 		return -1;
 
 	if (dump_tcp_conn_state(sk))
@@ -289,7 +312,7 @@ static int restore_tcp_conn_state(int sk, struct libsoccr_sk *socr, struct inet_
 		goto err_c;
 	}
 
-	data.state = ii->ie->state;;
+	data.state = ii->ie->state;
 	data.inq_len = tse->inq_len;
 	data.inq_seq = tse->inq_seq;
 	data.outq_len = tse->outq_len;
@@ -384,7 +407,7 @@ int prepare_tcp_socks(struct task_restore_args *ta)
 
 		/*
 		 * rst_tcp_repair_sockets contains all sockets, so we need to
-		 * select sockets which restored in a current porcess.
+		 * select sockets which restored in a current process.
 		 */
 		if (ii->sk_fd == -1)
 			continue;
@@ -407,12 +430,19 @@ int restore_one_tcp(int fd, struct inet_sk_info *ii)
 
 	pr_info("Restoring TCP connection\n");
 
+	if (opts.tcp_close &&
+		ii->ie->state != TCP_LISTEN && ii->ie->state != TCP_CLOSE) {
+		return 0;
+	}
+
 	sk = libsoccr_pause(fd);
 	if (!sk)
 		return -1;
 
-	if (restore_tcp_conn_state(fd, sk, ii))
+	if (restore_tcp_conn_state(fd, sk, ii)) {
+		libsoccr_release(sk);
 		return -1;
+	}
 
 	return 0;
 }

@@ -8,7 +8,6 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/socket.h>
-#include <sys/sendfile.h>
 
 #include "common/list.h"
 #include "imgset.h"
@@ -18,16 +17,21 @@
 #include "util.h"
 #include "util-pie.h"
 #include "sockets.h"
-
+#include "xmalloc.h"
 #include "sk-queue.h"
-
+#include "files.h"
 #include "protobuf.h"
 #include "images/sk-packet.pb-c.h"
+
+#undef  LOG_PREFIX
+#define LOG_PREFIX "skqueue: "
 
 struct sk_packet {
 	struct list_head	list;
 	SkPacketEntry		*entry;
-	char        		*data;
+	char			*data;
+	unsigned		scm_len;
+	int			*scm;
 };
 
 static LIST_HEAD(packets_list);
@@ -37,10 +41,20 @@ static int collect_one_packet(void *obj, ProtobufCMessage *msg, struct cr_img *i
 	struct sk_packet *pkt = obj;
 
 	pkt->entry = pb_msg(msg, SkPacketEntry);
-
+	pkt->scm = NULL;
 	pkt->data = xmalloc(pkt->entry->length);
 	if (pkt->data ==NULL)
 		return -1;
+
+	/*
+	 * See dump_packet_cmsg() -- only SCM_RIGHTS are supported and
+	 * only 1 of that kind is possible, thus not more than 1 SCMs
+	 * on a packet.
+	 */
+	if (pkt->entry->n_scm > 1) {
+		pr_err("More than 1 SCM is not possible\n");
+		return -1;
+	}
 
 	/*
 	 * NOTE: packet must be added to the tail. Otherwise sequence
@@ -64,6 +78,40 @@ struct collect_image_info sk_queues_cinfo = {
 	.collect = collect_one_packet,
 };
 
+static int dump_scm_rights(struct cmsghdr *ch, SkPacketEntry *pe)
+{
+	int nr_fds, *fds, i;
+	void *buf;
+	ScmEntry *scme;
+
+	nr_fds = (ch->cmsg_len - sizeof(*ch)) / sizeof(int);
+	fds = (int *)CMSG_DATA(ch);
+
+	buf = xmalloc(sizeof(ScmEntry) + nr_fds * sizeof(uint32_t));
+	if (!buf)
+		return -1;
+
+	scme = xptr_pull(&buf, ScmEntry);
+	scm_entry__init(scme);
+	scme->type = SCM_RIGHTS;
+	scme->n_rights = nr_fds;
+	scme->rights = xptr_pull_s(&buf, nr_fds * sizeof(uint32_t));
+
+	for (i = 0; i < nr_fds; i++) {
+		int ftyp;
+
+		if (dump_my_file(fds[i], &scme->rights[i], &ftyp))
+			return -1;
+	}
+
+	i = pe->n_scm++;
+	if (xrealloc_safe(&pe->scm, pe->n_scm * sizeof(ScmEntry*)))
+		return -1;
+
+	pe->scm[i] = scme;
+	return 0;
+}
+
 /*
  * Maximum size of the control messages. XXX -- is there any
  * way to get this value out of the kernel?
@@ -73,13 +121,43 @@ struct collect_image_info sk_queues_cinfo = {
 static int dump_packet_cmsg(struct msghdr *mh, SkPacketEntry *pe)
 {
 	struct cmsghdr *ch;
+	int n_rights = 0;
 
 	for (ch = CMSG_FIRSTHDR(mh); ch; ch = CMSG_NXTHDR(mh, ch)) {
+		if (ch->cmsg_type == SCM_RIGHTS) {
+			if (n_rights) {
+				/*
+				 * Even if user is sending more than one cmsg with
+				 * rights, kernel merges them altogether on recv.
+				 */
+				pr_err("Unexpected 2nd SCM_RIGHTS from the kernel\n");
+				return -1;
+			}
+
+			if (dump_scm_rights(ch, pe))
+				return -1;
+
+			n_rights++;
+			continue;
+		}
+
 		pr_err("Control messages in queue, not supported\n");
 		return -1;
 	}
 
 	return 0;
+}
+
+static void release_cmsg(SkPacketEntry *pe)
+{
+	int i;
+
+	for (i = 0; i < pe->n_scm; i++)
+		xfree(pe->scm[i]);
+	xfree(pe->scm);
+
+	pe->n_scm = 0;
+	pe->scm = NULL;
 }
 
 int dump_sk_queue(int sock_fd, int sock_id)
@@ -181,6 +259,9 @@ int dump_sk_queue(int sock_fd, int sock_id)
 			ret = -EIO;
 			goto err_set_sock;
 		}
+
+		if (pe.scm)
+			release_cmsg(&pe);
 	}
 	ret = 0;
 
@@ -192,25 +273,62 @@ err_set_sock:
 		pr_perror("setsockopt failed on restore");
 		ret = -1;
 	}
+	if (pe.scm)
+		release_cmsg(&pe);
 err_brk:
 	xfree(data);
 	return ret;
 }
 
+static int send_one_pkt(int fd, struct sk_packet *pkt)
+{
+	int ret;
+	SkPacketEntry *entry = pkt->entry;
+	struct msghdr mh = {};
+	struct iovec iov;
+
+	mh.msg_iov = &iov;
+	mh.msg_iovlen = 1;
+	iov.iov_base = pkt->data;
+	iov.iov_len = entry->length;
+
+	if (pkt->scm != NULL) {
+		mh.msg_controllen = pkt->scm_len;
+		mh.msg_control = pkt->scm;
+	}
+
+	/*
+	 * Don't try to use sendfile here, because it use sendpage() and
+	 * all data are split on pages and a new skb is allocated for
+	 * each page. It creates a big overhead on SNDBUF.
+	 * sendfile() isn't suitable for DGRAM sockets, because message
+	 * boundaries messages should be saved.
+	 */
+
+	ret = sendmsg(fd, &mh, 0);
+	xfree(pkt->data);
+	if (ret < 0) {
+		pr_perror("Failed to send packet");
+		return -1;
+	}
+	if (ret != entry->length) {
+		pr_err("Restored skb trimmed to %d/%d\n",
+				ret, (unsigned int)entry->length);
+		return -1;
+	}
+
+	return 0;
+}
+
 int restore_sk_queue(int fd, unsigned int peer_id)
 {
 	struct sk_packet *pkt, *tmp;
-	int ret;
-	struct cr_img *img;
+	int ret = -1;
 
 	pr_info("Trying to restore recv queue for %u\n", peer_id);
 
 	if (restore_prepare_socket(fd))
-		return -1;
-
-	img = open_image(CR_FD_SK_QUEUES, O_RSTR);
-	if (!img)
-		return -1;
+		goto out;
 
 	list_for_each_entry_safe(pkt, tmp, &packets_list, list) {
 		SkPacketEntry *entry = pkt->entry;
@@ -221,33 +339,56 @@ int restore_sk_queue(int fd, unsigned int peer_id)
 		pr_info("\tRestoring %d-bytes skb for %u\n",
 			(unsigned int)entry->length, peer_id);
 
-		/*
-		 * Don't try to use sendfile here, because it use sendpage() and
-		 * all data are split on pages and a new skb is allocated for
-		 * each page. It creates a big overhead on SNDBUF.
-		 * sendfile() isn't suitable for DGRAM sockets, because message
-		 * boundaries messages should be saved.
-		 */
+		ret = send_one_pkt(fd, pkt);
+		if (ret)
+			goto out;
 
-		ret = write(fd, pkt->data, entry->length);
-		xfree(pkt->data);
-		if (ret < 0) {
-			pr_perror("Failed to send packet");
-			goto err;
-		}
-		if (ret != entry->length) {
-			pr_err("Restored skb trimmed to %d/%d\n",
-			       ret, (unsigned int)entry->length);
-			goto err;
-		}
 		list_del(&pkt->list);
 		sk_packet_entry__free_unpacked(entry, NULL);
 		xfree(pkt);
 	}
 
-	close_image(img);
+	ret = 0;
+out:
+	return ret;
+}
+
+int prepare_scms(void)
+{
+	struct sk_packet *pkt;
+
+	pr_info("Preparing SCMs\n");
+	list_for_each_entry(pkt, &packets_list, list) {
+		SkPacketEntry *pe = pkt->entry;
+		ScmEntry *se;
+		struct cmsghdr *ch;
+
+		if (!pe->n_scm)
+			continue;
+
+		se = pe->scm[0]; /* Only 1 SCM is possible */
+
+		if (se->type == SCM_RIGHTS) {
+			pkt->scm_len = CMSG_SPACE(se->n_rights * sizeof(int));
+			pkt->scm = xmalloc(pkt->scm_len);
+			if (!pkt->scm)
+				return -1;
+
+			ch = (struct cmsghdr *)pkt->scm; /* FIXME -- via msghdr */
+			ch->cmsg_level = SOL_SOCKET;
+			ch->cmsg_type = SCM_RIGHTS;
+			ch->cmsg_len = CMSG_LEN(se->n_rights * sizeof(int));
+
+			if (unix_note_scm_rights(pe->id_for, se->rights,
+						(int *)CMSG_DATA(ch), se->n_rights))
+				return -1;
+
+			continue;
+		}
+
+		pr_err("Unsupported scm %d in image\n", se->type);
+		return -1;
+	}
+
 	return 0;
-err:
-	close_image(img);
-	return -1;
 }

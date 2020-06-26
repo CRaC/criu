@@ -12,11 +12,6 @@
 #include "log.h"
 #include "common/bug.h"
 
-#ifdef _ARCH_PPC64
-#define PAGE_IMAGE_SIZE	65536
-#else
-#define PAGE_IMAGE_SIZE	4096
-#endif /* _ARCH_PPC64 */
 #define PAGE_RSS	1
 #define PAGE_ANON	2
 
@@ -50,7 +45,7 @@
  *  	contents modification especially when tasks are
  *  	migrating between different kernel versions
  *  - heap
- *  	"heap" area in application, currently for inforamtion only
+ *  	"heap" area in application, currently for information only
  *  - file private
  *  	stands for privately memory mapped files
  *  - file shared
@@ -88,7 +83,11 @@
 #define VMA_AREA_SOCKET		(1 <<  11)
 #define VMA_AREA_VVAR		(1 <<  12)
 #define VMA_AREA_AIORING	(1 <<  13)
+#define VMA_AREA_MEMFD		(1 <<  14)
 
+#define VMA_CLOSE		(1 <<  28)
+#define VMA_NO_PROT_WRITE	(1 <<  29)
+#define VMA_PREMMAPED		(1 <<  30)
 #define VMA_UNSUPP		(1 <<  31)
 
 #define CR_CAP_SIZE	2
@@ -103,8 +102,8 @@ extern bool img_common_magic;
 #define O_NOBUF		(O_DIRECT)
 #define O_SERVICE	(O_DIRECTORY)
 #define O_DUMP		(O_WRONLY | O_CREAT | O_TRUNC)
-#define O_SHOW		(O_RDONLY | O_NOBUF)
 #define O_RSTR		(O_RDONLY)
+#define O_FORCE_LOCAL	(O_SYNC)
 
 struct cr_img {
 	union {
@@ -135,6 +134,8 @@ extern int open_image_lazy(struct cr_img *img);
 
 static inline int img_raw_fd(struct cr_img *img)
 {
+	if (!img)
+		return -1;
 	if (lazy_image(img) && open_image_lazy(img))
 		return -1;
 
@@ -150,8 +151,8 @@ extern void close_image_dir(void);
 extern struct cr_img *open_image_at(int dfd, int type, unsigned long flags, ...);
 #define open_image(typ, flags, ...) open_image_at(-1, typ, flags, ##__VA_ARGS__)
 extern int open_image_lazy(struct cr_img *img);
-extern struct cr_img *open_pages_image(unsigned long flags, struct cr_img *pmi);
-extern struct cr_img *open_pages_image_at(int dfd, unsigned long flags, struct cr_img *pmi);
+extern struct cr_img *open_pages_image(unsigned long flags, struct cr_img *pmi, u32 *pages_id);
+extern struct cr_img *open_pages_image_at(int dfd, unsigned long flags, struct cr_img *pmi, u32 *pages_id);
 extern void up_page_ids_base(void);
 
 extern struct cr_img *img_from_fd(int fd); /* for cr-show mostly */

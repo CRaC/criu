@@ -5,11 +5,8 @@
 #include <string.h>
 #include <errno.h>
 #include <stdbool.h>
-#include <limits.h>
 #include <signal.h>
 #include <unistd.h>
-#include <errno.h>
-#include <string.h>
 #include <dirent.h>
 #include <sys/sendfile.h>
 #include <fcntl.h>
@@ -19,42 +16,83 @@
 #include <sys/param.h>
 #include <sys/types.h>
 #include <sys/ptrace.h>
-#include <sys/types.h>
-#include <sys/time.h>
-#include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
-#include <sys/vfs.h>
-#include <sys/ptrace.h>
-#include <sys/wait.h>
-#include <sys/resource.h>
 #include <sys/wait.h>
 #include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/resource.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sched.h>
 #include <ctype.h>
 
-#include "bitops.h"
+#include "linux/mount.h"
+
+#include "kerndat.h"
 #include "page.h"
-#include "common/compiler.h"
-#include "common/list.h"
 #include "util.h"
-#include "rst-malloc.h"
 #include "image.h"
 #include "vma.h"
 #include "mem.h"
 #include "namespaces.h"
 #include "criu-log.h"
 
+#include "clone-noasan.h"
 #include "cr_options.h"
-#include "servicefd.h"
 #include "cr-service.h"
 #include "files.h"
+#include "pstree.h"
 
 #include "cr-errno.h"
 
 #define VMA_OPT_LEN	128
+
+static int xatol_base(const char *string, long *number, int base)
+{
+	char *endptr;
+	long nr;
+
+	errno = 0;
+	nr = strtol(string, &endptr, base);
+	if ((errno == ERANGE && (nr == LONG_MAX || nr == LONG_MIN))
+			|| (errno != 0 && nr == 0)) {
+		pr_perror("failed to convert string '%s'", string);
+		return -EINVAL;
+	}
+
+	if ((endptr == string) || (*endptr != '\0')) {
+		pr_err("String is not a number: '%s'\n", string);
+		return -EINVAL;
+	}
+	*number = nr;
+	return 0;
+}
+
+int xatol(const char *string, long *number)
+{
+	return xatol_base(string, number, 10);
+}
+
+
+int xatoi(const char *string, int *number)
+{
+	long tmp;
+	int err;
+
+	err = xatol(string, &tmp);
+	if (err)
+		return err;
+
+	if (tmp > INT_MAX || tmp < INT_MIN) {
+		pr_err("value %#lx (%ld) is out of int range\n", tmp, tmp);
+		return -ERANGE;
+	}
+
+	*number = (int)tmp;
+	return 0;
+}
 
 /*
  * This function reallocates passed str pointer.
@@ -194,23 +232,19 @@ int reopen_fd_as_safe(char *file, int line, int new_fd, int old_fd, bool allow_r
 	int tmp;
 
 	if (old_fd != new_fd) {
-		/* make sure we won't clash with an inherit fd */
-		if (inherit_fd_resolve_clash(new_fd) < 0)
-			return -1;
-
-		if (!allow_reuse_fd) {
-			if (fcntl(new_fd, F_GETFD) != -1 || errno != EBADF) {
-				pr_err("fd %d already in use (called at %s:%d)\n",
-					new_fd, file, line);
-				return -1;
-			}
-		}
-
-		tmp = dup2(old_fd, new_fd);
+		if (!allow_reuse_fd)
+			tmp = fcntl(old_fd, F_DUPFD, new_fd);
+		else
+			tmp = dup2(old_fd, new_fd);
 		if (tmp < 0) {
 			pr_perror("Dup %d -> %d failed (called at %s:%d)",
 				  old_fd, new_fd, file, line);
 			return tmp;
+		} else if (tmp != new_fd) {
+			close(tmp);
+			pr_err("fd %d already in use (called at %s:%d)\n",
+				new_fd, file, line);
+			return -1;
 		}
 
 		/* Just to have error message if failed */
@@ -246,11 +280,10 @@ int move_fd_from(int *img_fd, int want_fd)
  */
 
 static pid_t open_proc_pid = PROC_NONE;
-static int open_proc_fd = -1;
 static pid_t open_proc_self_pid;
 static int open_proc_self_fd = -1;
 
-static inline void set_proc_self_fd(int fd)
+void set_proc_self_fd(int fd)
 {
 	if (open_proc_self_fd >= 0)
 		close(open_proc_self_fd);
@@ -259,13 +292,17 @@ static inline void set_proc_self_fd(int fd)
 	open_proc_self_pid = getpid();
 }
 
-static inline void set_proc_pid_fd(int pid, int fd)
+static inline int set_proc_pid_fd(int pid, int fd)
 {
-	if (open_proc_fd >= 0)
-		close(open_proc_fd);
+	int ret;
+
+	if (fd < 0)
+		return close_service_fd(PROC_PID_FD_OFF);
 
 	open_proc_pid = pid;
-	open_proc_fd = fd;
+	ret = install_service_fd(PROC_PID_FD_OFF, fd);
+
+	return ret;
 }
 
 static inline int get_proc_fd(int pid)
@@ -277,7 +314,7 @@ static inline int get_proc_fd(int pid)
 		}
 		return open_proc_self_fd;
 	} else if (pid == open_proc_pid)
-		return open_proc_fd;
+		return get_service_fd(PROC_PID_FD_OFF);
 	else
 		return -1;
 }
@@ -289,7 +326,7 @@ int close_pid_proc(void)
 	return 0;
 }
 
-void close_proc()
+void close_proc(void)
 {
 	close_pid_proc();
 	close_service_fd(PROC_FD_OFF);
@@ -297,7 +334,7 @@ void close_proc()
 
 int set_proc_fd(int fd)
 {
-	if (install_service_fd(PROC_FD_OFF, fd) < 0)
+	if (install_service_fd(PROC_FD_OFF, dup(fd)) < 0)
 		return -1;
 	return 0;
 }
@@ -314,7 +351,6 @@ static int open_proc_sfd(char *path)
 	}
 
 	ret = install_service_fd(PROC_FD_OFF, fd);
-	close(fd);
 	if (ret < 0)
 		return -1;
 
@@ -361,7 +397,7 @@ inline int open_pid_proc(pid_t pid)
 	if (pid == PROC_SELF)
 		set_proc_self_fd(fd);
 	else
-		set_proc_pid_fd(pid, fd);
+		fd = set_proc_pid_fd(pid, fd);
 
 	return fd;
 }
@@ -381,135 +417,6 @@ int do_open_proc(pid_t pid, int flags, const char *fmt, ...)
 	va_end(args);
 
 	return openat(dirfd, path, flags);
-}
-
-static int service_fd_rlim_cur;
-static int service_fd_id = 0;
-
-int init_service_fd(void)
-{
-	struct rlimit64 rlimit;
-
-	/*
-	 * Service FDs are those that most likely won't
-	 * conflict with any 'real-life' ones
-	 */
-
-	if (syscall(__NR_prlimit64, getpid(), RLIMIT_NOFILE, NULL, &rlimit)) {
-		pr_perror("Can't get rlimit");
-		return -1;
-	}
-
-	service_fd_rlim_cur = (int)rlimit.rlim_cur;
-	BUG_ON(service_fd_rlim_cur < SERVICE_FD_MAX);
-
-	return 0;
-}
-
-static int __get_service_fd(enum sfd_type type, int service_fd_id)
-{
-	return service_fd_rlim_cur - type - SERVICE_FD_MAX * service_fd_id;
-}
-
-int service_fd_min_fd(void)
-{
-	return service_fd_rlim_cur - (SERVICE_FD_MAX - 1) - SERVICE_FD_MAX * service_fd_id;
-}
-
-static DECLARE_BITMAP(sfd_map, SERVICE_FD_MAX);
-
-int reserve_service_fd(enum sfd_type type)
-{
-	int sfd = __get_service_fd(type, service_fd_id);
-
-	BUG_ON((int)type <= SERVICE_FD_MIN || (int)type >= SERVICE_FD_MAX);
-
-	set_bit(type, sfd_map);
-	return sfd;
-}
-
-int install_service_fd(enum sfd_type type, int fd)
-{
-	int sfd = __get_service_fd(type, service_fd_id);
-
-	BUG_ON((int)type <= SERVICE_FD_MIN || (int)type >= SERVICE_FD_MAX);
-
-	if (dup3(fd, sfd, O_CLOEXEC) != sfd) {
-		pr_perror("Dup %d -> %d failed", fd, sfd);
-		return -1;
-	}
-
-	set_bit(type, sfd_map);
-	return sfd;
-}
-
-int get_service_fd(enum sfd_type type)
-{
-	BUG_ON((int)type <= SERVICE_FD_MIN || (int)type >= SERVICE_FD_MAX);
-
-	if (!test_bit(type, sfd_map))
-		return -1;
-
-	return __get_service_fd(type, service_fd_id);
-}
-
-int criu_get_image_dir(void)
-{
-	return get_service_fd(IMG_FD_OFF);
-}
-
-int close_service_fd(enum sfd_type type)
-{
-	int fd;
-
-	fd = get_service_fd(type);
-	if (fd < 0)
-		return 0;
-
-	if (close_safe(&fd))
-		return -1;
-
-	clear_bit(type, sfd_map);
-	return 0;
-}
-
-int clone_service_fd(int id)
-{
-	int ret = -1, i;
-
-	if (service_fd_id == id)
-		return 0;
-
-	for (i = SERVICE_FD_MIN + 1; i < SERVICE_FD_MAX; i++) {
-		int old = __get_service_fd(i, service_fd_id);
-		int new = __get_service_fd(i, id);
-
-		/* Do not dup parent's transport fd */
-		if (i == TRANSPORT_FD_OFF)
-			continue;
-		ret = dup2(old, new);
-		if (ret == -1) {
-			if (errno == EBADF)
-				continue;
-			pr_perror("Unable to clone %d->%d", old, new);
-		}
-	}
-
-	service_fd_id = id;
-	ret = 0;
-
-	return ret;
-}
-
-bool is_any_service_fd(int fd)
-{
-	return fd > __get_service_fd(SERVICE_FD_MAX, service_fd_id) &&
-		fd < __get_service_fd(SERVICE_FD_MIN, service_fd_id);
-}
-
-bool is_service_fd(int fd, enum sfd_type type)
-{
-	return fd == get_service_fd(type);
 }
 
 int copy_file(int fd_in, int fd_out, size_t bytes)
@@ -588,6 +495,39 @@ int cr_system(int in, int out, int err, char *cmd, char *const argv[], unsigned 
 	return cr_system_userns(in, out, err, cmd, argv, flags, -1);
 }
 
+static int close_fds(int minfd)
+{
+	DIR *dir;
+	struct dirent *de;
+	int fd, ret, dfd;
+
+	dir = opendir("/proc/self/fd");
+	if (dir == NULL) {
+		pr_perror("Can't open /proc/self/fd");
+		return -1;
+	}
+	dfd = dirfd(dir);
+
+	while ((de = readdir(dir))) {
+		if (dir_dots(de))
+			continue;
+
+		ret = sscanf(de->d_name, "%d", &fd);
+		if (ret != 1) {
+			pr_err("Can't parse %s\n", de->d_name);
+			return -1;
+		}
+		if (dfd == fd)
+			continue;
+		if (fd < minfd)
+			continue;
+		close(fd);
+	}
+	closedir(dir);
+
+	return 0;
+}
+
 int cr_system_userns(int in, int out, int err, char *cmd,
 			char *const argv[], unsigned flags, int userns_pid)
 {
@@ -598,7 +538,7 @@ int cr_system_userns(int in, int out, int err, char *cmd,
 	sigemptyset(&blockmask);
 	sigaddset(&blockmask, SIGCHLD);
 	if (sigprocmask(SIG_BLOCK, &blockmask, &oldmask) == -1) {
-		pr_perror("Can not set mask of blocked signals");
+		pr_perror("Cannot set mask of blocked signals");
 		return -1;
 	}
 
@@ -607,6 +547,12 @@ int cr_system_userns(int in, int out, int err, char *cmd,
 		pr_perror("fork() failed");
 		goto out;
 	} else if (pid == 0) {
+		sigemptyset(&blockmask);
+		if (sigprocmask(SIG_SETMASK, &blockmask, NULL) == -1) {
+			pr_perror("Cannot clear blocked signals");
+			goto out_chld;
+		}
+
 		if (userns_pid > 0) {
 			if (switch_ns(userns_pid, &user_ns_desc, NULL))
 				goto out_chld;
@@ -651,9 +597,11 @@ int cr_system_userns(int in, int out, int err, char *cmd,
 		if (reopen_fd_as_nocheck(STDERR_FILENO, err))
 			goto out_chld;
 
+		close_fds(STDERR_FILENO + 1);
+
 		execvp(cmd, argv);
 
-		pr_perror("exec failed");
+		pr_perror("exec(%s, ...) failed", cmd);
 out_chld:
 		_exit(1);
 	}
@@ -705,7 +653,7 @@ int close_status_fd(void)
 	return close_safe(&opts.status_fd);
 }
 
-int cr_daemon(int nochdir, int noclose, int *keep_fd, int close_fd)
+int cr_daemon(int nochdir, int noclose, int close_fd)
 {
 	int pid;
 
@@ -728,16 +676,6 @@ int cr_daemon(int nochdir, int noclose, int *keep_fd, int close_fd)
 		if (close_fd != -1)
 			close(close_fd);
 
-		if ((*keep_fd != -1) && (*keep_fd != 3)) {
-			fd = dup2(*keep_fd, 3);
-			if (fd < 0) {
-				pr_perror("Dup2 failed");
-				return -1;
-			}
-			close(*keep_fd);
-			*keep_fd = fd;
-		}
-
 		fd = open("/dev/null", O_RDWR);
 		if (fd < 0) {
 			pr_perror("Can't open /dev/null");
@@ -752,7 +690,7 @@ int cr_daemon(int nochdir, int noclose, int *keep_fd, int close_fd)
 	return 0;
 }
 
-int is_root_user()
+int is_root_user(void)
 {
 	if (geteuid() != 0) {
 		pr_err("You need to be root to run this command\n");
@@ -785,14 +723,23 @@ out:
 	return ret;
 }
 
-int vaddr_to_pfn(unsigned long vaddr, u64 *pfn)
+/*
+ * Get PFN from pagemap file for virtual address vaddr.
+ * Optionally if fd >= 0, it's used as pagemap file descriptor
+ * (may be other task's pagemap)
+ */
+int vaddr_to_pfn(int fd, unsigned long vaddr, u64 *pfn)
 {
-	int fd, ret = -1;
+	int ret = -1;
 	off_t off;
+	bool close_fd = false;
 
-	fd = open_proc(PROC_SELF, "pagemap");
-	if (fd < 0)
-		return -1;
+	if (fd < 0) {
+		fd = open_proc(PROC_SELF, "pagemap");
+		if (fd < 0)
+			return -1;
+		close_fd = true;
+	}
 
 	off = (vaddr / page_size()) * sizeof(u64);
 	ret = pread(fd, pfn, sizeof(*pfn), off);
@@ -804,7 +751,9 @@ int vaddr_to_pfn(unsigned long vaddr, u64 *pfn)
 		ret = 0;
 	}
 
-	close(fd);
+	if (close_fd)
+		close(fd);
+
 	return ret;
 }
 
@@ -915,6 +864,12 @@ void split(char *str, char token, char ***out, int *n)
 		cur++;
 	}
 
+	if (*n == 0) {
+		/* This can only happen if str == NULL */
+		*out = NULL;
+		*n = -1;
+		return;
+	}
 
 	*out = xmalloc((*n) * sizeof(char *));
 	if (!*out) {
@@ -964,6 +919,24 @@ int fd_has_data(int lfd)
 	return ret;
 }
 
+void fd_set_nonblocking(int fd, bool on)
+{
+	int flags = fcntl(fd, F_GETFL, NULL);
+
+	if (flags < 0) {
+		pr_perror("Failed to obtain flags from fd %d", fd);
+		return;
+	}
+
+	if (on)
+		flags |= O_NONBLOCK;
+	else
+		flags &= (~O_NONBLOCK);
+
+	if (fcntl(fd, F_SETFL, flags) < 0)
+		pr_perror("Failed to set flags for fd %d", fd);
+}
+
 int make_yard(char *path)
 {
 	if (mount("none", path, "tmpfs", 0, NULL)) {
@@ -994,6 +967,8 @@ const char *ns_to_string(unsigned int ns)
 		return "user";
 	case CLONE_NEWUTS:
 		return "uts";
+	case CLONE_NEWTIME:
+		return "time";
 	default:
 		return NULL;
 	}
@@ -1002,13 +977,15 @@ const char *ns_to_string(unsigned int ns)
 void tcp_cork(int sk, bool on)
 {
 	int val = on ? 1 : 0;
-	setsockopt(sk, SOL_TCP, TCP_CORK, &val, sizeof(val));
+	if (setsockopt(sk, SOL_TCP, TCP_CORK, &val, sizeof(val)))
+		pr_perror("Unable to restore TCP_CORK (%d)", val);
 }
 
 void tcp_nodelay(int sk, bool on)
 {
 	int val = on ? 1 : 0;
-	setsockopt(sk, SOL_TCP, TCP_NODELAY, &val, sizeof(val));
+	if (setsockopt(sk, SOL_TCP, TCP_NODELAY, &val, sizeof(val)))
+		pr_perror("Unable to restore TCP_NODELAY (%d)", val);
 }
 
 static inline void pr_xsym(unsigned char *data, size_t len, int pos)
@@ -1083,38 +1060,58 @@ void print_data(unsigned long addr, unsigned char *data, size_t size)
 	}
 }
 
-static int get_sockaddr_in(struct sockaddr_in *addr, char *host)
+static int get_sockaddr_in(struct sockaddr_storage *addr, char *host,
+			unsigned short port)
 {
 	memset(addr, 0, sizeof(*addr));
-	addr->sin_family = AF_INET;
 
-	if (!host)
-		addr->sin_addr.s_addr = INADDR_ANY;
-	else if (!inet_aton(host, &addr->sin_addr)) {
-		pr_perror("Bad server address");
+	if (!host) {
+ 		((struct sockaddr_in *)addr)->sin_addr.s_addr = INADDR_ANY;
+		addr->ss_family = AF_INET;
+	} else if (inet_pton(AF_INET, host, &((struct sockaddr_in *)addr)->sin_addr)) {
+		addr->ss_family = AF_INET;
+	} else if (inet_pton(AF_INET6, host, &((struct sockaddr_in6 *)addr)->sin6_addr)) {
+		addr->ss_family = AF_INET6;
+	} else {
+		pr_err("Invalid server address \"%s\". "
+		"The address must be in IPv4 or IPv6 format.\n", host);
 		return -1;
 	}
 
-	addr->sin_port = opts.port;
+	if (addr->ss_family == AF_INET6) {
+		((struct sockaddr_in6 *)addr)->sin6_port = htons(port);
+	} else if (addr->ss_family == AF_INET) {
+		((struct sockaddr_in *)addr)->sin_port = htons(port);
+	}
+
 	return 0;
 }
 
-int setup_tcp_server(char *type)
+int setup_tcp_server(char *type, char *addr, unsigned short *port)
 {
 	int sk = -1;
-	struct sockaddr_in saddr;
+	int sockopt = 1;
+	struct sockaddr_storage saddr;
 	socklen_t slen = sizeof(saddr);
 
-	pr_info("Starting %s server on port %u\n", type, (int)ntohs(opts.port));
+	if (get_sockaddr_in(&saddr, addr, (*port))) {
+		return -1;
+	}
 
-	sk = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
+	pr_info("Starting %s server on port %u\n", type, *port);
+
+	sk = socket(saddr.ss_family, SOCK_STREAM, IPPROTO_TCP);
+
 	if (sk < 0) {
 		pr_perror("Can't init %s server", type);
 		return -1;
 	}
 
-	if (get_sockaddr_in(&saddr, opts.addr))
+	if (setsockopt(
+		sk, SOL_SOCKET, SO_REUSEADDR, &sockopt, sizeof(sockopt)) == -1) {
+		pr_perror("Unable to set SO_REUSEADDR");
 		goto out;
+	}
 
 	if (bind(sk, (struct sockaddr *)&saddr, slen)) {
 		pr_perror("Can't bind %s server", type);
@@ -1127,14 +1124,19 @@ int setup_tcp_server(char *type)
 	}
 
 	/* Get socket port in case of autobind */
-	if (opts.port == 0) {
+	if ((*port) == 0) {
 		if (getsockname(sk, (struct sockaddr *)&saddr, &slen)) {
 			pr_perror("Can't get %s server name", type);
 			goto out;
 		}
 
-		opts.port = ntohs(saddr.sin_port);
-		pr_info("Using %u port\n", opts.port);
+		if (saddr.ss_family == AF_INET6) {
+			(*port) = ntohs(((struct sockaddr_in *)&saddr)->sin_port);
+		} else if (saddr.ss_family == AF_INET) {
+			(*port) = ntohs(((struct sockaddr_in6 *)&saddr)->sin6_port);
+		}
+
+		pr_info("Using %u port\n", (*port));
 	}
 
 	return sk;
@@ -1150,10 +1152,10 @@ int run_tcp_server(bool daemon_mode, int *ask, int cfd, int sk)
 	socklen_t clen = sizeof(caddr);
 
 	if (daemon_mode) {
-		ret = cr_daemon(1, 0, ask, cfd);
+		ret = cr_daemon(1, 0, cfd);
 		if (ret == -1) {
 			pr_err("Can't run in the background\n");
-			goto out;
+			goto err;
 		}
 		if (ret > 0) { /* parent task, daemon started */
 			close_safe(&sk);
@@ -1174,10 +1176,11 @@ int run_tcp_server(bool daemon_mode, int *ask, int cfd, int sk)
 		return -1;
 
 	if (sk >= 0) {
-		ret = *ask = accept(sk, (struct sockaddr *)&caddr, &clen);
-		if (*ask < 0)
+		*ask = accept(sk, (struct sockaddr *)&caddr, &clen);
+		if (*ask < 0) {
 			pr_perror("Can't accept connection to server");
-		else
+			goto err;
+		} else
 			pr_info("Accepted connection from %s:%u\n",
 					inet_ntoa(caddr.sin_addr),
 					(int)ntohs(caddr.sin_port));
@@ -1185,32 +1188,266 @@ int run_tcp_server(bool daemon_mode, int *ask, int cfd, int sk)
 	}
 
 	return 0;
-out:
+err:
 	close(sk);
 	return -1;
 }
 
-int setup_tcp_client(char *addr)
+int setup_tcp_client(char *hostname)
 {
-	struct sockaddr_in saddr;
-	int sk;
+	struct sockaddr_storage saddr;
+	struct addrinfo addr_criteria, *addr_list, *p;
+	char ipstr[INET6_ADDRSTRLEN];
+	int sk = -1;
+	void *ip;
 
-	pr_info("Connecting to server %s:%u\n", addr, (int)ntohs(opts.port));
+	memset(&addr_criteria, 0, sizeof(addr_criteria));
+	addr_criteria.ai_family = AF_UNSPEC;
+	addr_criteria.ai_socktype = SOCK_STREAM;
+	addr_criteria.ai_protocol = IPPROTO_TCP;
 
-	if (get_sockaddr_in(&saddr, addr))
-		return -1;
-
-	sk = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
-	if (sk < 0) {
-		pr_perror("Can't create socket");
-		return -1;
+	/*
+	 * addr_list contains a list of addrinfo structures that corresponding
+	 * to the criteria specified in hostname and addr_criteria.
+	 */
+	if (getaddrinfo(hostname, NULL, &addr_criteria, &addr_list)) {
+		pr_perror("Failed to resolve hostname: %s", hostname);
+		goto out;
 	}
 
-	if (connect(sk, (struct sockaddr *)&saddr, sizeof(saddr)) < 0) {
-		pr_perror("Can't connect to server");
-		close(sk);
-		return -1;
+	/*
+	 * Iterate through addr_list and try to connect. The loop stops if the
+	 * connection is successful or we reach the end of the list.
+	 */
+	for(p = addr_list; p != NULL; p = p->ai_next) {
+
+		if (p->ai_family == AF_INET) {
+			struct sockaddr_in *ipv4 = (struct sockaddr_in *)p->ai_addr;
+			ip = &(ipv4->sin_addr);
+		} else {
+			struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)p->ai_addr;
+			ip = &(ipv6->sin6_addr);
+		}
+
+		inet_ntop(p->ai_family, ip, ipstr, sizeof(ipstr));
+		pr_info("Connecting to server %s:%u\n", ipstr, opts.port);
+
+		if (get_sockaddr_in(&saddr, ipstr, opts.port))
+			goto out;
+
+		sk = socket(saddr.ss_family, SOCK_STREAM, IPPROTO_TCP);
+		if (sk < 0) {
+			pr_perror("Can't create socket");
+			goto out;
+		}
+
+		if (connect(sk, (struct sockaddr *)&saddr, sizeof(saddr)) < 0) {
+			pr_info("Can't connect to server %s:%u\n", ipstr, opts.port);
+			close(sk);
+			sk = -1;
+		} else {
+			/* Connected successfully */
+			break;
+		}
 	}
 
+out:
+	freeaddrinfo(addr_list);
 	return sk;
 }
+
+int epoll_add_rfd(int epfd, struct epoll_rfd *rfd)
+{
+	struct epoll_event ev;
+
+	ev.events = EPOLLIN | EPOLLRDHUP;
+	ev.data.ptr = rfd;
+	if (epoll_ctl(epfd, EPOLL_CTL_ADD, rfd->fd, &ev) == -1) {
+		pr_perror("epoll_ctl failed");
+		return -1;
+	}
+
+	return 0;
+}
+
+int epoll_del_rfd(int epfd, struct epoll_rfd *rfd)
+{
+	if (epoll_ctl(epfd, EPOLL_CTL_DEL, rfd->fd, NULL) == -1) {
+		pr_perror("epoll_ctl failed");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int epoll_hangup_event(int epollfd, struct epoll_rfd *rfd)
+{
+	int ret = 0;
+
+	if (rfd->hangup_event) {
+		ret = rfd->hangup_event(rfd);
+		if (ret < 0)
+			return ret;
+	}
+
+	if (epoll_del_rfd(epollfd, rfd))
+		return -1;
+
+	close_safe(&rfd->fd);
+
+	return ret;
+}
+
+int epoll_run_rfds(int epollfd, struct epoll_event *evs, int nr_fds, int timeout)
+{
+	int ret, i, nr_events;
+	bool have_a_break = false;
+
+	while (1) {
+		ret = epoll_wait(epollfd, evs, nr_fds, timeout);
+		if (ret <= 0) {
+			if (ret < 0)
+				pr_perror("polling failed");
+			break;
+		}
+
+		nr_events = ret;
+		for (i = 0; i < nr_events; i++) {
+			struct epoll_rfd *rfd;
+			uint32_t events;
+
+			rfd = (struct epoll_rfd *)evs[i].data.ptr;
+			events = evs[i].events;
+
+			if (events & EPOLLIN) {
+				ret = rfd->read_event(rfd);
+				if (ret < 0)
+					goto out;
+				if (ret > 0)
+					have_a_break = true;
+			}
+
+			if (events & (EPOLLHUP | EPOLLRDHUP)) {
+				ret = epoll_hangup_event(epollfd, rfd);
+				if (ret < 0)
+					goto out;
+				if (ret > 0)
+					have_a_break = true;
+			}
+		}
+
+		if (have_a_break)
+			return 1;
+	}
+out:
+	return ret;
+}
+
+int epoll_prepare(int nr_fds, struct epoll_event **events)
+{
+	int epollfd;
+
+	*events = xmalloc(sizeof(struct epoll_event) * nr_fds);
+	if (!*events)
+		return -1;
+
+	epollfd = epoll_create(nr_fds);
+	if (epollfd == -1) {
+		pr_perror("epoll_create failed");
+		goto free_events;
+	}
+
+	return epollfd;
+
+free_events:
+	xfree(*events);
+	return -1;
+}
+
+int call_in_child_process(int (*fn)(void *), void *arg)
+{
+	int status, ret = -1;
+	pid_t pid;
+	/*
+	 * Parent freezes till child exit, so child may use the same stack.
+	 * No SIGCHLD flag, so it's not need to block signal.
+	 */
+	pid = clone_noasan(fn, CLONE_VFORK | CLONE_VM | CLONE_FILES |
+			   CLONE_IO | CLONE_SIGHAND | CLONE_SYSVSEM, arg);
+	if (pid == -1) {
+		pr_perror("Can't clone");
+		return -1;
+	}
+	errno = 0;
+	if (waitpid(pid, &status, __WALL) != pid || !WIFEXITED(status) || WEXITSTATUS(status)) {
+		pr_err("Can't wait or bad status: errno=%d, status=%d\n", errno, status);
+		goto out;
+	}
+	ret = 0;
+	/*
+	 * Child opened PROC_SELF for pid. If we create one more child
+	 * with the same pid later, it will try to reuse this /proc/self.
+	 */
+out:
+	close_pid_proc();
+	return ret;
+}
+
+void rlimit_unlimit_nofile(void)
+{
+	struct rlimit new;
+
+	new.rlim_cur = kdat.sysctl_nr_open;
+	new.rlim_max = kdat.sysctl_nr_open;
+
+	if (prlimit(getpid(), RLIMIT_NOFILE, &new, NULL)) {
+		pr_perror("rlimit: Can't setup RLIMIT_NOFILE for self");
+		return;
+	} else
+		pr_debug("rlimit: RLIMIT_NOFILE unlimited for self\n");
+
+	service_fd_rlim_cur = kdat.sysctl_nr_open;
+}
+
+
+#ifdef __GLIBC__
+#include <execinfo.h>
+void print_stack_trace(pid_t pid)
+{
+	void *array[10];
+	char **strings;
+	size_t size, i;
+
+	size = backtrace(array, 10);
+	strings = backtrace_symbols(array, size);
+
+	for (i = 0; i < size; i++)
+		pr_err("stack %d#%zu: %s\n", pid, i, strings[i]);
+
+	free(strings);
+}
+#endif
+
+int mount_detached_fs(const char *fsname)
+{
+	int fsfd, fd;
+
+	fsfd = sys_fsopen(fsname, 0);
+	if (fsfd < 0) {
+		pr_perror("Unable to open the %s file system", fsname);
+		return -1;
+	}
+
+	if (sys_fsconfig(fsfd, FSCONFIG_CMD_CREATE, NULL, NULL, 0) < 0) {
+		pr_perror("Unable to create the %s file system", fsname);
+		close(fsfd);
+		return -1;
+	}
+
+	fd = sys_fsmount(fsfd, 0, 0);
+	if (fd < 0)
+		pr_perror("Unable to mount the %s file system", fsname);
+	close(fsfd);
+	return fd;
+}
+

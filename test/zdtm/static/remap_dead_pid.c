@@ -35,7 +35,6 @@ int main(int argc, char **argv)
 	}
 
 	if (pid == 0) {
-		test_msg("child is %d\n", pid);
 		/* Child process just sleeps until it is killed. All we need
 		 * here is a process to open the mountinfo of. */
 		while(1)
@@ -44,6 +43,8 @@ int main(int argc, char **argv)
 		int fd, ret;
 		char path[PATH_MAX];
 		pid_t result;
+
+		test_msg("child is %d\n", pid);
 
 		sprintf(path, proc_path, pid);
 		fd = open(path, O_RDONLY);

@@ -25,7 +25,7 @@
 /*
  * It's a workaround for a kernel bug. In the 3.19 kernel when pagemap are read
  * for a few vma-s for one read call, it returns incorrect data.
- * https://github.com/xemul/criu/issues/207
+ * https://github.com/checkpoint-restore/criu/issues/207
 */
 static bool pagemap_cache_disabled;
 
@@ -56,7 +56,7 @@ int pmc_init(pmc_t *pmc, pid_t pid, const struct list_head *vma_head, size_t siz
 		goto err;
 
 	if (pagemap_cache_disabled)
-		pr_debug("The pagemap cache is disabled\n");
+		pr_warn_once("The pagemap cache is disabled\n");
 
 	if (kdat.pmap == PM_DISABLED) {
 		/*
@@ -105,8 +105,8 @@ static int pmc_fill_cache(pmc_t *pmc, const struct vma_area *vma)
 	pmc->start = vma->e->start;
 	pmc->end = vma->e->end;
 
-	pr_debug("filling VMA %lx-%lx (%zuK) [l:%lx h:%lx]\n",
-		 (long)vma->e->start, (long)vma->e->end, len >> 10, low, high);
+	pr_debug("%d: filling VMA %lx-%lx (%zuK) [l:%lx h:%lx]\n",
+		 pmc->pid, (long)vma->e->start, (long)vma->e->end, len >> 10, low, high);
 
 	/*
 	 * If we meet a small VMA, lets try to fit 2M cache
@@ -119,12 +119,12 @@ static int pmc_fill_cache(pmc_t *pmc, const struct vma_area *vma)
 	 * is to walk page tables less.
 	 */
 	if (!pagemap_cache_disabled &&
-            len < PMC_SIZE && (vma->e->start - low) < PMC_SIZE_GAP) {
+	    len < PMC_SIZE && (vma->e->start - low) < PMC_SIZE_GAP) {
 		size_t size_cov = len;
 		size_t nr_vmas = 1;
 
-		pr_debug("\t%16lx-%-16lx nr:%-5zu cov:%zu\n",
-			 (long)vma->e->start, (long)vma->e->end, nr_vmas, size_cov);
+		pr_debug("\t%d: %16lx-%-16lx nr:%-5zu cov:%zu\n",
+			 pmc->pid, (long)vma->e->start, (long)vma->e->end, nr_vmas, size_cov);
 
 		list_for_each_entry_continue(vma, pmc->vma_head, list) {
 			if (vma->e->start > high || vma->e->end > high)
@@ -134,8 +134,8 @@ static int pmc_fill_cache(pmc_t *pmc, const struct vma_area *vma)
 			size_cov += vma_area_len(vma);
 			nr_vmas++;
 
-			pr_debug("\t%16lx-%-16lx nr:%-5zu cov:%zu\n",
-				 (long)vma->e->start, (long)vma->e->end, nr_vmas, size_cov);
+			pr_debug("\t%d: %16lx-%-16lx nr:%-5zu cov:%zu\n",
+				 pmc->pid, (long)vma->e->start, (long)vma->e->end, nr_vmas, size_cov);
 		}
 
 		if (nr_vmas > 1) {
@@ -145,9 +145,9 @@ static int pmc_fill_cache(pmc_t *pmc, const struct vma_area *vma)
 			 * allows us to save a couple of code bytes.
 			 */
 			pmc->end = high;
-			pr_debug("\tcache  mode [l:%lx h:%lx]\n", pmc->start, pmc->end);
+			pr_debug("\t%d: cache  mode [l:%lx h:%lx]\n", pmc->pid, pmc->start, pmc->end);
 		} else
-			pr_debug("\tsimple mode [l:%lx h:%lx]\n", pmc->start, pmc->end);
+			pr_debug("\t%d: simple mode [l:%lx h:%lx]\n", pmc->pid, pmc->start, pmc->end);
 	}
 
 	size_map = PAGEMAP_LEN(pmc->end - pmc->start);

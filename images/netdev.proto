@@ -4,6 +4,7 @@ import "macvlan.proto";
 import "opts.proto";
 import "tun.proto";
 import "sysctl.proto";
+import "sit.proto";
 
 enum nd_type {
 	LOOPBACK	= 1;
@@ -16,12 +17,10 @@ enum nd_type {
 	 * by the setup-namespaces script.
 	 */
 	EXTLINK		= 4;
-	/*
-	 * Virtuozzo specific device.
-	 */
-	VENET		= 5;
+	VENET		= 5; /* OpenVZ device */
 	BRIDGE		= 6;
 	MACVLAN		= 7;
+	SIT		= 8;
 }
 
 message net_device_entry {
@@ -42,6 +41,22 @@ message net_device_entry {
 	repeated sysctl_entry conf6	= 10;
 
 	optional macvlan_link_entry	macvlan		= 11;
+
+	optional uint32 peer_ifindex	= 12;
+	optional uint32 peer_nsid	= 13;
+	optional uint32 master		= 14;
+	optional sit_entry sit		= 15;
+}
+
+message netns_id {
+	/* This is CRIU's id which is allocated for each namespace */
+	required uint32	target_ns_id	= 1;
+	/*
+	 * This is an id which can be used to address this namespace
+	 * from another network namespace. Each network namespace has
+	 * one set of id-s for other namespaces.
+	 */
+	required int32	netnsid_value	= 2;
 }
 
 message netns_entry {
@@ -53,4 +68,8 @@ message netns_entry {
 
 	repeated sysctl_entry def_conf6	= 5;
 	repeated sysctl_entry all_conf6	= 6;
+
+	repeated netns_id nsids		= 7;
+	optional string	ext_key		= 8;
+	repeated sysctl_entry unix_conf	= 9;
 }

@@ -2,6 +2,7 @@
 #define __CR_ASM_VDSO_H__
 
 #include "asm/int.h"
+#include "common/compiler.h"
 #include "asm-generic/vdso.h"
 
 /*
@@ -9,6 +10,7 @@
  * we should support at the moment.
  */
 #define VDSO_SYMBOL_MAX		4
+#define VDSO_SYMBOL_GTOD	2
 
 /*
  * Workaround for VDSO array symbol table's relocation.

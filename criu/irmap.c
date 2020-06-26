@@ -5,7 +5,7 @@
  * so that we can restore inotify/fanotify-s.
  *
  * Scanning _is_ slow, so we limit it with hints, which are
- * heurisitical known places where notifies are typically put.
+ * heuristically known places where notifies are typically put.
  */
 
 #include <stdbool.h>
@@ -311,7 +311,12 @@ int irmap_queue_cache(unsigned int dev, unsigned long ino,
 	ip->dev = dev;
 	ip->ino = ino;
 	ip->fh = *fh;
-	fh->handle = NULL; /* don't free in free_fhandle */
+	ip->fh.handle = xmemdup(fh->handle,
+			FH_ENTRY_SIZES__min_entries * sizeof(uint64_t));
+	if (!ip->fh.handle) {
+		xfree(ip);
+		return -1;
+	}
 
 	pr_debug("Queue %x:%lx for pre-dump\n", dev, ino);
 

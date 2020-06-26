@@ -6,24 +6,25 @@
 
 #include "images/vma.pb-c.h"
 
-struct vm_area_list {
-	struct list_head	h;
-	unsigned		nr;
-	unsigned int		nr_aios;
-	unsigned long		priv_size; /* nr of pages in private VMAs */
-	unsigned long		priv_longest; /* nr of pages in longest private VMA */
-	unsigned long		shared_longest; /* nr of pages in longest shared VMA */
-};
+#include <sys/mman.h>
+#include <string.h>
 
-#define VM_AREA_LIST(name)	struct vm_area_list name = { .h = LIST_HEAD_INIT(name.h), .nr = 0, }
+struct vm_area_list {
+	struct list_head	h;			/* list of VMAs */
+	unsigned		nr;			/* nr of all VMAs in the list */
+	unsigned int		nr_aios;		/* nr of AIOs VMAs in the list */
+	union {
+		unsigned long	nr_priv_pages;		/* dmp: nr of pages in private VMAs */
+		unsigned long	rst_priv_size;		/* rst: size of private VMAs */
+	};
+	unsigned long		nr_priv_pages_longest;	/* nr of pages in longest private VMA */
+	unsigned long		nr_shared_pages_longest;/* nr of pages in longest shared VMA */
+};
 
 static inline void vm_area_list_init(struct vm_area_list *vml)
 {
+	memset(vml, 0, sizeof(*vml));
 	INIT_LIST_HEAD(&vml->h);
-	vml->nr = 0;
-	vml->priv_size = 0;
-	vml->priv_longest = 0;
-	vml->shared_longest = 0;
 }
 
 struct file_desc;
@@ -40,7 +41,7 @@ struct vma_area {
 			char		*aufs_fpath;	/* full path from global root */
 
 			/*
-			 * When several subsequent vmas have the same 
+			 * When several subsequent vmas have the same
 			 * dev:ino pair all 'tail' ones set this to true
 			 * and the vmst points to the head's stat buf.
 			 */
@@ -52,12 +53,26 @@ struct vma_area {
 		struct /* for restore */ {
 			int (*vm_open)(int pid, struct vma_area *vma);
 			struct file_desc *vmfd;
+			struct vma_area	*pvma;		/* parent for inherited VMAs */
 			unsigned long	*page_bitmap;	/* existent pages */
-			unsigned long	*ppage_bitmap;	/* parent's existent pages */
 			unsigned long	premmaped_addr;	/* restore only */
+
+			/*
+			 * Some notes about pvma, page_bitmap and premmaped_addr bits
+			 * above.
+			 *
+			 * The pvma is set in prepare_cow_vmas() when we resolve which
+			 * VMAs _may_ inherit pages from each other.
+			 * The page_bitmap and premmaped_addr are set in prepare_mappings()
+			 * when the respective VMAs get mmap-ed or mremap-ed.
+			 * These VMAs are then inherited during fork_with_pid()-s
+			 * called from create_children_and_session().
+			 */
 		};
 	};
 };
+
+#define VMA_COW_ROOT	((struct vma_area *)1)
 
 typedef int (*dump_filemap_t)(struct vma_area *vma_area, int fd);
 
@@ -77,8 +92,8 @@ extern int parse_self_maps_lite(struct vm_area_list *vms);
 /*
  * vma_premmaped_start() can be used only in restorer.
  * In other cases vma_area->premmaped_addr must be used.
- * This hack is required, because vma_area isn't tranfered in restorer and
- * shmid is used to determing which vma-s are cowed.
+ * This hack is required, because vma_area isn't transferred in restorer and
+ * shmid is used to determine which vma-s are cowed.
  */
 #define vma_premmaped_start(vma)	((vma)->shmid)
 
@@ -102,6 +117,20 @@ static inline bool vma_area_is_private(struct vma_area *vma,
 				       unsigned long task_size)
 {
 	return vma_entry_is_private(vma->e, task_size);
+}
+
+static inline struct vma_area *vma_next(struct vma_area *vma)
+{
+	return list_entry(vma->list.next, struct vma_area, list);
+}
+
+static inline bool vma_entry_can_be_lazy(VmaEntry *e)
+{
+	return ((e->flags & MAP_ANONYMOUS) &&
+		(e->flags & MAP_PRIVATE) &&
+		!(e->flags & MAP_LOCKED) &&
+		!(vma_entry_is(e, VMA_AREA_VDSO)) &&
+		!(vma_entry_is(e, VMA_AREA_VSYSCALL)));
 }
 
 #endif /* __CR_VMA_H__ */

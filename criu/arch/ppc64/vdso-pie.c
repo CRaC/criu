@@ -70,7 +70,7 @@ static unsigned long put_trampoline(unsigned long at, struct vdso_symtable *sym)
 		pr_debug("Checking '%s' at %lx\n", sym->symbols[i].name,
 			 sym->symbols[i].offset);
 
-		/* find the nearest followin symbol we are interested in */
+		/* find the nearest following symbol we are interested in */
 		for (j=0; j < ARRAY_SIZE(sym->symbols); j++) {
 			if (i==j || vdso_symbol_empty(&sym->symbols[j]))
 				continue;
@@ -116,7 +116,7 @@ static unsigned long put_trampoline(unsigned long at, struct vdso_symtable *sym)
 static inline void put_trampoline_call(unsigned long at, unsigned long to,
 				       unsigned long tr)
 {
-    uint32_t *addr = (uint32_t *)at;;
+    uint32_t *addr = (uint32_t *)at;
 
     *addr++ = 0x7C0802a6;					/* mflr	r0 */
     *addr++ = 0x48000001 | ((long)(tr-at-4) & 0x3fffffc);	/* bl tr */

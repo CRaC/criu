@@ -61,15 +61,15 @@ void thread_sigaction(int signo, siginfo_t *info, void *context)
 
 static void *thread_func(void *arg)
 {
-	sas_state[SAS_THRD_OLD] = (stack_t) {
-		.ss_size	= sizeof(stack_thread) - 8,
-		.ss_sp		= stack_thread,
-		.ss_flags	= SS_ONSTACK,
-	};
-
 	struct sigaction sa = {
 		.sa_sigaction	= thread_sigaction,
 		.sa_flags	= SA_RESTART | SA_ONSTACK,
+	};
+
+	sas_state[SAS_THRD_OLD] = (stack_t) {
+		.ss_size	= sizeof(stack_thread) - 8,
+		.ss_sp		= stack_thread,
+		.ss_flags	= 0,
 	};
 
 	sigemptyset(&sa.sa_mask);
@@ -103,15 +103,15 @@ int main(int argc, char *argv[])
 {
 	pthread_t thread;
 
-	sas_state[SAS_MAIN_OLD] = (stack_t) {
-		.ss_size	= sizeof(stack_main) - 8,
-		.ss_sp		= stack_main,
-		.ss_flags	= SS_ONSTACK,
-	};
-
 	struct sigaction sa = {
 		.sa_sigaction	= leader_sigaction,
 		.sa_flags	= SA_RESTART | SA_ONSTACK,
+	};
+
+	sas_state[SAS_MAIN_OLD] = (stack_t) {
+		.ss_size	= sizeof(stack_main) - 8,
+		.ss_sp		= stack_main,
+		.ss_flags	= 0,
 	};
 
 	sigemptyset(&sa.sa_mask);
@@ -150,6 +150,9 @@ int main(int argc, char *argv[])
 		exit(-1);
 	}
 	task_waiter_fini(&t);
+
+	sas_state[SAS_THRD_OLD].ss_flags = SS_ONSTACK;
+	sas_state[SAS_MAIN_OLD].ss_flags = SS_ONSTACK;
 
 	show_ss("main old", &sas_state[SAS_MAIN_OLD]);
 	show_ss("main new", &sas_state[SAS_MAIN_NEW]);

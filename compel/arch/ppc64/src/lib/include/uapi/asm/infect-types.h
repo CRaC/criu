@@ -74,12 +74,13 @@ typedef struct {
 
 #define REG_RES(regs)		((uint64_t)(regs).gpr[3])
 #define REG_IP(regs)		((uint64_t)(regs).nip)
+#define REG_SP(regs)		((uint64_t)(regs).gpr[1])
 #define REG_SYSCALL_NR(regs)	((uint64_t)(regs).gpr[0])
 
 #define user_regs_native(pregs)			true
 
 #define ARCH_SI_TRAP TRAP_BRKPT
 
-#define __NR(syscall, compat)	__NR_##syscall
+#define __NR(syscall, compat) ({ (void)compat; __NR_##syscall; })
 
 #endif /* UAPI_COMPEL_ASM_TYPES_H__ */

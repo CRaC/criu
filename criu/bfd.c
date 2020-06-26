@@ -43,7 +43,7 @@ static int buf_get(struct xbuf *xb)
 		int i;
 
 		mem = mmap(NULL, BUFBATCH * BUFSIZE, PROT_READ | PROT_WRITE,
-				MAP_PRIVATE | MAP_ANON, 0, 0);
+				MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
 		if (mem == MAP_FAILED) {
 			pr_perror("No buf");
 			return -1;
@@ -91,7 +91,7 @@ static void buf_put(struct xbuf *xb)
 static int bfdopen(struct bfd *f, bool writable)
 {
 	if (buf_get(&f->b)) {
-		close(f->fd);
+		close_safe(&f->fd);
 		return -1;
 	}
 
@@ -196,6 +196,11 @@ again:
 		if (!b->sz)
 			return NULL;
 
+		if (b->sz == BUFSIZE) {
+			pr_err("The bfd buffer is too small\n");
+			ERR_PTR(-EIO);
+			return NULL;
+		}
 		/*
 		 * Last bytes may lack the \n at the
 		 * end, need to report this as full
@@ -215,7 +220,7 @@ again:
 
 	/*
 	 * small optimization -- we've scanned b->sz
-	 * symols already, no need to re-scan them after
+	 * symbols already, no need to re-scan them after
 	 * the buffer refill.
 	 */
 	ss = b->sz;

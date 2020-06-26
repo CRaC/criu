@@ -11,7 +11,7 @@ all:
 	$(MAKE) zdtm-freezer
 .PHONY: all
 
-TESTS = unix-callback mem-snap rpc libcriu mounts/ext security pipes crit socketpairs overlayfs mnt-ext-dev
+TESTS = unix-callback mem-snap rpc libcriu mounts/ext security pipes crit socketpairs overlayfs mnt-ext-dev shell-job
 
 other:
 	for t in $(TESTS); do				\
@@ -25,7 +25,7 @@ zdtm:
 
 zdtm-pre-dump:
 	./zdtm.py run --pre 2:1 -t zdtm/transition/fork -f uns
-.PHONY: zdtm
+.PHONY: zdtm-pre-dump
 
 zdtm-snapshot:
 	./zdtm.py run --pre 2:1 --snap -t zdtm/transition/fork -f uns
@@ -51,7 +51,7 @@ clean_root:
 .PHONY: clean_root
 
 clean: clean_root
-	$(RM) zdtm_ct zdtm-tst-list umount2
+	$(RM) zdtm_ct zdtm-tst-list umount2 zdtm_test_config.conf
 	$(Q) $(RM) *.log
 	$(Q) $(RM) -r ./dump/
 	$(Q) $(MAKE) -C zdtm cleandep clean cleanout

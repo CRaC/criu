@@ -16,6 +16,18 @@
 #define TCP_REPAIR_OPTIONS	22
 #endif
 
+#ifndef IP_HDRINCL
+# define IP_HDRINCL		3
+#endif
+
+#ifndef IP_NODEFRAG
+# define IP_NODEFRAG		22
+#endif
+
+#ifndef IPV6_HDRINCL
+# define IPV6_HDRINCL		36
+#endif
+
 struct inet_sk_desc {
 	struct socket_desc	sd;
 	unsigned int		type;
@@ -28,6 +40,7 @@ struct inet_sk_desc {
 	unsigned int		src_addr[4];
 	unsigned int		dst_addr[4];
 	unsigned short		shutdown;
+	bool			cork;
 
 	int rfd;
 	int cpt_reuseaddr;
@@ -70,11 +83,12 @@ extern void tcp_locked_conn_add(struct inet_sk_info *);
 extern void rst_unlock_tcp_connections(void);
 extern void cpt_unlock_tcp_connections(void);
 
-extern int dump_one_tcp(int sk, struct inet_sk_desc *sd);
+extern int dump_one_tcp(int sk, struct inet_sk_desc *sd, SkOptsEntry *soe);
 extern int restore_one_tcp(int sk, struct inet_sk_info *si);
 
 #define SK_EST_PARAM	"tcp-established"
 #define SK_INFLIGHT_PARAM "skip-in-flight"
+#define SK_CLOSE_PARAM	"tcp-close"
 
 struct task_restore_args;
 int prepare_tcp_socks(struct task_restore_args *);

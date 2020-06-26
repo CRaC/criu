@@ -8,9 +8,13 @@ endif
 
 export E Q
 
+ifneq ($(USE_ASCIIDOCTOR),)
+ASCIIDOC       := asciidoctor
+XMLTO          :=
+else
 ASCIIDOC	:= asciidoc
-A2X		:= a2x
 XMLTO		:= xmlto
+endif
 
 SRC		+= bers.txt
 XMLS		:= $(patsubst %.txt,%.xml,$(SRC))
@@ -18,8 +22,12 @@ MANS		:= $(patsubst %.txt,%.8,$(SRC))
 
 %.8: %.txt
 	$(E) "  GEN     " $@
+ifneq ($(USE_ASCIIDOCTOR),)
+	$(Q) $(ASCIIDOC) -b manpage -d manpage -o $@ $<
+else
 	$(Q) $(ASCIIDOC) -b docbook -d manpage -o $(patsubst %.8,%.xml,$@) $<
 	$(Q) $(XMLTO) man --skip-validation $(patsubst %.8,%.xml,$@) 2>/dev/null
+endif
 
 docs: $(MANS)
 	@true

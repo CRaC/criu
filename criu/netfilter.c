@@ -19,7 +19,7 @@ static char buf[512];
 
 /*
  * Need to configure simple netfilter rules for blocking connections
- * ANy brave soul to write it using xtables-devel?
+ * Any brave soul to write it using xtables-devel?
  */
 
 #define NF_CONN_CMD	"%s %s -t filter %s %s --protocol tcp " \
@@ -47,6 +47,12 @@ void preload_netfilter_modules(void)
 	close_safe(&fd);
 }
 
+/* IPv4-Mapped IPv6 Addresses */
+static int ipv6_addr_mapped(u32 *addr)
+{
+	return (addr[2] == htonl(0x0000ffff));
+}
+
 static int nf_connection_switch_raw(int family, u32 *src_addr, u16 src_port,
 						u32 *dst_addr, u16 dst_port,
 						bool input, bool lock)
@@ -55,6 +61,12 @@ static int nf_connection_switch_raw(int family, u32 *src_addr, u16 src_port,
 	char *cmd;
 	char *argv[4] = { "sh", "-c", buf, NULL };
 	int ret;
+
+	if (family == AF_INET6 && ipv6_addr_mapped(dst_addr)) {
+		family = AF_INET;
+		src_addr = &src_addr[3];
+		dst_addr = &dst_addr[3];
+	}
 
 	switch (family) {
 	case AF_INET:

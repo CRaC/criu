@@ -28,12 +28,12 @@
 #define TRAMP_SIZE			6
 
 /*
- * ucontext defined in /usr/include/powerpc64le-linux-gnu/sys/ucontext.h
+ * ucontext_t defined in /usr/include/powerpc64le-linux-gnu/sys/ucontext.h
  */
 struct rt_sigframe {
         /* sys_rt_sigreturn requires the ucontext be the first field */
-        struct ucontext			uc;
-        struct ucontext			uc_transact; /* Transactional state	 */
+        ucontext_t			uc;
+        ucontext_t			uc_transact; /* Transactional state	 */
         unsigned long			_unused[2];
         unsigned int			tramp[TRAMP_SIZE];
         struct rt_siginfo		*pinfo;
@@ -50,7 +50,7 @@ struct rt_sigframe {
 		"sc \n"						\
 		:						\
 		: "r"(new_sp)					\
-		: "1", "memory")
+		: "memory")
 
 #if _CALL_ELF != 2
 # error Only supporting ABIv2.
@@ -62,6 +62,11 @@ struct rt_sigframe {
 #define RT_SIGFRAME_REGIP(rt_sigframe)		((long unsigned int)(rt_sigframe)->uc.uc_mcontext.gp_regs[PT_NIP])
 #define RT_SIGFRAME_HAS_FPU(rt_sigframe)	(1)
 #define RT_SIGFRAME_FPU(rt_sigframe)		(&(rt_sigframe)->uc.uc_mcontext)
+
+#define rt_sigframe_erase_sigset(sigframe)				\
+	memset(&sigframe->uc.uc_sigmask, 0, sizeof(k_rtsigset_t))
+#define rt_sigframe_copy_sigset(sigframe, from)				\
+	memcpy(&sigframe->uc.uc_sigmask, from, sizeof(k_rtsigset_t))
 
 #define MSR_TMA (1UL<<34)	/* bit 29 Trans Mem state: Transactional */
 #define MSR_TMS (1UL<<33)	/* bit 30 Trans Mem state: Suspended */

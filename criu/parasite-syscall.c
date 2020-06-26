@@ -5,6 +5,7 @@
 #include <sys/wait.h>
 #include <sys/mman.h>
 
+#include "common/config.h"
 #include "common/compiler.h"
 #include "types.h"
 #include "protobuf.h"
@@ -20,7 +21,6 @@
 #include "crtools.h"
 #include "namespaces.h"
 #include "kerndat.h"
-#include "config.h"
 #include "pstree.h"
 #include "posix-timer.h"
 #include "mem.h"
@@ -44,8 +44,6 @@
 #include "infect.h"
 #include "infect-rpc.h"
 #include "pie/parasite-blob.h"
-
-#include <compel/compel.h>
 
 unsigned long get_exec_start(struct vm_area_list *vmas)
 {
@@ -162,7 +160,8 @@ int parasite_dump_thread_leader_seized(struct parasite_ctl *ctl, int pid, CoreEn
 	return dump_thread_core(pid, core, args);
 }
 
-int parasite_dump_thread_seized(struct parasite_ctl *ctl, int id,
+int parasite_dump_thread_seized(struct parasite_thread_ctl *tctl,
+				struct parasite_ctl *ctl, int id,
 				struct pid *tid, CoreEntry *core)
 {
 	struct parasite_dump_thread *args;
@@ -171,7 +170,6 @@ int parasite_dump_thread_seized(struct parasite_ctl *ctl, int id,
 	CredsEntry *creds = tc->creds;
 	struct parasite_dump_creds *pc;
 	int ret;
-	struct parasite_thread_ctl *tctl;
 
 	BUG_ON(id == 0); /* Leader is dumped in dump_task_core_all */
 
@@ -180,12 +178,13 @@ int parasite_dump_thread_seized(struct parasite_ctl *ctl, int id,
 	pc = args->creds;
 	pc->cap_last_cap = kdat.last_cap;
 
-	tctl = compel_prepare_thread(ctl, pid);
-	if (!tctl)
-		return -1;
-
 	tc->has_blk_sigset = true;
 	memcpy(&tc->blk_sigset, compel_thread_sigmask(tctl), sizeof(k_rtsigset_t));
+	ret = compel_get_thread_regs(tctl, save_task_regs, core);
+	if (ret) {
+		pr_err("Can't obtain regs for thread %d\n", pid);
+		goto err_rth;
+	}
 
 	ret = compel_run_in_thread(tctl, PARASITE_CMD_DUMP_THREAD);
 	if (ret) {
@@ -199,12 +198,6 @@ int parasite_dump_thread_seized(struct parasite_ctl *ctl, int id,
 		goto err_rth;
 	}
 
-	ret = compel_get_thread_regs(tctl, save_task_regs, core);
-	if (ret) {
-		pr_err("Can't obtain regs for thread %d\n", pid);
-		goto err_rth;
-	}
-
 	compel_release_thread(tctl);
 
 	tid->ns[0].virt = args->tid;
@@ -215,12 +208,12 @@ err_rth:
 	return -1;
 }
 
-int parasite_dump_sigacts_seized(struct parasite_ctl *ctl, struct cr_imgset *cr_imgset)
+int parasite_dump_sigacts_seized(struct parasite_ctl *ctl, struct pstree_item *item)
 {
+	TaskCoreEntry *tc = item->core[0]->tc;
 	struct parasite_dump_sa_args *args;
 	int ret, sig;
-	struct cr_img *img;
-	SaEntry se = SA_ENTRY__INIT;
+	SaEntry *sa, **psa;
 
 	args = compel_parasite_args(ctl, struct parasite_dump_sa_args);
 
@@ -228,7 +221,14 @@ int parasite_dump_sigacts_seized(struct parasite_ctl *ctl, struct cr_imgset *cr_
 	if (ret < 0)
 		return ret;
 
-	img = img_from_set(cr_imgset, CR_FD_SIGACT);
+	psa = xmalloc((SIGMAX - 2) * (sizeof(SaEntry *) + sizeof(SaEntry)));
+	if (!psa)
+		return -1;
+
+	sa = (SaEntry *)(psa + SIGMAX - 2);
+
+	tc->n_sigactions = SIGMAX - 2;
+	tc->sigactions = psa;
 
 	for (sig = 1; sig <= SIGMAX; sig++) {
 		int i = sig - 1;
@@ -236,16 +236,16 @@ int parasite_dump_sigacts_seized(struct parasite_ctl *ctl, struct cr_imgset *cr_
 		if (sig == SIGSTOP || sig == SIGKILL)
 			continue;
 
-		ASSIGN_TYPED(se.sigaction, encode_pointer(args->sas[i].rt_sa_handler));
-		ASSIGN_TYPED(se.flags, args->sas[i].rt_sa_flags);
-		ASSIGN_TYPED(se.restorer, encode_pointer(args->sas[i].rt_sa_restorer));
-		BUILD_BUG_ON(sizeof(se.mask) != sizeof(args->sas[0].rt_sa_mask.sig));
-		memcpy(&se.mask, args->sas[i].rt_sa_mask.sig, sizeof(se.mask));
-		se.has_compat_sigaction = true;
-		se.compat_sigaction = !compel_mode_native(ctl);
+		sa_entry__init(sa);
+		ASSIGN_TYPED(sa->sigaction, encode_pointer(args->sas[i].rt_sa_handler));
+		ASSIGN_TYPED(sa->flags, args->sas[i].rt_sa_flags);
+		ASSIGN_TYPED(sa->restorer, encode_pointer(args->sas[i].rt_sa_restorer));
+		BUILD_BUG_ON(sizeof(sa->mask) != sizeof(args->sas[0].rt_sa_mask.sig));
+		memcpy(&sa->mask, args->sas[i].rt_sa_mask.sig, sizeof(sa->mask));
+		sa->has_compat_sigaction = true;
+		sa->compat_sigaction = !compel_mode_native(ctl);
 
-		if (pb_write_one(img, &se, PB_SIGACT) < 0)
-			return -1;
+		*(psa++) = sa++;
 	}
 
 	return 0;
@@ -462,12 +462,55 @@ static int make_sigframe(void *arg, struct rt_sigframe *sf, struct rt_sigframe *
 	return construct_sigframe(sf, rtsf, bs, (CoreEntry *)arg);
 }
 
+static int parasite_prepare_threads(struct parasite_ctl *ctl,
+				    struct pstree_item *item)
+{
+	struct parasite_thread_ctl **thread_ctls;
+	uint64_t *thread_sp;
+	int i;
+
+	thread_ctls = xzalloc(sizeof(*thread_ctls) * item->nr_threads);
+	if (!thread_ctls)
+		return -1;
+
+	thread_sp = xzalloc(sizeof(*thread_sp) * item->nr_threads);
+	if (!thread_sp)
+		goto free_ctls;
+
+	for (i = 0; i < item->nr_threads; i++) {
+		struct pid *tid = &item->threads[i];
+
+		if (item->pid->real == tid->real) {
+			thread_sp[i] = compel_get_leader_sp(ctl);
+			continue;
+		}
+
+		thread_ctls[i] = compel_prepare_thread(ctl, tid->real);
+		if (!thread_ctls[i])
+			goto free_sp;
+
+		thread_sp[i] = compel_get_thread_sp(thread_ctls[i]);
+	}
+
+	dmpi(item)->thread_ctls = thread_ctls;
+	dmpi(item)->thread_sp = thread_sp;
+
+	return 0;
+
+free_sp:
+	xfree(thread_sp);
+free_ctls:
+	xfree(thread_ctls);
+	return -1;
+}
+
 struct parasite_ctl *parasite_infect_seized(pid_t pid, struct pstree_item *item,
 		struct vm_area_list *vma_area_list)
 {
 	struct parasite_ctl *ctl;
 	struct infect_ctx *ictx;
 	unsigned long p;
+	int ret;
 
 	BUG_ON(item->threads[0].real != pid);
 
@@ -479,6 +522,10 @@ struct parasite_ctl *parasite_infect_seized(pid_t pid, struct pstree_item *item,
 
 	ctl = compel_prepare_noctx(pid);
 	if (!ctl)
+		return NULL;
+
+	ret = parasite_prepare_threads(ctl, item);
+	if (ret)
 		return NULL;
 
 	ictx = compel_infect_ctx(ctl);
@@ -503,8 +550,10 @@ struct parasite_ctl *parasite_infect_seized(pid_t pid, struct pstree_item *item,
 		ictx->flags |= INFECT_FAIL_CONNECT;
 	if (fault_injected(FI_NO_BREAKPOINTS))
 		ictx->flags |= INFECT_NO_BREAKPOINTS;
-	if (kdat.has_compat_sigreturn)
-		ictx->flags |= INFECT_HAS_COMPAT_SIGRETURN;
+	if (kdat.compat_cr)
+		ictx->flags |= INFECT_COMPATIBLE;
+	if (kdat.x86_has_ptrace_fpu_xsave_bug)
+		ictx->flags |= INFECT_X86_PTRACE_MXCSR_BUG;
 
 	ictx->log_fd = log_get_fd();
 
@@ -514,7 +563,8 @@ struct parasite_ctl *parasite_infect_seized(pid_t pid, struct pstree_item *item,
 	parasite_ensure_args_size(aio_rings_args_size(vma_area_list));
 
 	if (compel_infect(ctl, item->nr_threads, parasite_args_size) < 0) {
-		compel_cure(ctl);
+		if (compel_cure(ctl))
+			pr_warn("Can't cure failed infection\n");
 		return NULL;
 	}
 
@@ -524,4 +574,3 @@ struct parasite_ctl *parasite_infect_seized(pid_t pid, struct pstree_item *item,
 
 	return ctl;
 }
-

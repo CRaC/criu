@@ -21,8 +21,10 @@
 
 #include <stdbool.h>
 
+#include "version.h"
+
 #ifdef __GNUG__
-       extern "C" {
+	extern "C" {
 #endif
 
 enum criu_service_comm {
@@ -41,31 +43,32 @@ enum criu_cg_mode {
 	CRIU_CG_MODE_DEFAULT,
 };
 
-void criu_set_service_address(char *path);
-void criu_set_service_fd(int fd);
-void criu_set_service_binary(char *path);
+enum criu_pre_dump_mode {
+	CRIU_PRE_DUMP_SPLICE =	1,
+	CRIU_PRE_DUMP_READ =	2
+};
 
-/*
- * You can choose if you want libcriu to connect to service socket
- * by itself, use provided file descriptor or spawn swrk by itself
- */
-void criu_set_service_comm(enum criu_service_comm);
+int criu_set_service_address(const char *path);
+void criu_set_service_fd(int fd);
+int criu_set_service_binary(const char *path);
 
 /*
  * Set opts to defaults. _Must_ be called first before using any functions from
  * the list down below. 0 on success, -1 on fail.
  */
 int criu_init_opts(void);
+void criu_free_opts(void);
 
 void criu_set_pid(int pid);
 void criu_set_images_dir_fd(int fd); /* must be set for dump/restore */
-void criu_set_parent_images(char *path);
+int criu_set_parent_images(const char *path);
 void criu_set_work_dir_fd(int fd);
 void criu_set_leave_running(bool leave_running);
 void criu_set_ext_unix_sk(bool ext_unix_sk);
 int criu_add_unix_sk(unsigned int inode);
 void criu_set_tcp_established(bool tcp_established);
 void criu_set_tcp_skip_in_flight(bool tcp_skip_in_flight);
+void criu_set_tcp_close(bool tcp_close);
 void criu_set_weak_sysctls(bool val);
 void criu_set_evasive_devices(bool evasive_devices);
 void criu_set_shell_job(bool shell_job);
@@ -75,26 +78,29 @@ void criu_set_auto_dedup(bool auto_dedup);
 void criu_set_force_irmap(bool force_irmap);
 void criu_set_link_remap(bool link_remap);
 void criu_set_log_level(int log_level);
-void criu_set_log_file(char *log_file);
+int criu_set_log_file(const char *log_file);
 void criu_set_cpu_cap(unsigned int cap);
-void criu_set_root(char *root);
+int criu_set_root(const char *root);
 void criu_set_manage_cgroups(bool manage);
 void criu_set_manage_cgroups_mode(enum criu_cg_mode mode);
-void criu_set_freeze_cgroup(char *name);
+int criu_set_freeze_cgroup(const char *name);
+int criu_set_lsm_profile(const char *name);
 void criu_set_timeout(unsigned int timeout);
 void criu_set_auto_ext_mnt(bool val);
 void criu_set_ext_sharing(bool val);
 void criu_set_ext_masters(bool val);
 int criu_set_exec_cmd(int argc, char *argv[]);
-int criu_add_ext_mount(char *key, char *val);
-int criu_add_veth_pair(char *in, char *out);
-int criu_add_cg_root(char *ctrl, char *path);
-int criu_add_enable_fs(char *fs);
-int criu_add_skip_mnt(char *mnt);
+int criu_add_ext_mount(const char *key, const char *val);
+int criu_add_veth_pair(const char *in, const char *out);
+int criu_add_cg_root(const char *ctrl, const char *path);
+int criu_add_enable_fs(const char *fs);
+int criu_add_skip_mnt(const char *mnt);
 void criu_set_ghost_limit(unsigned int limit);
-int criu_add_irmap_path(char *path);
-int criu_add_inherit_fd(int fd, char *key);
-int criu_add_external(char *key);
+int criu_add_irmap_path(const char *path);
+int criu_add_inherit_fd(int fd, const char *key);
+int criu_add_external(const char *key);
+int criu_set_page_server_address_port(const char *address, int port);
+int criu_set_pre_dump_mode(enum criu_pre_dump_mode mode);
 
 /*
  * The criu_notify_arg_t na argument is an opaque
@@ -158,22 +164,24 @@ int criu_dump_iters(int (*more)(criu_predump_info pi));
 typedef struct criu_opts criu_opts;
 
 int criu_local_init_opts(criu_opts **opts);
+void criu_local_free_opts(criu_opts *opts);
 
-void criu_local_set_service_address(criu_opts *opts, char *path);
+int criu_local_set_service_address(criu_opts *opts, const char *path);
 void criu_local_set_service_fd(criu_opts *opts, int fd);
-void criu_local_set_service_comm(criu_opts *opts, enum criu_service_comm);
 
 void criu_local_set_service_fd(criu_opts *opts, int fd);
 
 void criu_local_set_pid(criu_opts *opts, int pid);
 void criu_local_set_images_dir_fd(criu_opts *opts, int fd); /* must be set for dump/restore */
-void criu_local_set_parent_images(criu_opts *opts, char *path);
+int criu_local_set_parent_images(criu_opts *opts, const char *path);
+int criu_local_set_service_binary(criu_opts *opts, const char *path);
 void criu_local_set_work_dir_fd(criu_opts *opts, int fd);
 void criu_local_set_leave_running(criu_opts *opts, bool leave_running);
 void criu_local_set_ext_unix_sk(criu_opts *opts, bool ext_unix_sk);
 int criu_local_add_unix_sk(criu_opts *opts, unsigned int inode);
 void criu_local_set_tcp_established(criu_opts *opts, bool tcp_established);
 void criu_local_set_tcp_skip_in_flight(criu_opts *opts, bool tcp_skip_in_flight);
+void criu_local_set_tcp_close(criu_opts *opts, bool tcp_close);
 void criu_local_set_weak_sysctls(criu_opts *opts, bool val);
 void criu_local_set_evasive_devices(criu_opts *opts, bool evasive_devices);
 void criu_local_set_shell_job(criu_opts *opts, bool shell_job);
@@ -183,29 +191,33 @@ void criu_local_set_auto_dedup(criu_opts *opts, bool auto_dedup);
 void criu_local_set_force_irmap(criu_opts *opts, bool force_irmap);
 void criu_local_set_link_remap(criu_opts *opts, bool link_remap);
 void criu_local_set_log_level(criu_opts *opts, int log_level);
-void criu_local_set_log_file(criu_opts *opts, char *log_file);
+int criu_local_set_log_file(criu_opts *opts, const char *log_file);
 void criu_local_set_cpu_cap(criu_opts *opts, unsigned int cap);
-void criu_local_set_root(criu_opts *opts, char *root);
+int criu_local_set_root(criu_opts *opts, const char *root);
 void criu_local_set_manage_cgroups(criu_opts *opts, bool manage);
 void criu_local_set_manage_cgroups_mode(criu_opts *opts, enum criu_cg_mode mode);
-void criu_local_set_freeze_cgroup(criu_opts *opts, char *name);
+int criu_local_set_freeze_cgroup(criu_opts *opts, const char *name);
+int criu_local_set_lsm_profile(criu_opts *opts, const char *name);
 void criu_local_set_timeout(criu_opts *opts, unsigned int timeout);
 void criu_local_set_auto_ext_mnt(criu_opts *opts, bool val);
 void criu_local_set_ext_sharing(criu_opts *opts, bool val);
 void criu_local_set_ext_masters(criu_opts *opts, bool val);
 int criu_local_set_exec_cmd(criu_opts *opts, int argc, char *argv[]);
-int criu_local_add_ext_mount(criu_opts *opts, char *key, char *val);
-int criu_local_add_veth_pair(criu_opts *opts, char *in, char *out);
-int criu_local_add_cg_root(criu_opts *opts, char *ctrl, char *path);
-int criu_local_add_enable_fs(criu_opts *opts, char *fs);
-int criu_local_add_skip_mnt(criu_opts *opts, char *mnt);
+int criu_local_add_ext_mount(criu_opts *opts, const char *key, const char *val);
+int criu_local_add_veth_pair(criu_opts *opts, const char *in, const char *out);
+int criu_local_add_cg_root(criu_opts *opts, const char *ctrl, const char *path);
+int criu_local_add_enable_fs(criu_opts *opts, const char *fs);
+int criu_local_add_skip_mnt(criu_opts *opts, const char *mnt);
 void criu_local_set_ghost_limit(criu_opts *opts, unsigned int limit);
-int criu_local_add_irmap_path(criu_opts *opts, char *path);
-int criu_local_add_cg_props(criu_opts *opts, char *stream);
-int criu_local_add_cg_props_file(criu_opts *opts, char *path);
-int criu_local_add_cg_dump_controller(criu_opts *opts, char *name);
-int criu_local_add_inherit_fd(criu_opts *opts, int fd, char *key);
-int criu_local_add_external(criu_opts *opts, char *key);
+int criu_local_add_irmap_path(criu_opts *opts, const char *path);
+int criu_local_add_cg_props(criu_opts *opts, const char *stream);
+int criu_local_add_cg_props_file(criu_opts *opts, const char *path);
+int criu_local_add_cg_dump_controller(criu_opts *opts, const char *name);
+int criu_local_add_cg_yard(criu_opts *opts, const char *path);
+int criu_local_add_inherit_fd(criu_opts *opts, int fd, const char *key);
+int criu_local_add_external(criu_opts *opts, const char *key);
+int criu_local_set_page_server_address_port(criu_opts *opts, const char *address, int port);
+int criu_local_set_pre_dump_mode(criu_opts *opts, enum criu_pre_dump_mode mode);
 
 void criu_local_set_notify_cb(criu_opts *opts, int (*cb)(char *action, criu_notify_arg_t na));
 

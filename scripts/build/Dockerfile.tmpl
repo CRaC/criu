@@ -2,23 +2,27 @@ ARG CC=gcc
 ARG ENV1=FOOBAR
 
 RUN apt-get update && apt-get install -y \
-                build-essential \
-                protobuf-c-compiler \
-                libprotobuf-c0-dev \
-                libprotobuf-dev \
-                bsdmainutils \
-                protobuf-compiler \
-                python-minimal \
-                libaio-dev \
-                libcap-dev \
-                iptables \
-                libnl-3-dev \
-                libselinux-dev \
-                pkg-config \
-                git-core \
-		libnet-dev \
-		ccache \
-                $CC
+	ccache \
+	libnet-dev \
+	libnl-route-3-dev \
+	$CC \
+	bsdmainutils \
+	build-essential \
+	git-core \
+	iptables \
+	libaio-dev \
+	libcap-dev \
+	libgnutls28-dev \
+	libgnutls30 \
+	libnl-3-dev \
+	libprotobuf-c-dev \
+	libprotobuf-dev \
+	libselinux-dev \
+	pkg-config \
+	protobuf-c-compiler \
+	protobuf-compiler \
+	python-minimal \
+	python-future
 
 COPY . /criu
 WORKDIR /criu

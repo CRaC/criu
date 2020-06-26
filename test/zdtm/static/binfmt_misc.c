@@ -20,7 +20,7 @@ const char *test_author	= "Kirill Tkhai <ktkhai@odin.com";
 char *dirname = "binfmt_misc.dir";
 TEST_OPTION(dirname, string, "binfmt_misc mount directory name", 1);
 char *filename;
-TEST_OPTION(filename, string, "file name prefix (prefix_magic, prefix, extention)", 1);
+TEST_OPTION(filename, string, "file name prefix (prefix_magic, prefix, extension)", 1);
 
 char NAME[2][PATH_MAX];
 
@@ -98,14 +98,14 @@ int dump_content(const char *path, char **dump)
 int main(int argc, char **argv)
 {
 	char buf[MAX_REG_STR + 1];
-	char path[PATH_MAX];
+	char path[PATH_MAX*2 + 1];
 	char *dump[2];
 	int i, fd, len;
 
 	test_init(argc, argv);
 
 	snprintf(NAME[0], PATH_MAX, "%s_magic", filename);
-	snprintf(NAME[1], PATH_MAX, "%s_extention", filename);
+	snprintf(NAME[1], PATH_MAX, "%s_extension", filename);
 
 	if (mkdir(dirname, 0777)) {
 		fail("mkdir");
@@ -143,7 +143,7 @@ int main(int argc, char **argv)
 	close(fd);
 
 	/* Disable one of the entries */
-	sprintf(path, "%s/%s", dirname, NAME[0]);
+	ssprintf(path, "%s/%s", dirname, NAME[0]);
 	fd = open(path, O_WRONLY);
 	if (fd < 0 || write(fd, "0", 1) != 1) {
 		fail("Can't disable %s\n", path);

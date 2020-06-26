@@ -1,5 +1,5 @@
 CFLAGS		:= $(filter-out -pg $(CFLAGS-GCOV) $(CFLAGS-ASAN),$(CFLAGS))
-CFLAGS		+= -DCR_NOGLIBC -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+CFLAGS		+= -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
 CFLAGS		+= -Wp,-U_FORTIFY_SOURCE -Wp,-D_FORTIFY_SOURCE=0
 
 PLUGIN_ARCH_DIR		:= compel/arch/$(ARCH)/plugins
@@ -7,7 +7,9 @@ PLUGIN_ARCH_DIR		:= compel/arch/$(ARCH)/plugins
 #
 # CFLAGS, ASFLAGS, LDFLAGS
 
-#
+# Required for pie code
+ccflags-y		+= $(CFLAGS_PIE)
+
 # UAPI inclusion, referred as <compel/...>
 ccflags-y		+= -I compel/include/uapi
 asflags-y		+= -I compel/include/uapi
@@ -27,7 +29,7 @@ asflags-y		+= -iquote $(PLUGIN_ARCH_DIR)
 
 # General flags for assembly
 asflags-y		+= -fpie -Wstrict-prototypes
-asflags-y		+= -D__ASSEMBLY__ -nostdlib -fomit-frame-pointer
+asflags-y		+= -nostdlib -fomit-frame-pointer
 asflags-y		+= -fno-stack-protector
 ldflags-y		+= -z noexecstack
 
@@ -51,11 +53,11 @@ std-lib-y		+= ./$(PLUGIN_ARCH_DIR)/std/parasite-head.o
 target			+= fds
 fds-lib-y		+= fds/fds.o
 
-ifeq ($(SRCARCH),x86)
+ifeq ($(ARCH),x86)
 	std-lib-y	+= ./$(PLUGIN_ARCH_DIR)/std/memcpy.o
 endif
 
-ifeq ($(SRCARCH),ppc64)
+ifeq ($(ARCH),ppc64)
 	std-lib-y	+= ./$(PLUGIN_ARCH_DIR)/std/memcpy.o
 	std-lib-y	+= ./$(PLUGIN_ARCH_DIR)/std/memcmp.o
 endif
@@ -85,8 +87,10 @@ install: compel/plugins/std.lib.a compel/plugins/fds.lib.a
 	$(Q) mkdir -p $(DESTDIR)$(LIBEXECDIR)/compel/scripts
 	$(Q) install -m 0644 compel/arch/$(ARCH)/scripts/compel-pack.lds.S $(DESTDIR)$(LIBEXECDIR)/compel/scripts
 	$(E) "  INSTALL " compel plugins uapi
-	$(Q) mkdir -p $(DESTDIR)$(INCLUDEDIR)/compel/plugins
-	$(Q) cp -frL compel/plugins/include/uapi/* $(DESTDIR)$(INCLUDEDIR)/compel/plugins/
+	$(Q) mkdir -p $(DESTDIR)$(INCLUDEDIR)/compel/plugins/std/asm
+	$(Q) cp -fL compel/plugins/include/uapi/*.h $(DESTDIR)$(INCLUDEDIR)/compel/plugins/
+	$(Q) cp -fL compel/plugins/include/uapi/std/*.h $(DESTDIR)$(INCLUDEDIR)/compel/plugins/std/
+	$(Q) cp -fL compel/plugins/include/uapi/std/asm/*.h $(DESTDIR)$(INCLUDEDIR)/compel/plugins/std/asm/
 .PHONY: install
 
 uninstall:

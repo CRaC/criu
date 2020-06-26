@@ -2,12 +2,17 @@ __nmk_dir ?= ../scripts/nmk/scripts/
 include $(__nmk_dir)include.mk
 include $(__nmk_dir)macro.mk
 
+ifneq ($(USE_ASCIIDOCTOR),)
+ASCIIDOC	:= asciidoctor
+XMLTO		:=
+else
 ASCIIDOC	:= asciidoc
-A2X		:= a2x
 XMLTO		:= xmlto
+endif
 
 FOOTER		:= footer.txt
 SRC1		+= crit.txt
+SRC1		+= compel.txt
 SRC8		+= criu.txt
 SRC		:= $(SRC1) $(SRC8)
 XMLS		:= $(patsubst %.txt,%.xml,$(SRC))
@@ -29,7 +34,7 @@ pdf: $(PDFS)
 .PHONY: all ps pdf check
 
 check:
-	$(Q) for B in $(ASCIIDOC) $(A2X) $(XMLTO); do	\
+	$(Q) for B in $(ASCIIDOC) $(XMLTO); do	\
 		$$B --version > /dev/null || exit 1;	\
 	done
 
@@ -45,13 +50,21 @@ $(FOOTER): ../Makefile.versions
 
 %.1: %.txt $(FOOTER) custom.xsl
 	$(call msg-gen, $@)
+ifneq ($(USE_ASCIIDOCTOR),)
+	$(Q) $(ASCIIDOC) -b manpage -d manpage -o $@ $<
+else
 	$(Q) $(ASCIIDOC) -b docbook -d manpage -o $(patsubst %.1,%.xml,$@) $<
-	$(Q) $(XMLTO) man -m custom.xsl $(patsubst %.1,%.xml,$@) 2>/dev/null
+	$(Q) $(XMLTO) man -m custom.xsl $(patsubst %.1,%.xml,$@)
+endif
 
 %.8: %.txt $(FOOTER) custom.xsl
 	$(call msg-gen, $@)
+ifneq ($(USE_ASCIIDOCTOR),)
+	$(Q) $(ASCIIDOC) -b manpage -d manpage -o $@ $<
+else
 	$(Q) $(ASCIIDOC) -b docbook -d manpage -o $(patsubst %.8,%.xml,$@) $<
-	$(Q) $(XMLTO) man -m custom.xsl $(patsubst %.8,%.xml,$@) 2>/dev/null
+	$(Q) $(XMLTO) man -m custom.xsl $(patsubst %.8,%.xml,$@)
+endif
 
 %.ps: %.1
 	$(call msg-gen, $@)
@@ -69,7 +82,7 @@ clean:
 	$(call msg-clean, "Documentation")
 	$(Q) rm -f $(XMLS) $(MANS) $(PSS) $(PDFS) $(FOOTER)
 
-install: $(MANS)
+install: check $(MANS)
 	$(E) "  INSTALL " $(MAN8S)
 	$(Q) mkdir -p $(DESTDIR)$(MAN8DIR)
 	$(Q) install -m 644 $(MAN8S) $(DESTDIR)$(MAN8DIR)

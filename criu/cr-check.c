@@ -9,7 +9,6 @@
 #include <sys/signalfd.h>
 #include <sys/ptrace.h>
 #include <sys/wait.h>
-#include <sys/socket.h>
 #include <fcntl.h>
 #include <signal.h>
 #include <linux/if.h>
@@ -21,8 +20,8 @@
 #include <netinet/in.h>
 #include <sys/prctl.h>
 #include <sched.h>
-#include <linux/aio_abi.h>
 #include <sys/mount.h>
+#include <linux/aio_abi.h>
 
 #include "../soccr/soccr.h"
 
@@ -50,8 +49,9 @@
 #include "libnetlink.h"
 #include "net.h"
 #include "restorer.h"
+#include "uffd.h"
 
-static char *feature_name(int (*func)());
+static char *feature_name(int (*func)(void));
 
 static int check_tty(void)
 {
@@ -62,7 +62,7 @@ static int check_tty(void)
 	int ret = -1;
 
 	if (ARRAY_SIZE(t.c_cc) < TERMIOS_NCC) {
-		pr_msg("struct termios has %d @c_cc while "
+		pr_err("struct termios has %d @c_cc while "
 			"at least %d expected.\n",
 			(int)ARRAY_SIZE(t.c_cc),
 			TERMIOS_NCC);
@@ -249,7 +249,7 @@ static int check_fcntl(void)
 		return -1;
 
 	if (fcntl(fd, F_GETOWNER_UIDS, (long)v)) {
-		pr_perror("Can'r fetch file owner UIDs");
+		pr_perror("Can't fetch file owner UIDs");
 		close(fd);
 		return -1;
 	}
@@ -272,16 +272,11 @@ static int check_proc_stat(void)
 	return 0;
 }
 
-static int check_one_fdinfo(union fdinfo_entries *e, void *arg)
-{
-	*(int *)arg = (int)e->efd.counter;
-	return 0;
-}
-
 static int check_fdinfo_eventfd(void)
 {
 	int fd, ret;
-	int cnt = 13, proc_cnt = 0;
+	int cnt = 13;
+	EventfdFileEntry fe = EVENTFD_FILE_ENTRY__INIT;
 
 	fd = eventfd(cnt, 0);
 	if (fd < 0) {
@@ -289,7 +284,7 @@ static int check_fdinfo_eventfd(void)
 		return -1;
 	}
 
-	ret = parse_fdinfo(fd, FD_TYPES__EVENTFD, check_one_fdinfo, &proc_cnt);
+	ret = parse_fdinfo(fd, FD_TYPES__EVENTFD, &fe);
 	close(fd);
 
 	if (ret) {
@@ -297,18 +292,13 @@ static int check_fdinfo_eventfd(void)
 		return -1;
 	}
 
-	if (proc_cnt != cnt) {
+	if (fe.counter != cnt) {
 		pr_err("Counter mismatch (or not met) %d want %d\n",
-				proc_cnt, cnt);
+				(int)fe.counter, cnt);
 		return -1;
 	}
 
-	pr_info("Eventfd fdinfo works OK (%d vs %d)\n", cnt, proc_cnt);
-	return 0;
-}
-
-static int check_one_sfd(union fdinfo_entries *e, void *arg)
-{
+	pr_info("Eventfd fdinfo works OK (%d vs %d)\n", cnt, (int)fe.counter);
 	return 0;
 }
 
@@ -317,7 +307,7 @@ int check_mnt_id(void)
 	struct fdinfo_common fdinfo = { .mnt_id = -1 };
 	int ret;
 
-	ret = parse_fdinfo(get_service_fd(LOG_FD_OFF), FD_TYPES__UND, NULL, &fdinfo);
+	ret = parse_fdinfo(get_service_fd(LOG_FD_OFF), FD_TYPES__UND, &fdinfo);
 	if (ret < 0)
 		return -1;
 
@@ -333,6 +323,7 @@ static int check_fdinfo_signalfd(void)
 {
 	int fd, ret;
 	sigset_t mask;
+	SignalfdEntry sfd = SIGNALFD_ENTRY__INIT;
 
 	sigemptyset(&mask);
 	sigaddset(&mask, SIGUSR1);
@@ -342,7 +333,7 @@ static int check_fdinfo_signalfd(void)
 		return -1;
 	}
 
-	ret = parse_fdinfo(fd, FD_TYPES__SIGNALFD, check_one_sfd, NULL);
+	ret = parse_fdinfo(fd, FD_TYPES__SIGNALFD, &sfd);
 	close(fd);
 
 	if (ret) {
@@ -353,17 +344,11 @@ static int check_fdinfo_signalfd(void)
 	return 0;
 }
 
-static int check_one_epoll(union fdinfo_entries *e, void *arg)
-{
-	*(int *)arg = e->epl.e.tfd;
-	free_event_poll_entry(e);
-	return 0;
-}
-
 static int check_fdinfo_eventpoll(void)
 {
-	int efd, pfd[2], proc_fd = 0, ret = -1;
+	int efd, pfd[2], ret = -1;
 	struct epoll_event ev;
+	EventpollFileEntry efe = EVENTPOLL_FILE_ENTRY__INIT;
 
 	if (pipe(pfd)) {
 		pr_perror("Can't make pipe to watch");
@@ -384,20 +369,19 @@ static int check_fdinfo_eventpoll(void)
 		goto epoll_err;
 	}
 
-	ret = parse_fdinfo(efd, FD_TYPES__EVENTPOLL, check_one_epoll, &proc_fd);
+	ret = parse_fdinfo(efd, FD_TYPES__EVENTPOLL, &efe);
 	if (ret) {
 		pr_err("Error parsing proc fdinfo\n");
 		goto epoll_err;
 	}
 
-	if (pfd[0] != proc_fd) {
-		pr_err("TFD mismatch (or not met) %d want %d\n",
-				proc_fd, pfd[0]);
+	if (efe.n_tfd != 1 || efe.tfd[0]->tfd != pfd[0]) {
+		pr_err("TFD mismatch (or not met)\n");
 		ret = -1;
 		goto epoll_err;
 	}
 
-	pr_info("Epoll fdinfo works OK (%d vs %d)\n", pfd[0], proc_fd);
+	pr_info("Epoll fdinfo works OK\n");
 
 epoll_err:
 	close(efd);
@@ -408,16 +392,10 @@ pipe_err:
 	return ret;
 }
 
-static int check_one_inotify(union fdinfo_entries *e, void *arg)
-{
-	*(int *)arg = e->ify.e.wd;
-	free_inotify_wd_entry(e);
-	return 0;
-}
-
 static int check_fdinfo_inotify(void)
 {
-	int ifd, wd, proc_wd = -1, ret;
+	int ifd, wd, ret;
+	InotifyFileEntry ify = INOTIFY_FILE_ENTRY__INIT;
 
 	ifd = inotify_init1(0);
 	if (ifd < 0) {
@@ -432,7 +410,7 @@ static int check_fdinfo_inotify(void)
 		return -1;
 	}
 
-	ret = parse_fdinfo(ifd, FD_TYPES__INOTIFY, check_one_inotify, &proc_wd);
+	ret = parse_fdinfo(ifd, FD_TYPES__INOTIFY, &ify);
 	close(ifd);
 
 	if (ret < 0) {
@@ -440,12 +418,12 @@ static int check_fdinfo_inotify(void)
 		return -1;
 	}
 
-	if (wd != proc_wd) {
-		pr_err("WD mismatch (or not met) %d want %d\n", proc_wd, wd);
+	if (ify.n_wd != 1 || ify.wd[0]->wd != wd) {
+		pr_err("WD mismatch (or not met)\n");
 		return -1;
 	}
 
-	pr_info("Inotify fdinfo works OK (%d vs %d)\n", wd, proc_wd);
+	pr_info("Inotify fdinfo works OK\n");
 	return 0;
 }
 
@@ -490,7 +468,7 @@ err:
 }
 
 #ifndef SO_GET_FILTER
-#define SO_GET_FILTER           SO_ATTACH_FILTER
+#define SO_GET_FILTER		SO_ATTACH_FILTER
 #endif
 
 static int check_so_gets(void)
@@ -535,7 +513,7 @@ static int check_ipc(void)
 	return -1;
 }
 
-static int check_sigqueuinfo()
+static int check_sigqueuinfo(void)
 {
 	siginfo_t info = { .si_code = 1 };
 
@@ -604,7 +582,7 @@ static pid_t fork_and_ptrace_attach(int (*child_setup)(void))
 	return pid;
 }
 
-static int check_ptrace_peeksiginfo()
+static int check_ptrace_peeksiginfo(void)
 {
 	struct ptrace_peeksiginfo_args arg;
 	siginfo_t siginfo;
@@ -631,6 +609,177 @@ static int check_ptrace_peeksiginfo()
 
 	kill(pid, SIGKILL);
 	return ret;
+}
+
+struct special_mapping {
+	const char	*name;
+	void		*addr;
+	size_t		size;
+};
+
+static int parse_special_maps(struct special_mapping *vmas, size_t nr)
+{
+	FILE *maps;
+	char buf[256];
+	int ret = 0;
+
+	maps = fopen_proc(PROC_SELF, "maps");
+	if (!maps)
+		return -1;
+
+	while (fgets(buf, sizeof(buf), maps)) {
+		unsigned long start, end;
+		int r, tail;
+		size_t i;
+
+		r = sscanf(buf, "%lx-%lx %*s %*s %*s %*s %n\n",
+				&start, &end, &tail);
+		if (r != 2) {
+			fclose(maps);
+			pr_err("Bad maps format %d.%d (%s)\n", r, tail, buf + tail);
+			return -1;
+		}
+
+		for (i = 0; i < nr; i++) {
+			if (strcmp(buf + tail, vmas[i].name) != 0)
+				continue;
+			if (vmas[i].addr != MAP_FAILED) {
+				pr_err("Special mapping meet twice: %s\n", vmas[i].name);
+				ret = -1;
+				goto out;
+			}
+			vmas[i].addr = (void *)start;
+			vmas[i].size = end - start;
+		}
+	}
+
+out:
+	fclose(maps);
+	return ret;
+}
+
+static void dummy_sighandler(int sig)
+{
+}
+
+/*
+ * The idea of test is checking if the kernel correctly tracks positions
+ * of special_mappings: vdso/vvar/sigpage/...
+ * Per-architecture commits added handling for mremap() somewhere between
+ * v4.8...v4.14. If the kernel doesn't have one of those patches,
+ * a process will crash after receiving a signal (we use SIGUSR1 for
+ * the test here). That's because after processing a signal the kernel
+ * needs a "landing" to return to userspace, which is based on vdso/sigpage.
+ * If the kernel doesn't track the position of mapping - we land in the void.
+ * And we definitely mremap() support by the fact that those special_mappings
+ * are subjects for ASLR. (See #288 as a reference)
+ */
+static void check_special_mapping_mremap_child(struct special_mapping *vmas,
+					       size_t nr)
+{
+	size_t i, parking_size = 0;
+	void *parking_lot;
+	pid_t self = getpid();
+
+	for (i = 0; i < nr; i++) {
+		if (vmas[i].addr != MAP_FAILED)
+			parking_size += vmas[i].size;
+	}
+
+	if (signal(SIGUSR1, dummy_sighandler) == SIG_ERR) {
+		pr_perror("signal() failed");
+		exit(1);
+	}
+
+	parking_lot = mmap(NULL, parking_size, PROT_NONE,
+			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (parking_lot == MAP_FAILED) {
+		pr_perror("mmap(%zu) failed", parking_size);
+		exit(1);
+	}
+
+	for (i = 0; i < nr; i++) {
+		unsigned long ret;
+
+		if (vmas[i].addr == MAP_FAILED)
+			continue;
+
+		ret = syscall(__NR_mremap, (unsigned long)vmas[i].addr,
+			      vmas[i].size, vmas[i].size,
+			      MREMAP_FIXED | MREMAP_MAYMOVE,
+			      (unsigned long)parking_lot);
+		if (ret != (unsigned long)parking_lot)
+			syscall(__NR_exit, 1);
+		parking_lot += vmas[i].size;
+	}
+
+	syscall(__NR_kill, self, SIGUSR1);
+	syscall(__NR_exit, 0);
+}
+
+static int check_special_mapping_mremap(void)
+{
+	struct special_mapping special_vmas[] = {
+		{
+			.name = "[vvar]\n",
+			.addr = MAP_FAILED,
+		},
+		{
+			.name = "[vdso]\n",
+			.addr = MAP_FAILED,
+		},
+		{
+			.name = "[sigpage]\n",
+			.addr = MAP_FAILED,
+		},
+		/* XXX: { .name = "[uprobes]\n" }, */
+		/*
+		 * Not subjects for ASLR, skipping:
+		 * { .name = "[vectors]\n", },
+		 * { .name = "[vsyscall]\n" },
+		 */
+	};
+	size_t vmas_nr = ARRAY_SIZE(special_vmas);
+	pid_t child;
+	int stat;
+
+	if (parse_special_maps(special_vmas, vmas_nr))
+		return -1;
+
+	child = fork();
+	if (child < 0) {
+		pr_perror("%s(): failed to fork()", __func__);
+		return -1;
+	}
+
+	if (child == 0)
+		check_special_mapping_mremap_child(special_vmas, vmas_nr);
+
+	if (waitpid(child, &stat, 0) != child) {
+		if (errno == ECHILD) {
+			pr_err("BUG: Someone waited for the child already\n");
+			return -1;
+		}
+		/* Probably, we're interrupted with a signal - cleanup */
+		pr_err("Failed to wait for a child %d\n", errno);
+		kill(child, SIGKILL);
+		return -1;
+	}
+
+	if (WIFSIGNALED(stat)) {
+		pr_err("Child killed by signal %d\n", WTERMSIG(stat));
+		pr_err("Your kernel probably lacks the support for mremapping special mappings\n");
+		return -1;
+	} else if (WIFEXITED(stat)) {
+		if (WEXITSTATUS(stat) == 0)
+			return 0;
+		pr_err("Child exited with %d\n", WEXITSTATUS(stat));
+		return -1;
+	}
+
+	pr_err("BUG: waitpid() returned stat=%d\n", stat);
+	/* We're not killing the child here - it's predestined to die anyway. */
+	return -1;
 }
 
 static int check_ptrace_suspend_seccomp(void)
@@ -697,9 +846,6 @@ static int check_ptrace_dump_seccomp_filters(void)
 
 static int check_mem_dirty_track(void)
 {
-	if (kerndat_get_dirty_track() < 0)
-		return -1;
-
 	if (!kdat.has_dirty_track) {
 		pr_warn("Dirty tracking is OFF. Memory snapshot will not work.\n");
 		return -1;
@@ -770,7 +916,7 @@ static int check_aio_remap(void)
 	if (!len)
 		return -1;
 
-	naddr = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, 0, 0);
+	naddr = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, 0, 0);
 	if (naddr == MAP_FAILED) {
 		pr_perror("Can't find place for new AIO ring");
 		return -1;
@@ -793,9 +939,6 @@ static int check_aio_remap(void)
 
 static int check_fdinfo_lock(void)
 {
-	if (kerndat_fdinfo_has_lock())
-		return -1;
-
 	if (!kdat.has_fdinfo_lock) {
 		pr_err("fdinfo doesn't contain the lock field\n");
 		return -1;
@@ -817,7 +960,7 @@ static int clone_cb(void *_arg) {
 	exit(0);
 }
 
-static int check_clone_parent_vs_pid()
+static int check_clone_parent_vs_pid(void)
 {
 	struct clone_arg ca;
 	pid_t pid;
@@ -952,12 +1095,6 @@ out:
 
 static int check_tcp_halt_closed(void)
 {
-	int ret;
-
-	ret = kerndat_tcp_repair();
-	if (ret < 0)
-		return -1;
-
 	if (!kdat.has_tcp_half_closed) {
 		pr_err("TCP_REPAIR can't be enabled for half-closed sockets\n");
 		return -1;
@@ -1044,10 +1181,7 @@ static int check_userns(void)
 
 static int check_loginuid(void)
 {
-	if (kerndat_loginuid(false) < 0)
-		return -1;
-
-	if (!kdat.has_loginuid) {
+	if (kdat.luid != LUID_FULL) {
 		pr_warn("Loginuid restore is OFF.\n");
 		return -1;
 	}
@@ -1057,10 +1191,96 @@ static int check_loginuid(void)
 
 static int check_compat_cr(void)
 {
-	if (kdat_compat_sigreturn_test())
+#ifdef CONFIG_COMPAT
+	if (kdat_compatible_cr())
 		return 0;
-	pr_warn("compat_cr is not supported. Requires kernel >= v4.9\n");
+	pr_warn("compat_cr is not supported. Requires kernel >= v4.12\n");
+#else
+	pr_warn("CRIU built without CONFIG_COMPAT - can't C/R compatible tasks\n");
+#endif
 	return -1;
+}
+
+static int check_uffd(void)
+{
+	if (!kdat.has_uffd) {
+		pr_err("UFFD is not supported\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int check_uffd_noncoop(void)
+{
+	if (check_uffd())
+		return -1;
+
+	if (!uffd_noncooperative()) {
+		pr_err("Non-cooperative UFFD is not supported\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int check_clone3_set_tid(void)
+{
+	if (!kdat.has_clone3_set_tid) {
+		pr_warn("clone3() with set_tid not supported\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int check_can_map_vdso(void)
+{
+	if (kdat_can_map_vdso() == 1)
+		return 0;
+	pr_warn("Do not have API to map vDSO - will use mremap() to restore vDSO\n");
+	return -1;
+}
+
+static int check_sk_netns(void)
+{
+	if (!kdat.sk_ns)
+		return -1;
+
+	return 0;
+}
+
+static int check_sk_unix_file(void)
+{
+	if (!kdat.sk_unix_file)
+		return -1;
+
+	return 0;
+}
+
+static int check_kcmp_epoll(void)
+{
+	if (!kdat.has_kcmp_epoll_tfd)
+		return -1;
+
+	return 0;
+}
+
+static int check_time_namespace(void)
+{
+	if (!kdat.has_timens) {
+		pr_err("Time namespaces are not supported\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int check_net_diag_raw(void)
+{
+	check_sock_diag();
+	return (socket_test_collect_bit(AF_INET, IPPROTO_RAW) &&
+		socket_test_collect_bit(AF_INET6, IPPROTO_RAW)) ? 0 : -1;
 }
 
 static int (*chk_feature)(void);
@@ -1143,6 +1363,7 @@ int cr_check(void)
 	CHECK_CAT1(check_ipc());
 	CHECK_CAT1(check_sigqueuinfo());
 	CHECK_CAT1(check_ptrace_peeksiginfo());
+	CHECK_CAT1(check_special_mapping_mremap());
 
 	/*
 	 * Category 2 - required for specific cases.
@@ -1166,6 +1387,14 @@ int cr_check(void)
 		ret |= check_tcp_halt_closed();
 		ret |= check_userns();
 		ret |= check_loginuid();
+		ret |= check_can_map_vdso();
+		ret |= check_uffd();
+		ret |= check_uffd_noncoop();
+		ret |= check_sk_netns();
+		ret |= check_kcmp_epoll();
+		ret |= check_net_diag_raw();
+		ret |= check_clone3_set_tid();
+		ret |= check_time_namespace();
 	}
 
 	/*
@@ -1195,9 +1424,52 @@ static int check_tun(void)
 	return check_tun_cr(-1);
 }
 
+static int check_tun_netns(void)
+{
+	bool has = false;
+	check_tun_netns_cr(&has);
+	return has ? 0 : -1;
+}
+
+static int check_nsid(void)
+{
+	if (!kdat.has_nsid) {
+		pr_warn("NSID isn't supported\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int check_link_nsid(void)
+{
+	if (!kdat.has_link_nsid) {
+		pr_warn("NSID isn't supported\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int check_external_net_ns(void)
+{
+	/*
+	 * This is obviously not a real check. This only exists, so that
+	 * CRIU clients/users can check if this CRIU version supports the
+	 * external network namespace feature. Theoretically the CRIU client
+	 * or user could also parse the version, but especially for CLI users
+	 * version comparison in the shell is not easy.
+	 * This feature check does not exist for RPC as RPC has a special
+	 * version call which does not require string parsing and the external
+	 * network namespace feature is available for all CRIU versions newer
+	 * than 3.9.
+	 */
+	return 0;
+}
+
 struct feature_list {
 	char *name;
-	int (*func)();
+	int (*func)(void);
 };
 
 static struct feature_list feature_list[] = {
@@ -1206,6 +1478,7 @@ static struct feature_list feature_list[] = {
 	{ "aio_remap", check_aio_remap },
 	{ "timerfd", check_timerfd },
 	{ "tun", check_tun },
+	{ "tun_ns", check_tun_netns },
 	{ "userns", check_userns },
 	{ "fdinfo_lock", check_fdinfo_lock },
 	{ "seccomp_suspend", check_ptrace_suspend_seccomp },
@@ -1215,6 +1488,18 @@ static struct feature_list feature_list[] = {
 	{ "autofs", check_autofs },
 	{ "tcp_half_closed", check_tcp_halt_closed },
 	{ "compat_cr", check_compat_cr },
+	{ "uffd", check_uffd },
+	{ "uffd-noncoop", check_uffd_noncoop },
+	{ "can_map_vdso", check_can_map_vdso},
+	{ "sk_ns", check_sk_netns },
+	{ "sk_unix_file", check_sk_unix_file },
+	{ "net_diag_raw", check_net_diag_raw },
+	{ "nsid", check_nsid },
+	{ "link_nsid", check_link_nsid},
+	{ "kcmp_epoll", check_kcmp_epoll},
+	{ "timens", check_time_namespace},
+	{ "external_net_ns", check_external_net_ns},
+	{ "clone3_set_tid", check_clone3_set_tid},
 	{ NULL, NULL },
 };
 
@@ -1256,7 +1541,7 @@ int check_add_feature(char *feat)
 	return -1;
 }
 
-static char *feature_name(int (*func)())
+static char *feature_name(int (*func)(void))
 {
 	struct feature_list *fl;
 

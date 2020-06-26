@@ -4,24 +4,26 @@
 #include <fcntl.h>
 #include <stdbool.h>
 
+#include "common/config.h"
 #include "common/list.h"
 #include "pid.h"
 #include "shmem.h"
 #include "image.h"
 #include "cr_options.h"
 #include "kerndat.h"
+#include "stats.h"
 #include "page-pipe.h"
 #include "page-xfer.h"
 #include "rst-malloc.h"
 #include "vma.h"
 #include "mem.h"
-#include "config.h"
 #include <compel/plugins/std/syscall-codes.h>
 #include "bitops.h"
 #include "log.h"
 #include "types.h"
 #include "page.h"
 #include "util.h"
+#include "memfd.h"
 #include "protobuf.h"
 #include "images/pagemap.pb-c.h"
 
@@ -31,7 +33,7 @@
 #endif
 
 /*
- * Hash table and routines for keeping shmid -> shmem_xinfo mappings 
+ * Hash table and routines for keeping shmid -> shmem_xinfo mappings
  */
 
 /*
@@ -42,8 +44,8 @@
 #define SHMEM_HASH_SIZE	32
 static struct hlist_head shmems_hash[SHMEM_HASH_SIZE];
 
-#define for_each_shmem(_i, _si)				\
-	for (i = 0; i < SHMEM_HASH_SIZE; i++)			\
+#define for_each_shmem(_i, _si)					\
+	for (_i = 0; _i < SHMEM_HASH_SIZE; _i++)		\
 		hlist_for_each_entry(_si, &shmems_hash[_i], h)
 
 struct shmem_info {
@@ -66,7 +68,7 @@ struct shmem_info {
 			int		fd;
 
 			/*
-			 * 0. lock is initilized to zero
+			 * 0. lock is initialized to zero
 			 * 1. the master opens a descriptor and set lock to 1
 			 * 2. slaves open their descriptors and increment lock
 			 * 3. the master waits all slaves on lock. After that
@@ -178,11 +180,12 @@ static void set_pstate(unsigned long *pstate_map, unsigned long pfn,
 
 static int expand_shmem(struct shmem_info *si, unsigned long new_size)
 {
-	unsigned long nr_pages, nr_map_items, map_size,
-				nr_new_map_items, new_map_size, old_size;
+	unsigned long nr_pages, nr_map_items, map_size;
+	unsigned long nr_new_map_items, new_map_size, old_size;
 
 	old_size = si->size;
 	si->size = new_size;
+
 	if (!is_shmem_tracking_en())
 		return 0;
 
@@ -196,8 +199,7 @@ static int expand_shmem(struct shmem_info *si, unsigned long new_size)
 
 	BUG_ON(new_map_size < map_size);
 
-	si->pstate_map = xrealloc(si->pstate_map, new_map_size);
-	if (!si->pstate_map)
+	if (xrealloc_safe(&si->pstate_map, new_map_size))
 		return -1;
 	memzero(si->pstate_map + nr_map_items, new_map_size - map_size);
 	return 0;
@@ -218,6 +220,8 @@ static void update_shmem_pmaps(struct shmem_info *si, u64 *map, VmaEntry *vma)
 		shmem_pfn = vma_pfn + DIV_ROUND_UP(vma->pgoff, PAGE_SIZE);
 		if (map[vma_pfn] & PME_SOFT_DIRTY)
 			set_pstate(si->pstate_map, shmem_pfn, PST_DIRTY);
+		else if (page_is_zero(map[vma_pfn]))
+			set_pstate(si->pstate_map, shmem_pfn, PST_ZERO);
 		else
 			set_pstate(si->pstate_map, shmem_pfn, PST_DUMP);
 	}
@@ -231,7 +235,7 @@ int collect_sysv_shmem(unsigned long shmid, unsigned long size)
 	 * Tasks will not modify this object, so don't
 	 * shmalloc() as we do it for anon shared mem
 	 */
-	si = malloc(sizeof(*si));
+	si = xmalloc(sizeof(*si));
 	if (!si)
 		return -1;
 
@@ -270,7 +274,7 @@ int fixup_sysv_shmems(void)
 			}
 
 			/*
-			 * See comment in open_shmem_sysv() about this PROT_EXEC 
+			 * See comment in open_shmem_sysv() about this PROT_EXEC
 			 */
 			if (si->want_write)
 				att->first->prot |= PROT_EXEC;
@@ -322,7 +326,7 @@ static int open_shmem_sysv(int pid, struct vma_area *vma)
 	 * whether to create the segment rw or ro, but the
 	 * first vma can have different protection. So the
 	 * segment ro-ness is marked with PROT_EXEC bit in
-	 * the first vma. Unfortunatelly, we only know this
+	 * the first vma. Unfortunately, we only know this
 	 * after we scan all the vmas, so this bit is set
 	 * at the end in fixup_sysv_shmems().
 	 */
@@ -436,7 +440,7 @@ int collect_shmem(int pid, struct vma_area *vma)
 	return 0;
 }
 
-static int shmem_wait_and_open(int pid, struct shmem_info *si, VmaEntry *vi)
+static int shmem_wait_and_open(struct shmem_info *si, VmaEntry *vi)
 {
 	char path[128];
 	int ret;
@@ -487,7 +491,7 @@ static int do_restore_shmem_content(void *addr, unsigned long size, unsigned lon
 	return ret;
 }
 
-static int restore_shmem_content(void *addr, struct shmem_info *si)
+int restore_shmem_content(void *addr, struct shmem_info *si)
 {
 	return do_restore_shmem_content(addr, si->size, si->shmid);
 }
@@ -495,6 +499,41 @@ static int restore_shmem_content(void *addr, struct shmem_info *si)
 int restore_sysv_shmem_content(void *addr, unsigned long size, unsigned long shmid)
 {
 	return do_restore_shmem_content(addr, round_up(size, PAGE_SIZE), shmid);
+}
+
+int restore_memfd_shmem_content(int fd, unsigned long shmid, unsigned long size)
+{
+	void *addr = NULL;
+	int ret = 1;
+
+	if (size == 0)
+		return 0;
+
+	if (ftruncate(fd, size) < 0) {
+		pr_perror("Can't resize shmem 0x%lx size=%ld", shmid, size);
+		goto out;
+	}
+
+	addr = mmap(NULL, size, PROT_WRITE | PROT_READ, MAP_SHARED, fd, 0);
+	if (addr == MAP_FAILED) {
+		pr_perror("Can't mmap shmem 0x%lx size=%ld", shmid, size);
+		goto out;
+	}
+
+	/*
+	 * do_restore_shmem_content needs size to be page aligned.
+	 */
+	if (do_restore_shmem_content(addr, round_up(size, PAGE_SIZE), shmid) < 0) {
+		pr_err("Can't restore shmem content\n");
+		goto out;
+	}
+
+	ret = 0;
+
+out:
+	if (addr)
+		munmap(addr, size);
+	return ret;
 }
 
 static int open_shmem(int pid, struct vma_area *vma)
@@ -515,7 +554,7 @@ static int open_shmem(int pid, struct vma_area *vma)
 	BUG_ON(si->pid == SYSVIPC_SHMEM_PID);
 
 	if (si->pid != pid)
-		return shmem_wait_and_open(pid, si, vi);
+		return shmem_wait_and_open(si, vi);
 
 	if (si->fd != -1) {
 		f = dup(si->fd);
@@ -529,7 +568,7 @@ static int open_shmem(int pid, struct vma_area *vma)
 
 	flags = MAP_SHARED;
 	if (kdat.has_memfd) {
-		f = syscall(SYS_memfd_create, "", 0);
+		f = memfd_create("", 0);
 		if (f < 0) {
 			pr_perror("Unable to create memfd");
 			goto err;
@@ -626,7 +665,7 @@ int add_shmem_area(pid_t pid, VmaEntry *vma, u64 *map)
 	return 0;
 }
 
-static int dump_pages(struct page_pipe *pp, struct page_xfer *xfer, void *addr)
+static int dump_pages(struct page_pipe *pp, struct page_xfer *xfer)
 {
 	struct page_pipe_buf *ppb;
 
@@ -638,7 +677,7 @@ static int dump_pages(struct page_pipe *pp, struct page_xfer *xfer, void *addr)
 			return -1;
 		}
 
-	return page_xfer_dump_pages(xfer, pp, (unsigned long)addr);
+	return page_xfer_dump_pages(xfer, pp);
 }
 
 static int next_data_segment(int fd, unsigned long pfn,
@@ -674,6 +713,7 @@ static int do_dump_one_shmem(int fd, void *addr, struct shmem_info *si)
 	struct page_xfer xfer;
 	int err, ret = -1;
 	unsigned long pfn, nrpages, next_data_pnf = 0, next_hole_pfn = 0;
+	unsigned long pages[2] = {};
 
 	nrpages = (si->size + PAGE_SIZE - 1) / PAGE_SIZE;
 
@@ -685,10 +725,13 @@ static int do_dump_one_shmem(int fd, void *addr, struct shmem_info *si)
 	if (err)
 		goto err_pp;
 
+	xfer.offset = (unsigned long)addr;
+
 	for (pfn = 0; pfn < nrpages; pfn++) {
 		unsigned int pgstate = PST_DIRTY;
 		bool use_mc = true;
 		unsigned long pgaddr;
+		int st = -1;
 
 		if (pfn >= next_hole_pfn &&
 		    next_data_segment(fd, pfn, &next_data_pnf, &next_hole_pfn))
@@ -710,22 +753,32 @@ static int do_dump_one_shmem(int fd, void *addr, struct shmem_info *si)
 again:
 		if (pgstate == PST_ZERO)
 			ret = 0;
-		else if (xfer.parent && page_in_parent(pgstate == PST_DIRTY))
-			ret = page_pipe_add_hole(pp, pgaddr);
-		else
-			ret = page_pipe_add_page(pp, pgaddr);
+		else if (xfer.parent && page_in_parent(pgstate == PST_DIRTY)) {
+			ret = page_pipe_add_hole(pp, pgaddr, PP_HOLE_PARENT);
+			st = 0;
+		} else {
+			ret = page_pipe_add_page(pp, pgaddr, 0);
+			st = 1;
+		}
 
 		if (ret == -EAGAIN) {
-			ret = dump_pages(pp, &xfer, addr);
+			ret = dump_pages(pp, &xfer);
 			if (ret)
 				goto err_xfer;
 			page_pipe_reinit(pp);
 			goto again;
 		} else if (ret)
 			goto err_xfer;
+
+		if (st >= 0)
+			pages[st]++;
 	}
 
-	ret = dump_pages(pp, &xfer, addr);
+	cnt_add(CNT_SHPAGES_SCANNED, nrpages);
+	cnt_add(CNT_SHPAGES_SKIPPED_PARENT, pages[0]);
+	cnt_add(CNT_SHPAGES_WRITTEN, pages[1]);
+
+	ret = dump_pages(pp, &xfer);
 
 err_xfer:
 	xfer.close(&xfer);
@@ -758,6 +811,32 @@ static int dump_one_shmem(struct shmem_info *si)
 	munmap(addr, si->size);
 errc:
 	close(fd);
+err:
+	return ret;
+}
+
+int dump_one_memfd_shmem(int fd, unsigned long shmid, unsigned long size)
+{
+	int ret = -1;
+	void *addr;
+	struct shmem_info si;
+
+	if (size == 0)
+		return 0;
+
+	memset(&si, 0, sizeof(si));
+	si.shmid = shmid;
+	si.size = size;
+
+	addr = mmap(NULL, size, PROT_READ, MAP_PRIVATE, fd, 0);
+	if (addr == MAP_FAILED) {
+		pr_perror("Can't mmap shmem 0x%lx", shmid);
+		goto err;
+	}
+
+	ret = do_dump_one_shmem(fd, addr, &si);
+
+	munmap(addr, size);
 err:
 	return ret;
 }

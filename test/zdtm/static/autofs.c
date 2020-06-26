@@ -6,8 +6,6 @@
 #include <string.h>
 #include <signal.h>
 
-#include <bits/signum.h>
-
 #include <sys/wait.h>
 #include <sys/vfs.h>
 #include <sys/mount.h>
@@ -51,6 +49,7 @@ static char *xvstrcat(char *str, const char *fmt, va_list args)
 		if (new) {
 			va_copy(tmp, args);
 			ret = vsnprintf(new + offset, delta, fmt, tmp);
+			va_end(tmp);
 			if (ret >= delta) {
 				/* NOTE: vsnprintf returns the amount of bytes
 				 *                                  * to allocate. */
@@ -313,7 +312,7 @@ static int autofs_open_mount(int devid, const char *mountpoint)
 {
 	struct autofs_dev_ioctl *param;
 	size_t size;
-	int fd;
+	int ret;
 
 	size = sizeof(struct autofs_dev_ioctl) + strlen(mountpoint) + 1;
 	param = malloc(size);
@@ -326,13 +325,14 @@ static int autofs_open_mount(int devid, const char *mountpoint)
 
 	if (ioctl(autofs_dev, AUTOFS_DEV_IOCTL_OPENMOUNT, param) < 0) {
 		pr_perror("failed to open autofs mount %s", mountpoint);
-		return -errno;
+		ret = -errno;
+		goto out;
 	}
 
-	fd = param->ioctlfd;
+	ret = param->ioctlfd;
+out:
 	free(param);
-
-	return fd;
+	return ret;
 }
 
 static int autofs_report_result(int token, int devid, const char *mountpoint,
@@ -460,7 +460,7 @@ static int automountd_loop(int pipe, const char *mountpoint, struct autofs_param
 {
 	union autofs_v5_packet_union *packet;
 	ssize_t bytes;
-	size_t psize = sizeof(*packet) + 1;
+	size_t psize = sizeof(*packet);
 	int err = 0;
 
 	packet = malloc(psize);
@@ -473,7 +473,7 @@ static int automountd_loop(int pipe, const char *mountpoint, struct autofs_param
 	siginterrupt(SIGUSR2, 1);
 
 	while (!stop && !err) {
-		memset(packet, 0, sizeof(*packet));
+		memset(packet, 0, psize);
 
 		bytes = read(pipe, packet, psize);
 		if (bytes < 0) {
@@ -483,12 +483,9 @@ static int automountd_loop(int pipe, const char *mountpoint, struct autofs_param
 			}
 			continue;
 		}
-		if (bytes == psize) {
-			pr_err("read more that expected\n");
-			return -EINVAL;
-		}
-		if (bytes != sizeof(*packet)) {
-			pr_err("read less than expected: %zd\n", bytes);
+		if (bytes != psize) {
+			pr_err("read less than expected: %zd < %zd\n",
+					bytes, psize);
 			return -EINVAL;
 		}
 		err = automountd_serve(mountpoint, param, packet);

@@ -22,7 +22,7 @@ char file1[PATH_MAX];
 static int lock_reg(int fd, int cmd, int type, int whence,
 		off_t offset, off_t len)
 {
-	struct flock64 lock;
+	struct flock lock;
 
 	lock.l_type   = type;     /* F_RDLCK, F_WRLCK, F_UNLCK */
 	lock.l_whence = whence;   /* SEEK_SET, SEEK_CUR, SEEK_END */
@@ -34,13 +34,13 @@ static int lock_reg(int fd, int cmd, int type, int whence,
 }
 
 #define set_read_lock(fd, whence, offset, len) \
-	lock_reg(fd, F_SETLK64, F_RDLCK, whence, offset, len)
+	lock_reg(fd, F_SETLK, F_RDLCK, whence, offset, len)
 #define set_write_lock(fd, whence, offset, len) \
-	lock_reg(fd, F_SETLK64, F_WRLCK, whence, offset, len)
+	lock_reg(fd, F_SETLK, F_WRLCK, whence, offset, len)
 
 static int check_read_lock(int fd, int whence, off_t offset, off_t len)
 {
-	struct flock64 lock;
+	struct flock lock;
 	int ret;
 
 	lock.l_type   = F_RDLCK;  /* F_RDLCK, F_WRLCK, F_UNLCK */
@@ -50,7 +50,7 @@ static int check_read_lock(int fd, int whence, off_t offset, off_t len)
 	lock.l_pid    = -1;
 
 	errno = 0;
-	ret = fcntl(fd, F_GETLK64, &lock);
+	ret = fcntl(fd, F_GETLK, &lock);
 	if (ret == -1) {
 		pr_perror("F_GETLK failed.");
 		return -1;
@@ -67,7 +67,7 @@ static int check_read_lock(int fd, int whence, off_t offset, off_t len)
 
 static int check_write_lock(int fd, int whence, off_t offset, off_t len)
 {
-	struct flock64 lock;
+	struct flock lock;
 
 	int ret;
 	pid_t ppid = getppid();
@@ -79,7 +79,7 @@ static int check_write_lock(int fd, int whence, off_t offset, off_t len)
 	lock.l_pid    = -1;
 
 	errno = 0;
-	ret = fcntl(fd, F_GETLK64, &lock);
+	ret = fcntl(fd, F_GETLK, &lock);
 	if (ret == -1) {
 		pr_perror("F_GETLK failed.");
 		return -1;
@@ -101,7 +101,7 @@ static int check_write_lock(int fd, int whence, off_t offset, off_t len)
 	return -1;
 }
 
-static int check_file_locks()
+static int check_file_locks(void)
 {
 	int fd_0, fd_1;
 	int ret0, ret1;

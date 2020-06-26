@@ -47,6 +47,11 @@ enum criu_cg_mode {
 	DEFAULT = 6;
 };
 
+enum criu_pre_dump_mode {
+	SPLICE = 	1;
+	VM_READ =	2;
+};
+
 message criu_opts {
 	required int32			images_dir_fd	= 1;
 	optional int32			pid		= 2; /* if not set on dump, will dump requesting process */
@@ -108,8 +113,21 @@ message criu_opts {
 	optional uint32			timeout			= 45;
 	optional bool			tcp_skip_in_flight	= 46;
 	optional bool			weak_sysctls		= 47;
+	optional bool			lazy_pages		= 48;
 	optional int32			status_fd		= 49;
 	optional bool			orphan_pts_master	= 50;
+	optional string			config_file		= 51;
+	optional bool			tcp_close		= 52;
+	optional string			lsm_profile		= 53;
+	optional string			tls_cacert		= 54;
+	optional string			tls_cacrl		= 55;
+	optional string			tls_cert		= 56;
+	optional string			tls_key			= 57;
+	optional bool			tls			= 58;
+	optional bool			tls_no_cn_verify	= 59;
+	optional string			cgroup_yard		= 60;
+	optional criu_pre_dump_mode	pre_dump_mode		= 61 [default = SPLICE];
+/*	optional bool			check_mounts		= 128;	*/
 }
 
 message criu_dump_resp {
@@ -141,6 +159,9 @@ enum criu_req_type {
 	FEATURE_CHECK	= 9;
 
 	VERSION		= 10;
+
+	WAIT_PID	= 11;
+	PAGE_SERVER_CHLD = 12;
 }
 
 /*
@@ -149,6 +170,7 @@ enum criu_req_type {
  */
 message criu_features {
 	optional bool			mem_track	= 1;
+	optional bool			lazy_pages	= 2;
 }
 
 /*
@@ -174,6 +196,9 @@ message criu_req {
 	 * via RPC.
 	 */
 	optional criu_features		features	= 5;
+
+	/* 'pid' is used for WAIT_PID */
+	optional uint32			pid		= 6;
 }
 
 /*
@@ -194,12 +219,14 @@ message criu_resp {
 	optional criu_features		features	= 8;
 	optional string			cr_errmsg	= 9;
 	optional criu_version		version		= 10;
+
+	optional int32			status		= 11;
 }
 
 /* Answer for criu_req_type.VERSION requests */
 message criu_version {
-	required int32			major		= 1;
-	required int32			minor		= 2;
+	required int32			major_number	= 1;
+	required int32			minor_number	= 2;
 	optional string			gitid		= 3;
 	optional int32			sublevel	= 4;
 	optional int32			extra		= 5;

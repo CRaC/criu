@@ -6,11 +6,17 @@
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <sys/vfs.h>
 #include <sys/prctl.h>
 #include <ctype.h>
+#include <sys/sendfile.h>
 #include <sched.h>
 #include <sys/capability.h>
+#include <sys/mount.h>
+
+#ifndef SEEK_DATA
+#define SEEK_DATA	3
+#define SEEK_HOLE	4
+#endif
 
 /* Stolen from kernel/fs/nfs/unlink.c */
 #define SILLYNAME_PREF ".nfs"
@@ -27,8 +33,10 @@
 #include "namespaces.h"
 #include "proc_parse.h"
 #include "pstree.h"
+#include "string.h"
 #include "fault-injection.h"
 #include "external.h"
+#include "memfd.h"
 
 #include "protobuf.h"
 #include "util.h"
@@ -59,7 +67,23 @@ struct ghost_file {
 static u32 ghost_file_ids = 1;
 static LIST_HEAD(ghost_files);
 
-static mutex_t *ghost_file_mutex;
+/*
+ * When opening remaps we first create a link on the remap
+ * target, then open one, then unlink. In case the remap
+ * source has more than one instance, these tree steps
+ * should be serialized with each other.
+ */
+static mutex_t *remap_open_lock;
+
+static inline int init_remap_lock(void)
+{
+	remap_open_lock = shmalloc(sizeof(*remap_open_lock));
+	if (!remap_open_lock)
+		return -1;
+
+	mutex_init(remap_open_lock);
+	return 0;
+}
 
 static LIST_HEAD(remaps);
 
@@ -126,15 +150,131 @@ static int trim_last_parent(char *path)
 	return 0;
 }
 
-static int mkreg_ghost(char *path, u32 mode, struct ghost_file *gf, struct cr_img *img)
+#define BUFSIZE	(4096)
+
+static int copy_chunk_from_file(int fd, int img, off_t off, size_t len)
+{
+	char *buf = NULL;
+	int ret;
+
+	while (len > 0) {
+		ret = sendfile(img, fd, &off, len);
+		if (ret <= 0) {
+			pr_perror("Can't send ghost to image");
+			return -1;
+		}
+
+		len -= ret;
+	}
+
+	xfree(buf);
+	return 0;
+}
+
+static int copy_file_to_chunks(int fd, struct cr_img *img, size_t file_size)
+{
+	GhostChunkEntry ce = GHOST_CHUNK_ENTRY__INIT;
+	off_t data, hole = 0;
+
+	while (hole < file_size) {
+		data = lseek(fd, hole, SEEK_DATA);
+		if (data < 0) {
+			if (errno == ENXIO)
+				/* No data */
+				break;
+			else if (hole == 0) {
+				/* No SEEK_HOLE/DATA by FS */
+				data = 0;
+				hole = file_size;
+			} else {
+				pr_perror("Can't seek file data");
+				return -1;
+			}
+		} else {
+			hole = lseek(fd, data, SEEK_HOLE);
+			if (hole < 0) {
+				pr_perror("Can't seek file hole");
+				return -1;
+			}
+		}
+
+		ce.len = hole - data;
+		ce.off = data;
+
+		if (pb_write_one(img, &ce, PB_GHOST_CHUNK))
+			return -1;
+
+		if (copy_chunk_from_file(fd, img_raw_fd(img), ce.off, ce.len))
+			return -1;
+	}
+
+	return 0;
+}
+
+static int copy_chunk_to_file(int img, int fd, off_t off, size_t len)
+{
+	char *buf = NULL;
+	int ret;
+
+	while (len > 0) {
+		if (lseek(fd, off, SEEK_SET) < 0) {
+			pr_perror("Can't seek file");
+			return -1;
+		}
+		ret = sendfile(fd, img, NULL, len);
+		if (ret < 0) {
+			pr_perror("Can't send data");
+			return -1;
+		}
+
+		off += ret;
+		len -= ret;
+	}
+
+	xfree(buf);
+	return 0;
+}
+
+static int copy_file_from_chunks(struct cr_img *img, int fd, size_t file_size)
+{
+	if (ftruncate(fd, file_size) < 0) {
+		pr_perror("Can't make file size");
+		return -1;
+	}
+
+	while (1) {
+		int ret;
+		GhostChunkEntry *ce;
+
+		ret = pb_read_one_eof(img, &ce, PB_GHOST_CHUNK);
+		if (ret <= 0)
+			return ret;
+
+		if (copy_chunk_to_file(img_raw_fd(img), fd, ce->off, ce->len))
+			return -1;
+
+		ghost_chunk_entry__free_unpacked(ce, NULL);
+	}
+}
+
+static int mkreg_ghost(char *path, GhostFileEntry *gfe, struct cr_img *img)
 {
 	int gfd, ret;
 
-	gfd = open(path, O_WRONLY | O_CREAT | O_EXCL, mode);
+	gfd = open(path, O_WRONLY | O_CREAT | O_EXCL, gfe->mode);
 	if (gfd < 0)
 		return -1;
 
-	ret = copy_file(img_raw_fd(img), gfd, 0);
+	if (gfe->chunks) {
+		if (!gfe->has_size) {
+			pr_err("Corrupted ghost image -> no size\n");
+			close(gfd);
+			return -1;
+		}
+
+		ret = copy_file_from_chunks(img, gfd, gfe->size);
+	} else
+		ret = copy_file(img_raw_fd(img), gfd, 0);
 	if (ret < 0)
 		unlink(path);
 	close(gfd);
@@ -142,19 +282,53 @@ static int mkreg_ghost(char *path, u32 mode, struct ghost_file *gf, struct cr_im
 	return ret;
 }
 
+static int mklnk_ghost(char *path, GhostFileEntry *gfe)
+{
+	if (!gfe->symlnk_target) {
+		pr_err("Ghost symlink target is NULL for %s. Image from old CRIU?\n", path);
+		return -1;
+	}
+
+	if (symlink(gfe->symlnk_target, path) < 0) {
+		/*
+		 * ENOENT case is OK
+		 * Take a look closer on create_ghost() function
+		 */
+		if (errno != ENOENT)
+			pr_perror("symlink(%s, %s) failed", gfe->symlnk_target, path);
+		return -1;
+	}
+
+	return 0;
+}
+
 static int ghost_apply_metadata(const char *path, GhostFileEntry *gfe)
 {
 	struct timeval tv[2];
 	int ret = -1;
 
-	if (chown(path, gfe->uid, gfe->gid) < 0) {
-		pr_perror("Can't reset user/group on ghost %s", path);
-		goto err;
-	}
+	if (S_ISLNK(gfe->mode)) {
+		if (lchown(path, gfe->uid, gfe->gid) < 0) {
+			pr_perror("Can't reset user/group on ghost %s", path);
+			goto err;
+		}
 
-	if (chmod(path, gfe->mode)) {
-		pr_perror("Can't set perms %o on ghost %s", gfe->mode, path);
-		goto err;
+		/*
+		 * We have no lchmod() function, and fchmod() will fail on
+		 * O_PATH | O_NOFOLLOW fd. Yes, we have fchmodat()
+		 * function and flag AT_SYMLINK_NOFOLLOW described in
+		 * man 2 fchmodat, but it is not currently implemented. %)
+		 */
+	} else {
+		if (chown(path, gfe->uid, gfe->gid) < 0) {
+			pr_perror("Can't reset user/group on ghost %s", path);
+			goto err;
+		}
+
+		if (chmod(path, gfe->mode)) {
+			pr_perror("Can't set perms %o on ghost %s", gfe->mode, path);
+			goto err;
+		}
 	}
 
 	if (gfe->atim) {
@@ -163,7 +337,7 @@ static int ghost_apply_metadata(const char *path, GhostFileEntry *gfe)
 		tv[1].tv_sec = gfe->mtim->tv_sec;
 		tv[1].tv_usec = gfe->mtim->tv_usec;
 		if (lutimes(path, tv)) {
-			pr_perror("Can't set access and modufication times on ghost %s", path);
+			pr_perror("Can't set access and modification times on ghost %s", path);
 			goto err;
 		}
 	}
@@ -175,6 +349,7 @@ err:
 
 static int create_ghost(struct ghost_file *gf, GhostFileEntry *gfe, struct cr_img *img)
 {
+	struct mount_info *mi;
 	char path[PATH_MAX];
 	int ret, root_len;
 	char *msg;
@@ -185,8 +360,19 @@ static int create_ghost(struct ghost_file *gf, GhostFileEntry *gfe, struct cr_im
 		goto err;
 	}
 
-	snprintf(path + ret, sizeof(path) - ret, "/%s", gf->remap.rpath);
+	/* Add a '/' only if we have no at the end */
+	if (path[root_len-1] != '/') {
+		path[root_len++] = '/';
+		path[root_len] = '\0';
+	}
+
+	snprintf(path + root_len, sizeof(path) - root_len, "%s", gf->remap.rpath);
 	ret = -1;
+
+	mi = lookup_mnt_id(gf->remap.rmnt_id);
+	/* We get here while in service mntns */
+	if (mi && try_remount_writable(mi, false))
+		goto err;
 again:
 	if (S_ISFIFO(gfe->mode)) {
 		if ((ret = mknod(path, gfe->mode, 0)) < 0)
@@ -201,8 +387,11 @@ again:
 	} else if (S_ISDIR(gfe->mode)) {
 		if ((ret = mkdirpat(AT_FDCWD, path, gfe->mode)) < 0)
 			msg = "Can't make ghost dir";
+	} else if (S_ISLNK(gfe->mode)) {
+		if ((ret = mklnk_ghost(path, gfe)) < 0)
+			msg = "Can't create ghost symlink";
 	} else {
-		if ((ret = mkreg_ghost(path, gfe->mode, gf, img)) < 0)
+		if ((ret = mkreg_ghost(path, gfe, img)) < 0)
 			msg = "Can't create ghost regfile";
 	}
 
@@ -220,7 +409,7 @@ again:
 		goto err;
 	}
 
-	strcpy(gf->remap.rpath, path + root_len + 1);
+	strcpy(gf->remap.rpath, path + root_len);
 	pr_debug("Remap rpath is %s\n", gf->remap.rpath);
 
 	ret = -1;
@@ -233,18 +422,18 @@ err:
 }
 
 static inline void ghost_path(char *path, int plen,
-		struct reg_file_info *rfi, RemapFilePathEntry *rfe)
+		struct reg_file_info *rfi, RemapFilePathEntry *rpe)
 {
-	snprintf(path, plen, "%s.cr.%x.ghost", rfi->path, rfe->remap_id);
+	snprintf(path, plen, "%s.cr.%x.ghost", rfi->path, rpe->remap_id);
 }
 
 static int collect_remap_ghost(struct reg_file_info *rfi,
-		RemapFilePathEntry *rfe)
+		RemapFilePathEntry *rpe)
 {
 	struct ghost_file *gf;
 
 	list_for_each_entry(gf, &ghost_files, list)
-		if (gf->id == rfe->remap_id)
+		if (gf->id == rpe->remap_id)
 			goto gf_found;
 
 	/*
@@ -253,17 +442,24 @@ static int collect_remap_ghost(struct reg_file_info *rfi,
 	 * issues with cross-device links.
 	 */
 
-	pr_info("Opening ghost file %#x for %s\n", rfe->remap_id, rfi->path);
+	pr_info("Opening ghost file %#x for %s\n", rpe->remap_id, rfi->path);
 
 	gf = shmalloc(sizeof(*gf));
 	if (!gf)
 		return -1;
 
+	/*
+	 * The rpath is shmalloc-ed because we create the ghost
+	 * file in root task context and generate its path there.
+	 * However the path should be visible by the criu task
+	 * in order to remove the ghost files from root FS (see
+	 * try_clean_remaps()).
+	 */
 	gf->remap.rpath = shmalloc(PATH_MAX);
 	if (!gf->remap.rpath)
 		return -1;
 	gf->remap.rpath[0] = 0;
-	gf->id = rfe->remap_id;
+	gf->id = rpe->remap_id;
 	list_add_tail(&gf->list, &ghost_files);
 
 gf_found:
@@ -273,7 +469,7 @@ gf_found:
 }
 
 static int open_remap_ghost(struct reg_file_info *rfi,
-					RemapFilePathEntry *rfe)
+					RemapFilePathEntry *rpe)
 {
 	struct ghost_file *gf = container_of(rfi->remap, struct ghost_file, remap);
 	GhostFileEntry *gfe = NULL;
@@ -282,7 +478,7 @@ static int open_remap_ghost(struct reg_file_info *rfi,
 	if (rfi->remap->rpath[0])
 		return 0;
 
-	img = open_image(CR_FD_GHOST_FILE, O_RSTR, rfe->remap_id);
+	img = open_image(CR_FD_GHOST_FILE, O_RSTR, rpe->remap_id);
 	if (!img)
 		goto err;
 
@@ -299,9 +495,9 @@ static int open_remap_ghost(struct reg_file_info *rfi,
 	gf->remap.rmnt_id = rfi->rfe->mnt_id;
 
 	if (S_ISDIR(gfe->mode))
-		strncpy(gf->remap.rpath, rfi->path, PATH_MAX);
+		strlcpy(gf->remap.rpath, rfi->path, PATH_MAX);
 	else
-		ghost_path(gf->remap.rpath, PATH_MAX, rfi, rfe);
+		ghost_path(gf->remap.rpath, PATH_MAX, rfi, rpe);
 
 	if (create_ghost(gf, gfe, img))
 		goto close_ifd;
@@ -320,21 +516,19 @@ close_ifd:
 err:
 	if (gfe)
 		ghost_file_entry__free_unpacked(gfe, NULL);
-	xfree(gf->remap.rpath);
-	shfree_last(gf);
 	return -1;
 }
 
 static int collect_remap_linked(struct reg_file_info *rfi,
-		RemapFilePathEntry *rfe)
+		RemapFilePathEntry *rpe)
 {
 	struct file_remap *rm;
 	struct file_desc *rdesc;
 	struct reg_file_info *rrfi;
 
-	rdesc = find_file_desc_raw(FD_TYPES__REG, rfe->remap_id);
+	rdesc = find_file_desc_raw(FD_TYPES__REG, rpe->remap_id);
 	if (!rdesc) {
-		pr_err("Can't find target file %x\n", rfe->remap_id);
+		pr_err("Can't find target file %x\n", rpe->remap_id);
 		return -1;
 	}
 
@@ -354,8 +548,7 @@ static int collect_remap_linked(struct reg_file_info *rfi,
 	return 0;
 }
 
-static int open_remap_linked(struct reg_file_info *rfi,
-		RemapFilePathEntry *rfe)
+static int open_remap_linked(struct reg_file_info *rfi)
 {
 	if (root_ns_mask & CLONE_NEWUSER) {
 		int rfd;
@@ -374,7 +567,7 @@ static int open_remap_linked(struct reg_file_info *rfi,
 	return 0;
 }
 
-static int open_remap_dead_process(struct reg_file_info *rfi,
+static int collect_remap_dead_process(struct reg_file_info *rfi,
 		RemapFilePathEntry *rfe)
 {
 	struct pstree_item *helper;
@@ -388,13 +581,16 @@ static int open_remap_dead_process(struct reg_file_info *rfi,
 		return 0;
 	}
 
-	init_pstree_helper(helper);
 
 	helper->sid = root_item->sid;
 	helper->pgid = root_item->pgid;
 	helper->pid->ns[0].virt = rfe->remap_id;
 	helper->parent = root_item;
 	helper->ids = root_item->ids;
+	if (init_pstree_helper(helper)) {
+		pr_err("Can't init helper\n");
+		return -1;
+	}
 	list_add_tail(&helper->sibling, &root_item->children);
 
 	pr_info("Added a helper for restoring /proc/%d\n", vpid(helper));
@@ -404,42 +600,51 @@ static int open_remap_dead_process(struct reg_file_info *rfi,
 
 struct remap_info {
 	struct list_head list;
-	RemapFilePathEntry *rfe;
+	RemapFilePathEntry *rpe;
 	struct reg_file_info *rfi;
 };
 
 static int collect_one_remap(void *obj, ProtobufCMessage *msg, struct cr_img *i)
 {
 	struct remap_info *ri = obj;
-	RemapFilePathEntry *rfe;
+	RemapFilePathEntry *rpe;
 	struct file_desc *fdesc;
 
-	ri->rfe = rfe = pb_msg(msg, RemapFilePathEntry);
+	ri->rpe = rpe = pb_msg(msg, RemapFilePathEntry);
 
-	if (!rfe->has_remap_type) {
-		rfe->has_remap_type = true;
+	if (!rpe->has_remap_type) {
+		rpe->has_remap_type = true;
 		/* backward compatibility with images */
-		if (rfe->remap_id & REMAP_GHOST) {
-			rfe->remap_id &= ~REMAP_GHOST;
-			rfe->remap_type = REMAP_TYPE__GHOST;
+		if (rpe->remap_id & REMAP_GHOST) {
+			rpe->remap_id &= ~REMAP_GHOST;
+			rpe->remap_type = REMAP_TYPE__GHOST;
 		} else
-			rfe->remap_type = REMAP_TYPE__LINKED;
+			rpe->remap_type = REMAP_TYPE__LINKED;
 	}
 
-	fdesc = find_file_desc_raw(FD_TYPES__REG, rfe->orig_id);
+	fdesc = find_file_desc_raw(FD_TYPES__REG, rpe->orig_id);
 	if (fdesc == NULL) {
-		pr_err("Remap for non existing file %#x\n", rfe->orig_id);
+		pr_err("Remap for non existing file %#x\n", rpe->orig_id);
 		return -1;
 	}
 
 	ri->rfi = container_of(fdesc, struct reg_file_info, d);
 
-	if (rfe->remap_type == REMAP_TYPE__GHOST) {
-		if (collect_remap_ghost(ri->rfi, ri->rfe))
+	switch (rpe->remap_type) {
+	case REMAP_TYPE__GHOST:
+		if (collect_remap_ghost(ri->rfi, ri->rpe))
 			return -1;
-	} else if (rfe->remap_type == REMAP_TYPE__LINKED) {
-		if (collect_remap_linked(ri->rfi, ri->rfe))
+		break;
+	case REMAP_TYPE__LINKED:
+		if (collect_remap_linked(ri->rfi, ri->rpe))
 			return -1;
+		break;
+	case REMAP_TYPE__PROCFS:
+		if (collect_remap_dead_process(ri->rfi, rpe) < 0)
+			return -1;
+		break;
+	default:
+		break;
 	}
 
 	list_add_tail(&ri->list, &remaps);
@@ -450,24 +655,24 @@ static int collect_one_remap(void *obj, ProtobufCMessage *msg, struct cr_img *i)
 static int prepare_one_remap(struct remap_info *ri)
 {
 	int ret = -1;
-	RemapFilePathEntry *rfe = ri->rfe;
+	RemapFilePathEntry *rpe = ri->rpe;
 	struct reg_file_info *rfi = ri->rfi;
 
-	pr_info("Configuring remap %#x -> %#x\n", rfi->rfe->id, rfe->remap_id);
+	pr_info("Configuring remap %#x -> %#x\n", rfi->rfe->id, rpe->remap_id);
 
-	switch (rfe->remap_type) {
+	switch (rpe->remap_type) {
 	case REMAP_TYPE__LINKED:
-		ret = open_remap_linked(rfi, rfe);
+		ret = open_remap_linked(rfi);
 		break;
 	case REMAP_TYPE__GHOST:
-		ret = open_remap_ghost(rfi, rfe);
+		ret = open_remap_ghost(rfi, rpe);
 		break;
 	case REMAP_TYPE__PROCFS:
-		/* handled earlier by prepare_procfs_remaps */
+		/* handled earlier by collect_remap_dead_process */
 		ret = 0;
 		break;
 	default:
-		pr_err("unknown remap type %u\n", rfe->remap_type);
+		pr_err("unknown remap type %u\n", rpe->remap_type);
 		goto out;
 	}
 
@@ -475,35 +680,14 @@ out:
 	return ret;
 }
 
-/* We separate the preparation of PROCFS remaps because they allocate pstree
- * items, which need to be seen by the root task. We can't do all remaps here,
- * because the files haven't been loaded yet.
- */
-int prepare_procfs_remaps(void)
-{
-	struct remap_info *ri;
-
-	list_for_each_entry(ri, &remaps, list) {
-		RemapFilePathEntry *rfe = ri->rfe;
-		struct reg_file_info *rfi = ri->rfi;
-
-		switch (rfe->remap_type) {
-		case REMAP_TYPE__PROCFS:
-			if (open_remap_dead_process(rfi, rfe) < 0)
-				return -1;
-			break;
-		default:
-			continue;
-		}
-	}
-
-	return 0;
-}
-
 int prepare_remaps(void)
 {
 	struct remap_info *ri;
 	int ret = 0;
+
+	ret = init_remap_lock();
+	if (ret)
+		return ret;
 
 	list_for_each_entry(ri, &remaps, list) {
 		ret = prepare_one_remap(ri);
@@ -514,11 +698,12 @@ int prepare_remaps(void)
 	return ret;
 }
 
-static int clean_linked_remap(struct remap_info *ri)
+static int clean_one_remap(struct remap_info *ri)
 {
-	char path[PATH_MAX];
-	int mnt_id, ret, rmntns_root;
 	struct file_remap *remap = ri->rfi->remap;
+	int mnt_id, ret, rmntns_root;
+	struct mount_info *mi;
+	char path[PATH_MAX];
 
 	if (remap->rpath[0] == 0)
 		return 0;
@@ -534,7 +719,14 @@ static int clean_linked_remap(struct remap_info *ri)
 
 	rmntns_root = open(path, O_RDONLY);
 	if (rmntns_root < 0) {
-		pr_perror("Unbale to open %s", path);
+		pr_perror("Unable to open %s", path);
+		return -1;
+	}
+
+	mi = lookup_mnt_id(mnt_id);
+	/* We get here while in service mntns */
+	if (mi && try_remount_writable(mi, false)) {
+		close(rmntns_root);
 		return -1;
 	}
 
@@ -543,7 +735,7 @@ static int clean_linked_remap(struct remap_info *ri)
 	ret = unlinkat(rmntns_root, remap->rpath, remap->is_dir ? AT_REMOVEDIR : 0);
 	if (ret < 0) {
 		close(rmntns_root);
-		pr_perror("Couldn't unlink remap %d %s", rmntns_root, remap->rpath);
+		pr_perror("Couldn't unlink remap %s %s", path, remap->rpath);
 		return -1;
 	}
 	close(rmntns_root);
@@ -558,12 +750,12 @@ int try_clean_remaps(bool only_ghosts)
 	int ret = 0;
 
 	list_for_each_entry(ri, &remaps, list) {
-		if (ri->rfe->remap_type == REMAP_TYPE__GHOST)
-			ret |= clean_linked_remap(ri);
+		if (ri->rpe->remap_type == REMAP_TYPE__GHOST)
+			ret |= clean_one_remap(ri);
 		else if (only_ghosts)
 			continue;
-		else if (ri->rfe->remap_type == REMAP_TYPE__LINKED)
-			ret |= clean_linked_remap(ri);
+		else if (ri->rpe->remap_type == REMAP_TYPE__LINKED)
+			ret |= clean_one_remap(ri);
 	}
 
 	return ret;
@@ -576,11 +768,16 @@ static struct collect_image_info remap_cinfo = {
 	.collect = collect_one_remap,
 };
 
+/* Tiny files don't need to generate chunks in ghost image. */
+#define GHOST_CHUNKS_THRESH	(3 * 4096)
+
 static int dump_ghost_file(int _fd, u32 id, const struct stat *st, dev_t phys_dev)
 {
 	struct cr_img *img;
+	int exit_code = -1;
 	GhostFileEntry gfe = GHOST_FILE_ENTRY__INIT;
 	Timeval atim = TIMEVAL__INIT, mtim = TIMEVAL__INIT;
+	char pathbuf[PATH_MAX];
 
 	pr_info("Dumping ghost file contents (id %#x)\n", id);
 
@@ -608,45 +805,82 @@ static int dump_ghost_file(int _fd, u32 id, const struct stat *st, dev_t phys_de
 		gfe.rdev = st->st_rdev;
 	}
 
+	if (S_ISREG(st->st_mode) && (st->st_size >= GHOST_CHUNKS_THRESH)) {
+		gfe.has_chunks = gfe.chunks = true;
+		gfe.has_size = true;
+		gfe.size = st->st_size;
+	}
+
+	/*
+	 * We set gfe.symlnk_target only if we need to dump
+	 * symlink content, otherwise we leave it NULL.
+	 * It will be taken into account on restore in mklnk_ghost function.
+	 */
+	if (S_ISLNK(st->st_mode)) {
+		ssize_t ret;
+
+		/*
+		 * We assume that _fd opened with O_PATH | O_NOFOLLOW
+		 * flags because S_ISLNK(st->st_mode). With current kernel version,
+		 * it's looks like correct assumption in any case.
+		 */
+		ret = readlinkat(_fd, "", pathbuf, sizeof(pathbuf) - 1);
+		if (ret < 0) {
+			pr_perror("Can't readlinkat");
+			goto err_out;
+		}
+
+		pathbuf[ret] = 0;
+
+		if (ret != st->st_size) {
+			pr_err("Buffer for readlinkat is too small: ret %zd, st_size %"PRId64", buf %u %s\n",
+					ret, st->st_size, PATH_MAX, pathbuf);
+			goto err_out;
+		}
+
+		gfe.symlnk_target = pathbuf;
+	}
+
 	if (pb_write_one(img, &gfe, PB_GHOST_FILE))
-		return -1;
+		goto err_out;
 
 	if (S_ISREG(st->st_mode)) {
 		int fd, ret;
-		char lpath[PSFDS];
 
 		/*
 		 * Reopen file locally since it may have no read
 		 * permissions when drained
 		 */
-		sprintf(lpath, "/proc/self/fd/%d", _fd);
-		fd = open(lpath, O_RDONLY);
+		fd = open_proc(PROC_SELF, "fd/%d", _fd);
 		if (fd < 0) {
 			pr_perror("Can't open ghost original file");
-			return -1;
+			goto err_out;
 		}
-		ret = copy_file(fd, img_raw_fd(img), st->st_size);
+
+		if (gfe.chunks)
+			ret = copy_file_to_chunks(fd, img, st->st_size);
+		else
+			ret = copy_file(fd, img_raw_fd(img), st->st_size);
 		close(fd);
 		if (ret)
-			return -1;
+			goto err_out;
 	}
 
+	exit_code = 0;
+err_out:
 	close_image(img);
-	return 0;
+	return exit_code;
 }
 
 struct file_remap *lookup_ghost_remap(u32 dev, u32 ino)
 {
 	struct ghost_file *gf;
 
-	mutex_lock(ghost_file_mutex);
 	list_for_each_entry(gf, &ghost_files, list) {
 		if (gf->ino == ino && (gf->dev == dev)) {
-			mutex_unlock(ghost_file_mutex);
 			return &gf->remap;
 		}
 	}
-	mutex_unlock(ghost_file_mutex);
 
 	return NULL;
 }
@@ -678,10 +912,13 @@ static int dump_ghost_remap(char *path, const struct stat *st,
 	gf->dev = phys_dev;
 	gf->ino = st->st_ino;
 	gf->id = ghost_file_ids++;
-	list_add_tail(&gf->list, &ghost_files);
 
-	if (dump_ghost_file(lfd, gf->id, st, phys_dev))
+	if (dump_ghost_file(lfd, gf->id, st, phys_dev)) {
+		xfree(gf);
 		return -1;
+	}
+
+	list_add_tail(&gf->list, &ghost_files);
 
 dump_entry:
 	rpe.orig_id = id;
@@ -722,6 +959,7 @@ static int create_link_remap(char *path, int len, int lfd,
 				const struct stat *st)
 {
 	char link_name[PATH_MAX], *tmp;
+	FileEntry fe = FILE_ENTRY__INIT;
 	RegFileEntry rfe = REG_FILE_ENTRY__INIT;
 	FownEntry fwn = FOWN_ENTRY__INIT;
 	int mntns_root;
@@ -780,7 +1018,11 @@ again:
 	if (note_link_remap(link_name, nsid))
 		return -1;
 
-	return pb_write_one(img_from_set(glob_imgset, CR_FD_REG_FILES), &rfe, PB_REG_FILE);
+	fe.type = FD_TYPES__REG;
+	fe.id = rfe.id;
+	fe.reg = &rfe;
+
+	return pb_write_one(img_from_set(glob_imgset, CR_FD_FILES), &fe, PB_FILE);
 }
 
 static int dump_linked_remap(char *path, int len, const struct stat *ost,
@@ -816,18 +1058,9 @@ int dead_pid_conflict(void)
 		if (!node)
 			continue;
 
-		if (node->state != TASK_THREAD) {
-			struct pstree_item *item;
-
-			/*
-			 * If the dead PID was given to a main thread of another
-			 * process, this is handled during restore.
-			 */
-			item = node->item;
-			if (item->pid->real == item->threads[i].real ||
-			    item->threads[i].ns[0].virt != pid)
-				continue;
-		}
+		/* Main thread */
+		if (node->state != TASK_THREAD)
+			continue;
 
 		pr_err("Conflict with a dead task with the same PID as of this thread (virt %d, real %d).\n",
 			node->ns[0].virt, node->real);
@@ -951,6 +1184,7 @@ static int check_path_remap(struct fd_link *link, const struct fd_parms *parms,
 	int ret, mntns_root;
 	struct stat pst;
 	const struct stat *ost = &parms->stat;
+	int flags = 0;
 
 	if (parms->fs_type == PROC_SUPER_MAGIC) {
 		/* The file points to /proc/pid/<foo> where pid is a dead
@@ -978,6 +1212,9 @@ static int check_path_remap(struct fd_link *link, const struct fd_parms *parms,
 		 */
 		if (pid != 0) {
 			bool is_dead = strip_deleted(link);
+			mntns_root = mntns_get_root_fd(nsid);
+			if (mntns_root < 0)
+				return -1;
 
 			/* /proc/<pid> will be "/proc/1 (deleted)" when it is
 			 * dead, but a path like /proc/1/mountinfo won't have
@@ -989,7 +1226,7 @@ static int check_path_remap(struct fd_link *link, const struct fd_parms *parms,
 			 */
 			if (!is_dead) {
 				*end = 0;
-				is_dead = access(rpath, F_OK);
+				is_dead = faccessat(mntns_root, rpath, F_OK, 0);
 				*end = '/';
 			}
 
@@ -1044,12 +1281,15 @@ static int check_path_remap(struct fd_link *link, const struct fd_parms *parms,
 	if (mntns_root < 0)
 		return -1;
 
-	ret = fstatat(mntns_root, rpath, &pst, 0);
+	if (S_ISLNK(parms->stat.st_mode))
+		flags = AT_SYMLINK_NOFOLLOW;
+
+	ret = fstatat(mntns_root, rpath, &pst, flags);
 	if (ret < 0) {
 		/*
 		 * Linked file, but path is not accessible (unless any
 		 * other error occurred). We can create a temporary link to it
-		 * uning linkat with AT_EMPTY_PATH flag and remap it to this
+		 * using linkat with AT_EMPTY_PATH flag and remap it to this
 		 * name.
 		 */
 
@@ -1070,7 +1310,7 @@ static int check_path_remap(struct fd_link *link, const struct fd_parms *parms,
 		 * FIXME linked file, but the name we see it by is reused
 		 * by somebody else. We can dump it with linked remaps, but
 		 * we'll have difficulties on restore -- we will have to
-		 * move the exisint file aside, then restore this one,
+		 * move the existing file aside, then restore this one,
 		 * unlink, then move the original file back. It's fairly
 		 * easy to do, but we don't do it now, since unlinked files
 		 * have the "(deleted)" suffix in proc and name conflict
@@ -1102,10 +1342,10 @@ static bool should_check_size(int flags)
 int dump_one_reg_file(int lfd, u32 id, const struct fd_parms *p)
 {
 	struct fd_link _link, *link;
-	struct ns_id *nsid;
+	struct mount_info *mi;
 	struct cr_img *rimg;
 	char ext_id[64];
-
+	FileEntry fe = FILE_ENTRY__INIT;
 	RegFileEntry rfe = REG_FILE_ENTRY__INIT;
 
 	if (!p->link) {
@@ -1126,10 +1366,15 @@ int dump_one_reg_file(int lfd, u32 id, const struct fd_parms *p)
 		goto ext;
 	}
 
-	nsid = lookup_nsid_by_mnt_id(p->mnt_id);
-	if (nsid == NULL) {
+	mi = lookup_mnt_id(p->mnt_id);
+	if (mi == NULL) {
 		pr_err("Can't lookup mount=%d for fd=%d path=%s\n",
 			p->mnt_id, p->fd, link->name + 1);
+		return -1;
+	}
+
+	if (mnt_is_overmounted(mi)) {
+		pr_err("Open files on overmounted mounts are not supported yet\n");
 		return -1;
 	}
 
@@ -1149,7 +1394,7 @@ int dump_one_reg_file(int lfd, u32 id, const struct fd_parms *p)
 		return -1;
 	}
 
-	if (check_path_remap(link, p, lfd, id, nsid))
+	if (check_path_remap(link, p, lfd, id, mi->nsid))
 		return -1;
 	rfe.name	= &link->name[1];
 ext:
@@ -1165,8 +1410,12 @@ ext:
 		rfe.size = p->stat.st_size;
 	}
 
-	rimg = img_from_set(glob_imgset, CR_FD_REG_FILES);
-	return pb_write_one(rimg, &rfe, PB_REG_FILE);
+	fe.type = FD_TYPES__REG;
+	fe.id = rfe.id;
+	fe.reg = &rfe;
+
+	rimg = img_from_set(glob_imgset, CR_FD_FILES);
+	return pb_write_one(rimg, &fe, PB_FILE);
 }
 
 const struct fdtype_ops regfile_dump_ops = {
@@ -1193,7 +1442,7 @@ static void convert_path_from_another_mp(char *src, char *dst, int dlen,
 	 * Absolute path to the mount point + difference between source
 	 * and destination roots + path relative to the mountpoint.
 	 */
-	snprintf(dst, dlen, "%s/%s/%s",
+	snprintf(dst, dlen, "./%s/%s/%s",
 				dmi->ns_mountpoint + 1,
 				smi->root + strlen(dmi->root),
 				src + off);
@@ -1212,13 +1461,13 @@ static int linkat_hard(int odir, char *opath, int ndir, char *npath, uid_t uid, 
 
 	if (!( (errno == EPERM || errno == EOVERFLOW) && (root_ns_mask & CLONE_NEWUSER) )) {
 		errno_save = errno;
-		pr_perror("Can't link %s -> %s", opath, npath);
+		pr_warn("Can't link %s -> %s\n", opath, npath);
 		errno = errno_save;
 		return ret;
 	}
 
 	/*
-	 * Kernel before 4.3 has strange secutiry restrictions about
+	 * Kernel before 4.3 has strange security restrictions about
 	 * linkat. If the fsuid of the caller doesn't equals
 	 * the uid of the file and the file is not "safe"
 	 * one, then only global CAP_CHOWN will be allowed
@@ -1296,7 +1545,8 @@ static void rm_parent_dirs(int mntns_root, char *path, int count)
 	if (!count)
 		return;
 
-	while (count--) {
+	while (count > 0) {
+		count -= 1;
 		p = strrchr(path, '/');
 		if (p)
 			*p = '\0';
@@ -1322,10 +1572,8 @@ static int make_parent_dirs_if_need(int mntns_root, char *path)
 	struct stat st;
 
 	p = last_delim = strrchr(path, '/');
-	if (!p) {
-		pr_err("Path %s has no parent dir\n", path);
-		return -1;
-	}
+	if (!p)
+		return 0;
 	*p = '\0';
 
 	if (fstatat(mntns_root, path, &st, AT_EMPTY_PATH) == 0)
@@ -1383,6 +1631,9 @@ static int rfi_remap(struct reg_file_info *rfi, int *level)
 	}
 
 	mi = lookup_mnt_id(rfi->rfe->mnt_id);
+	if (mi == NULL)
+		return -1;
+
 	if (rfi->rfe->mnt_id == rfi->remap->rmnt_id) {
 		/* Both links on the same mount point */
 		tmi = mi;
@@ -1392,6 +1643,8 @@ static int rfi_remap(struct reg_file_info *rfi, int *level)
 	}
 
 	rmi = lookup_mnt_id(rfi->remap->rmnt_id);
+	if (rmi == NULL)
+		return -1;
 
 	/*
 	 * Find the common bind-mount. We know that one mount point was
@@ -1409,9 +1662,13 @@ static int rfi_remap(struct reg_file_info *rfi, int *level)
 	convert_path_from_another_mp(rfi->remap->rpath, rpath, sizeof(_rpath), rmi, tmi);
 
 out:
-	pr_debug("%d: Link %s -> %s\n", tmi->mnt_id, rpath, path);
 	mntns_root = mntns_get_root_fd(tmi->nsid);
 
+	/* We get here while in task's mntns */
+	if (try_remount_writable(tmi, true))
+		return -1;
+
+	pr_debug("%d: Link %s -> %s\n", tmi->mnt_id, rpath, path);
 out_root:
 	*level = make_parent_dirs_if_need(mntns_root, path);
 	if (*level < 0)
@@ -1431,10 +1688,11 @@ out_root:
 int open_path(struct file_desc *d,
 		int(*open_cb)(int mntns_root, struct reg_file_info *, void *), void *arg)
 {
-	int tmp, mntns_root, level;
+	int tmp, mntns_root, level = 0;
 	struct reg_file_info *rfi;
 	char *orig_path = NULL;
 	char path[PATH_MAX];
+	int inh_fd = -1;
 
 	if (inherited_fd(d, &tmp))
 		return tmp;
@@ -1444,7 +1702,12 @@ int open_path(struct file_desc *d,
 	if (rfi->rfe->ext) {
 		tmp = inherit_fd_lookup_id(rfi->rfe->name);
 		if (tmp >= 0) {
-			mntns_root = open_pid_proc(PROC_SELF);
+			inh_fd = tmp;
+			/* 
+			 * PROC_SELF isn't used, because only service
+			 * descriptors can be used here.
+			 */
+			mntns_root = open_pid_proc(getpid());
 			snprintf(path, sizeof(path), "fd/%d", tmp);
 			orig_path = rfi->path;
 			rfi->path = path;
@@ -1455,10 +1718,10 @@ int open_path(struct file_desc *d,
 	if (rfi->remap) {
 		if (fault_injected(FI_RESTORE_OPEN_LINK_REMAP)) {
 			pr_info("fault: Open link-remap failure!\n");
-			BUG();
+			kill(getpid(), SIGKILL);
 		}
 
-		mutex_lock(ghost_file_mutex);
+		mutex_lock(remap_open_lock);
 		if (rfi->remap->is_dir) {
 			/*
 			 * FIXME Can't make directory under new name.
@@ -1470,8 +1733,8 @@ int open_path(struct file_desc *d,
 			static char tmp_path[PATH_MAX];
 
 			if (errno != EEXIST) {
-				pr_perror("Can't link %s -> %s", rfi->path,
-						rfi->remap->rpath);
+				pr_perror("Can't link %s -> %s",
+					  rfi->remap->rpath, rfi->path);
 				return -1;
 			}
 
@@ -1502,8 +1765,10 @@ ext:
 	tmp = open_cb(mntns_root, rfi, arg);
 	if (tmp < 0) {
 		pr_perror("Can't open file %s", rfi->path);
+		close_safe(&inh_fd);
 		return -1;
 	}
+	close_safe(&inh_fd);
 
 	if ((rfi->rfe->has_size || rfi->rfe->has_mode) &&
 	    !rfi->size_mode_checked) {
@@ -1522,12 +1787,10 @@ ext:
 		}
 
 		if (rfi->rfe->has_mode && (st.st_mode != rfi->rfe->mode)) {
-			if (st.st_mode != rfi->rfe->mode) {
-				pr_err("File %s has bad mode 0%o (expect 0%o)\n",
-				       rfi->path, (int)st.st_mode,
-				       rfi->rfe->mode);
-				return -1;
-			}
+			pr_err("File %s has bad mode 0%o (expect 0%o)\n",
+			       rfi->path, (int)st.st_mode,
+			       rfi->rfe->mode);
+			return -1;
 		}
 
 		/*
@@ -1544,7 +1807,7 @@ ext:
 			rm_parent_dirs(mntns_root, rfi->path, level);
 		}
 
-		mutex_unlock(ghost_file_mutex);
+		mutex_unlock(remap_open_lock);
 	}
 	if (orig_path)
 		rfi->path = orig_path;
@@ -1559,6 +1822,9 @@ int do_open_reg_noseek_flags(int ns_root_fd, struct reg_file_info *rfi, void *ar
 {
 	u32 flags = *(u32 *)arg;
 	int fd;
+
+	/* unnamed temporary files are restored as ghost files */
+	flags &= ~O_TMPFILE;
 
 	fd = openat(ns_root_fd, rfi->path, flags);
 	if (fd < 0) {
@@ -1582,11 +1848,17 @@ static int do_open_reg(int ns_root_fd, struct reg_file_info *rfi, void *arg)
 	if (fd < 0)
 		return fd;
 
-	if ((rfi->rfe->pos != -1ULL) &&
-			lseek(fd, rfi->rfe->pos, SEEK_SET) < 0) {
-		pr_perror("Can't restore file pos");
-		close(fd);
-		return -1;
+	/*
+	 * O_PATH opened files carry empty fops in kernel,
+	 * just ignore positioning at all.
+	 */
+	if (!(rfi->rfe->flags & O_PATH)) {
+		if (rfi->rfe->pos != -1ULL &&
+		    lseek(fd, rfi->rfe->pos, SEEK_SET) < 0) {
+			pr_perror("Can't restore file pos");
+			close(fd);
+			return -1;
+		}
 	}
 
 	return fd;
@@ -1616,31 +1888,91 @@ int open_reg_by_id(u32 id)
 	return open_reg_fd(fd);
 }
 
+struct filemap_ctx {
+	u32 flags;
+	struct file_desc *desc;
+	int fd;
+	/*
+	 * Whether or not to close the fd when we're about to
+	 * put a new one into ctx.
+	 *
+	 * True is used by premap, so that it just calls vm_open
+	 * in sequence, immediately mmap()s the file, then it
+	 * can be closed.
+	 *
+	 * False is used by open_vmas() which pre-opens the files
+	 * for restorer, and the latter mmap()s them and closes.
+	 *
+	 * ...
+	 */
+	bool close;
+	/* ...
+	 *
+	 * but closing all vmas won't work, as some of them share
+	 * the descriptor, so only the ones that terminate the
+	 * fd-sharing chain are marked with VMA_CLOSE flag, saying
+	 * restorer to close the vma's fd.
+	 *
+	 * Said that, this vma pointer references the previously
+	 * seen vma, so that once fd changes, this one gets the
+	 * closing flag.
+	 */
+	struct vma_area *vma;
+};
+
+static struct filemap_ctx ctx;
+
+void filemap_ctx_init(bool auto_close)
+{
+	ctx.desc = NULL;	/* to fail the first comparison in open_ */
+	ctx.fd = -1;		/* not to close random fd in _fini */
+	ctx.vma = NULL;		/* not to put spurious VMA_CLOSE in _fini */
+				/* flags may remain any */
+	ctx.close = auto_close;
+}
+
+void filemap_ctx_fini(void)
+{
+	if (ctx.close) {
+		if (ctx.fd >= 0)
+			close(ctx.fd);
+	} else {
+		if (ctx.vma)
+			ctx.vma->e->status |= VMA_CLOSE;
+	}
+}
+
 static int open_filemap(int pid, struct vma_area *vma)
 {
 	u32 flags;
 	int ret;
 
 	/*
-	 * Thevma->fd should have been assigned in collect_filemap
+	 * The vma->fd should have been assigned in collect_filemap
 	 *
 	 * We open file w/o lseek, as mappings don't care about it
 	 */
 
-	BUG_ON(vma->vmfd == NULL);
-	if (vma->e->has_fdflags)
-		flags = vma->e->fdflags;
-	else if ((vma->e->prot & PROT_WRITE) &&
-			vma_area_is(vma, VMA_FILE_SHARED))
-		flags = O_RDWR;
-	else
-		flags = O_RDONLY;
+	BUG_ON((vma->vmfd == NULL) || !vma->e->has_fdflags);
+	flags = vma->e->fdflags;
 
-	ret = open_path(vma->vmfd, do_open_reg_noseek_flags, &flags);
-	if (ret < 0)
-		return ret;
+	if (ctx.flags != flags || ctx.desc != vma->vmfd) {
+		if (vma->e->status & VMA_AREA_MEMFD)
+			ret = memfd_open(vma->vmfd, &flags);
+		else
+			ret = open_path(vma->vmfd, do_open_reg_noseek_flags, &flags);
+		if (ret < 0)
+			return ret;
 
-	vma->e->fd = ret;
+		filemap_ctx_fini();
+
+		ctx.flags = flags;
+		ctx.desc = vma->vmfd;
+		ctx.fd = ret;
+	}
+
+	ctx.vma = vma;
+	vma->e->fd = ctx.fd;
 	return 0;
 }
 
@@ -1648,7 +1980,20 @@ int collect_filemap(struct vma_area *vma)
 {
 	struct file_desc *fd;
 
-	fd = collect_special_file(vma->e->shmid);
+	if (!vma->e->has_fdflags) {
+		/* Make a wild guess for the fdflags */
+		vma->e->has_fdflags = true;
+		if ((vma->e->prot & PROT_WRITE) &&
+				vma_area_is(vma, VMA_FILE_SHARED))
+			vma->e->fdflags = O_RDWR;
+		else
+			vma->e->fdflags = O_RDONLY;
+	}
+
+	if (vma->e->status & VMA_AREA_MEMFD)
+		fd = collect_memfd(vma->e->shmid);
+	else
+		fd = collect_special_file(vma->e->shmid);
 	if (!fd)
 		return -1;
 
@@ -1721,7 +2066,7 @@ static int collect_one_regfile(void *o, ProtobufCMessage *base, struct cr_img *i
 	return file_desc_add(&rfi->d, rfi->rfe->id, &reg_desc_ops);
 }
 
-static struct collect_image_info reg_file_cinfo = {
+struct collect_image_info reg_file_cinfo = {
 	.fd_type = CR_FD_REG_FILES,
 	.pb_type = PB_REG_FILE,
 	.priv_size = sizeof(struct reg_file_info),
@@ -1729,19 +2074,9 @@ static struct collect_image_info reg_file_cinfo = {
 	.flags = COLLECT_SHARED,
 };
 
-int prepare_shared_reg_files(void)
-{
-	ghost_file_mutex = shmalloc(sizeof(*ghost_file_mutex));
-	if (!ghost_file_mutex)
-		return -1;
-
-	mutex_init(ghost_file_mutex);
-	return 0;
-}
-
 int collect_remaps_and_regfiles(void)
 {
-	if (collect_image(&reg_file_cinfo))
+	if (!files_collected() && collect_image(&reg_file_cinfo))
 		return -1;
 
 	if (collect_image(&remap_cinfo))

@@ -4,6 +4,7 @@
 #include "common/lock.h"
 #include "common/list.h"
 #include "vma.h"
+#include "kerndat.h"
 
 struct task_entries {
 	int nr_threads, nr_tasks, nr_helpers;
@@ -11,6 +12,7 @@ struct task_entries {
 	futex_t start;
 	atomic_t cr_err;
 	mutex_t userns_sync_lock;
+	mutex_t last_pid_mutex;
 };
 
 struct fdt {
@@ -39,6 +41,8 @@ struct rst_info {
 
 	struct vm_area_list	vmas;
 	struct _MmEntry		*mm;
+	struct list_head	vma_io;
+	unsigned int		pages_img_id;
 
 	u32			cg_set;
 
@@ -58,8 +62,27 @@ struct rst_info {
 	 * restorer blob.
 	 */
 	bool			has_seccomp;
+	/*
+	 * To be compatible with old images where filters
+	 * are bound to group leader and we need to use tsync flag.
+	 */
+	bool			has_old_seccomp_filter;
+
+	bool			has_thp_enabled;
 
 	void			*breakpoint;
 };
+
+extern struct task_entries *task_entries;
+
+static inline void lock_last_pid(void)
+{
+	mutex_lock(&task_entries->last_pid_mutex);
+}
+
+static inline void unlock_last_pid(void)
+{
+	mutex_unlock(&task_entries->last_pid_mutex);
+}
 
 #endif /* __CR_RST_INFO_H__ */

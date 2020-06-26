@@ -1,33 +1,51 @@
-FROM alpine:3.5
+FROM alpine
 ARG CC=gcc
 ARG ENV1=FOOBAR
 
 RUN apk update && apk add \
-                build-base \
-                coreutils \
-                git \
-                protobuf-c-dev \
-                protobuf-dev \
-                python \
-                libaio-dev \
-                libcap-dev \
-                libnl3-dev \
-                pkgconfig \
-                libnet-dev \
-                ccache \
-                $CC
+	$CC \
+	bash \
+	build-base \
+	ccache \
+	coreutils \
+	git \
+	gnutls-dev \
+	libaio-dev \
+	libcap-dev \
+	libnet-dev \
+	libnl3-dev \
+	nftables \
+	pkgconfig \
+	protobuf-c-dev \
+	protobuf-dev \
+	python3 \
+	sudo
 
 COPY . /criu
 WORKDIR /criu
 ENV CC="ccache $CC" CCACHE_DIR=/tmp/.ccache CCACHE_NOCOMPRESS=1 $ENV1=yes
-RUN mv .ccache /tmp && make mrproper && ccache -s && \
-	date && make -j $(nproc) CC="$CC" && date
+RUN mv .ccache /tmp && make mrproper && ccache -sz && \
+	date && make -j $(nproc) CC="$CC" && date && ccache -s
 
-# Run a test
-RUN apk add	py-yaml \
-		py-pip	\
-		ip6tables \
-		iptables \
-		iproute2 \
-	&& pip install protobuf \
-	&& make -C test/zdtm/static env00
+RUN apk add \
+	ip6tables \
+	iptables \
+	nftables \
+	iproute2 \
+	tar \
+	bash \
+	go \
+	e2fsprogs \
+	py-yaml \
+	py3-flake8 \
+	asciidoctor
+
+# The rpc test cases are running as user #1000, let's add the user
+RUN adduser -u 1000 -D test
+
+RUN pip3 install protobuf junit_xml
+
+# For zdtm we need an unversioned python binary
+RUN ln -s /usr/bin/python3 /usr/bin/python
+
+RUN make -C test/zdtm

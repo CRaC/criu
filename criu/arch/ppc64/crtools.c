@@ -17,7 +17,7 @@
 #include "log.h"
 #include "util.h"
 #include "cpu.h"
-#include <compel/compel.h>
+#include "compel/infect.h"
 
 #include "protobuf.h"
 #include "images/core.pb-c.h"
@@ -259,7 +259,7 @@ static int put_tm_regs(struct rt_sigframe *f, UserPpc64TmRegsEntry *tme)
  *   For the case of getting a signal and simply returning from it,
  *   we don't need to re-copy them here.
  */
-	struct ucontext *tm_uc = &f->uc_transact;
+	ucontext_t *tm_uc = &f->uc_transact;
 
 	pr_debug("Restoring TM registers FP:%d VR:%d VSX:%d\n",
 		 !!(tme->fpstate), !!(tme->vrstate), !!(tme->vsxstate));
@@ -374,8 +374,7 @@ static int __copy_task_regs(user_regs_struct_t *regs,
 		fpstate = &(core->ti_ppc64->tmstate->fpstate);
 		vrstate = &(core->ti_ppc64->tmstate->vrstate);
 		vsxstate = &(core->ti_ppc64->tmstate->vsxstate);
-	}
-	else {
+	} else {
 		gpregs = core->ti_ppc64->gpregs;
 		fpstate = &(core->ti_ppc64->fpstate);
 		vrstate = &(core->ti_ppc64->vrstate);

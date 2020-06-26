@@ -16,6 +16,7 @@ struct simple_buf {
 static int logfd = -1;
 static int cur_loglevel = COMPEL_DEFAULT_LOGLEVEL;
 static struct timeval start;
+static gettimeofday_t __std_gettimeofday;
 
 static void sbuf_log_flush(struct simple_buf *b);
 
@@ -54,7 +55,7 @@ static void sbuf_log_init(struct simple_buf *b)
 	if (start.tv_sec != 0) {
 		struct timeval now;
 
-		sys_gettimeofday(&now, NULL);
+		std_gettimeofday(&now, NULL);
 		timediff(&start, &now);
 
 		/* Seconds */
@@ -69,8 +70,9 @@ static void sbuf_log_init(struct simple_buf *b)
 		n = std_vprint_num(pbuf, sizeof(pbuf), (unsigned)now.tv_usec, &s);
 		pad_num(&s, &n, 6);
 		memcpy(b->bp, s, n);
-		b->bp[n] = ')';
-		b->bp += n + 1;
+		b->bp[n++] = ')';
+		b->bp[n++] = ' ';
+		b->bp += n;
 	}
 
 	n = std_vprint_num(pbuf, sizeof(pbuf), sys_gettid(), &s);
@@ -119,7 +121,7 @@ void std_log_set_fd(int fd)
 	logfd = fd;
 }
 
-void std_log_set_loglevel(unsigned int level)
+void std_log_set_loglevel(enum __compel_log_levels level)
 {
 	cur_loglevel = level;
 }
@@ -127,6 +129,19 @@ void std_log_set_loglevel(unsigned int level)
 void std_log_set_start(struct timeval *s)
 {
 	start = *s;
+}
+
+void std_log_set_gettimeofday(gettimeofday_t gtod)
+{
+	__std_gettimeofday = gtod;
+}
+
+int std_gettimeofday(struct timeval *tv, struct timezone *tz)
+{
+	if (__std_gettimeofday != NULL)
+		return __std_gettimeofday(tv, tz);
+
+	return sys_gettimeofday(tv, tz);
 }
 
 static void print_string(const char *msg, struct simple_buf *b)
@@ -143,6 +158,7 @@ int std_vprint_num(char *buf, int blen, int num, char **ps)
 	char *s;
 
 	s = &buf[blen - 1];
+	*s-- = 0; /* make sure the returned string is NULL terminated */
 
 	if (num < 0) {
 		neg = 1;
@@ -166,15 +182,14 @@ int std_vprint_num(char *buf, int blen, int num, char **ps)
 done:
 	s++;
 	*ps = s;
-	return blen - (s - buf);
+	return blen - (s - buf) - 1;
 }
 
 static void print_num(int num, struct simple_buf *b)
 {
 	char buf[12], *s;
 
-	buf[11] = '\0';
-	std_vprint_num(buf, sizeof(buf) - 1, num, &s);
+	std_vprint_num(buf, sizeof(buf), num, &s);
 	print_string(s, b);
 }
 

@@ -3,8 +3,7 @@
 
 #include <sys/types.h>
 
-#include <compel/compel.h>
-#include "images/seccomp.pb-c.h"
+#include "compel/infect.h"
 
 #define PROC_TASK_COMM_LEN	32
 #define PROC_TASK_COMM_LEN_FMT	"(%31s"
@@ -64,12 +63,6 @@ struct proc_pid_stat {
 	int			exit_code;
 };
 
-struct seccomp_info {
-	SeccompFilter filter;
-	int id;
-	struct seccomp_info *prev;
-};
-
 #define PROC_CAP_SIZE	2
 
 struct proc_status_creds {
@@ -96,7 +89,7 @@ extern int parse_pid_stat(pid_t pid, struct proc_pid_stat *s);
 extern unsigned int parse_pid_loginuid(pid_t pid, int *err, bool ignore_noent);
 extern int parse_pid_oom_score_adj(pid_t pid, int *err);
 extern int prepare_loginuid(unsigned int value, unsigned int loglevel);
-extern int parse_pid_status(pid_t pid, struct seize_task_status *);
+extern int parse_pid_status(pid_t pid, struct seize_task_status *, void *data);
 extern int parse_file_locks(void);
 extern int get_fd_mntid(int fd, int *mnt_id);
 
@@ -104,5 +97,11 @@ struct pid;
 extern int parse_threads(int pid, struct pid **_t, int *_n);
 
 int parse_children(pid_t pid, pid_t **_c, int *_n);
+
+extern bool is_vma_range_fmt(char *line);
+extern void parse_vmflags(char *buf, u32 *flags, u64 *madv, int *io_pf);
+extern int parse_uptime(uint64_t *upt);
+
+extern int parse_timens_offsets(struct timespec *boff, struct timespec *moff);
 
 #endif /* __CR_PROC_PARSE_H__ */

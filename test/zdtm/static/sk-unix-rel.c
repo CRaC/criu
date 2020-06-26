@@ -48,8 +48,11 @@ int main(int argc, char *argv[])
 	unlink(path);
 
 	addr.sun_family = AF_UNIX;
-	strncpy(addr.sun_path, filename, sizeof(addr.sun_path));
-	addrlen = sizeof(addr.sun_family) + strlen(filename);
+	addrlen = strlen(filename);
+	if (addrlen > sizeof(addr.sun_path))
+		return 1;
+	memcpy(addr.sun_path, filename, addrlen);
+	addrlen += sizeof(addr.sun_family);
 
 	sock[0] = socket(AF_UNIX, SOCK_STREAM, 0);
 	sock[1] = socket(AF_UNIX, SOCK_STREAM, 0);
@@ -64,7 +67,7 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 
-	ret = bind(sock[0], &addr, addrlen);
+	ret = bind(sock[0], (struct sockaddr *) &addr, addrlen);
 	if (ret) {
 		fail("bind\n");
 		exit(1);
@@ -79,7 +82,7 @@ int main(int argc, char *argv[])
 	test_daemon();
 	test_waitsig();
 
-	if (connect(sock[1], &addr, addrlen)) {
+	if (connect(sock[1], (struct sockaddr *) &addr, addrlen)) {
 		fail("connect\n");
 		exit(1);
 	}

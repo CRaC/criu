@@ -54,12 +54,13 @@ struct user_vfp_exc {
 
 #define REG_RES(regs)		((regs).ARM_r0)
 #define REG_IP(regs)		((regs).ARM_pc)
+#define REG_SP(regs)		((regs).ARM_sp)
 #define REG_SYSCALL_NR(regs)	((regs).ARM_r7)
 
 #define user_regs_native(pregs)			true
 
 #define ARCH_SI_TRAP		TRAP_BRKPT
 
-#define __NR(syscall, compat)	__NR_##syscall
+#define __NR(syscall, compat) ({ (void)compat; __NR_##syscall; })
 
 #endif /* UAPI_COMPEL_ASM_TYPES_H__ */

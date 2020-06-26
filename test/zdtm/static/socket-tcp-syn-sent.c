@@ -1,9 +1,14 @@
 #include "zdtmtst.h"
 
-#ifdef ZDTM_IPV6
+#ifdef ZDTM_IPV4V6
+#define ZDTM_FAMILY AF_INET
+#define ZDTM_SRV_FAMILY AF_INET6
+#elif defined(ZDTM_IPV6)
 #define ZDTM_FAMILY AF_INET6
+#define ZDTM_SRV_FAMILY AF_INET6
 #else
 #define ZDTM_FAMILY AF_INET
+#define ZDTM_SRV_FAMILY AF_INET
 #endif
 
 const char *test_doc = "Check unconnected tcp sockets\n";
@@ -32,7 +37,7 @@ int main(int argc, char **argv)
 {
 	int fd, fd_s, sock, sk;
 	union sockaddr_inet addr;
-	char cmd[4096];
+	char c, cmd[4096];
 
 	test_init(argc, argv);
 
@@ -42,7 +47,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	if ((fd_s = tcp_init_server(ZDTM_FAMILY, &port)) < 0) {
+	if ((fd_s = tcp_init_server(ZDTM_SRV_FAMILY, &port)) < 0) {
 		pr_err("initializing server failed\n");
 		return 1;
 	}
@@ -108,7 +113,7 @@ int main(int argc, char **argv)
 
 	fcntl(sock, F_SETFL, 0);
 
-	char c = 5;
+	c = 5;
 	if (write(sock, &c, 1) != 1) {
 		fail("Unable to send data");
 		return 1;

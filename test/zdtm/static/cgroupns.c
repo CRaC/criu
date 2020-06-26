@@ -34,23 +34,23 @@ int mount_and_add(const char *controller, const char *path)
 		return -1;
 	}
 
-	sprintf(subdir, "%s/%s", dirname, controller);
+	ssprintf(subdir, "%s/%s", dirname, controller);
 	if (mkdir(subdir, 0700) < 0) {
 		pr_perror("Can't make dir");
 		return -1;
 	}
 
-	sprintf(aux, "none,name=%s", controller);
+	ssprintf(aux, "none,name=%s", controller);
 	if (mount("none", subdir, "cgroup", 0, aux)) {
 		pr_perror("Can't mount cgroups");
 		goto err_rd;
 	}
 
-	sprintf(paux, "%s/%s", subdir, path);
+	ssprintf(paux, "%s/%s", subdir, path);
 	mkdir(paux, 0600);
 
-	l = sprintf(aux, "%d", getpid());
-	sprintf(paux, "%s/%s/tasks", subdir, path);
+	l = ssprintf(aux, "%d", getpid());
+	ssprintf(paux, "%s/%s/tasks", subdir, path);
 
 	cgfd = open(paux, O_WRONLY);
 	if (cgfd < 0) {
@@ -92,7 +92,7 @@ static bool pid_in_cgroup(pid_t pid, const char *controller, const char *path) {
 		/* chop off trailing \n */
 		buf[strlen(buf)-1] = '\0';
 
-		/* skip heirarchy no. */
+		/* skip hierarchy no. */
 		pos = strstr(buf, ":");
 		if (!pos) {
 			pr_err("invalid /proc/pid/cgroups file");

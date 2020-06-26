@@ -14,7 +14,7 @@ char *filename;
 TEST_OPTION(filename, string, "file name", 1);
 
 
-int init_file_lock(int *fd, struct flock64 *lck)
+int init_file_lock(int *fd, struct flock *lck)
 {
 	*fd = open(filename, O_RDWR | O_CREAT, 0666);
 	if (*fd < 0) {
@@ -28,7 +28,7 @@ int init_file_lock(int *fd, struct flock64 *lck)
 	lck->l_len = 0; /* lock whole file */
 	lck->l_pid = 0; /* should be 0 for ofd lock */
 
-	if (fcntl(*fd, F_OFD_SETLKW, lck) < 0) {
+	if (zdtm_fcntl(*fd, F_OFD_SETLKW, lck) < 0) {
 		pr_perror("Can't set ofd lock");
 		return -1;
 	}
@@ -51,7 +51,7 @@ int main(int argc, char **argv)
 	int status;
 	int ret = 0;
 	task_waiter_t tw;
-	struct flock64 lck;
+	struct flock lck;
 
 	test_init(argc, argv);
 	if (init_file_lock(&fd, &lck))

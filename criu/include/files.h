@@ -15,6 +15,7 @@
 #include "images/fown.pb-c.h"
 #include "images/vma.pb-c.h"
 
+struct parasite_drain_fd;
 struct pstree_item;
 struct file_desc;
 struct cr_imgset;
@@ -25,7 +26,7 @@ struct fd_link {
 	union {
 		/* Link info for generic file (path) */
 		struct {
-			char	name[PATH_MAX + 1];
+			char	name[PATH_MAX];
 			size_t	len;
 		};
 
@@ -50,6 +51,7 @@ struct fd_parms {
 	int		mnt_id;
 
 	struct parasite_ctl *fd_ctl;
+	struct parasite_drain_fd *dfds;
 };
 
 #define FD_PARMS_INIT			\
@@ -61,12 +63,22 @@ struct fd_parms {
 }
 
 extern int fill_fdlink(int lfd, const struct fd_parms *p, struct fd_link *link);
+extern uint32_t make_gen_id(uint32_t st_dev, uint32_t st_ino, uint64_t pos);
 
 struct file_desc;
 
 enum {
 	FLE_INITIALIZED,
+	/*
+	 * FLE is open (via open() or socket() or etc syscalls), and
+	 * common file setting are set up (type-specific are not yet).
+	 * Most possible, the master was already served out.
+	 */
 	FLE_OPEN,
+	/*
+	 * File-type specific settings and preparations are finished,
+	 * and FLE is completely restored.
+	 */
 	FLE_RESTORED,
 };
 
@@ -74,19 +86,15 @@ struct fdinfo_list_entry {
 	struct list_head	desc_list;	/* To chain on  @fd_info_head */
 	struct file_desc	*desc;		/* Associated file descriptor */
 	struct list_head	ps_list;	/* To chain  per-task files */
-	int			pid;
+	struct pstree_item	*task;
 	FdinfoEntry		*fe;
+	int			pid;
 	u8			received:1;
 	u8			stage:3;
+	u8			fake:1;
 };
 
-static inline void fle_init(struct fdinfo_list_entry *fle, int pid, FdinfoEntry *fe)
-{
-	fle->pid = pid;
-	fle->fe = fe;
-	fle->received = 0;
-	fle->stage = FLE_INITIALIZED;
-}
+extern int inh_fd_max;
 
 /* reports whether fd_a takes prio over fd_b */
 static inline int fdinfo_rst_prio(struct fdinfo_list_entry *fd_a, struct fdinfo_list_entry *fd_b)
@@ -104,18 +112,15 @@ struct file_desc_ops {
 	 * so it shouldn't be saved for any post-actions.
 	 */
 	int			(*open)(struct file_desc *d, int *new_fd);
-	/*
-	 * Called to collect a new fd before adding it on desc. Clients
-	 * may chose to collect it to some specific rst_info list. See
-	 * prepare_fds() for details.
-	 */
-	void			(*collect_fd)(struct file_desc *, struct fdinfo_list_entry *,
-						struct rst_info *);
 	char *			(*name)(struct file_desc *, char *b, size_t s);
 };
 
-void collect_task_fd(struct fdinfo_list_entry *new_fle, struct rst_info *ri);
+int collect_fd(int pid, FdinfoEntry *e, struct rst_info *rst_info, bool ghost);
+struct fdinfo_list_entry *collect_fd_to(int pid, FdinfoEntry *e,
+		struct rst_info *rst_info, struct file_desc *fdesc,
+		bool fake, bool force_master);
 
+u32 find_unused_file_desc_id(void);
 unsigned int find_unused_fd(struct pstree_item *, int hint_fd);
 struct fdinfo_list_entry *find_used_fd(struct pstree_item *, int fd);
 
@@ -130,6 +135,8 @@ struct file_desc {
 	struct hlist_node	hash;		/* Descriptor hashing and lookup */
 	struct list_head	fd_info_head;	/* Chain of fdinfo_list_entry-s with same ID and type but different pids */
 	struct file_desc_ops	*ops;		/* Associated operations */
+	struct list_head	fake_master_list;/* To chain in the list of file_desc, which don't
+						    have a fle in a task, that having permissions */
 	enum fd_inherit_state 	fds_inherited;
 };
 
@@ -141,9 +148,10 @@ struct fdtype_ops {
 
 struct cr_img;
 
+extern int dump_my_file(int lfd, u32 *, int *type);
 extern int do_dump_gen_file(struct fd_parms *p, int lfd,
 			    const struct fdtype_ops *ops,
-			    struct cr_img *);
+			    FdinfoEntry *e);
 struct parasite_drain_fd;
 int dump_task_files_seized(struct parasite_ctl *ctl, struct pstree_item *item,
 		struct parasite_drain_fd *dfds);
@@ -151,9 +159,11 @@ int predump_task_files(int pid);
 
 extern void file_desc_init(struct file_desc *d, u32 id, struct file_desc_ops *ops);
 extern int file_desc_add(struct file_desc *d, u32 id, struct file_desc_ops *ops);
+extern struct fdinfo_list_entry *try_file_master(struct file_desc *d);
 extern struct fdinfo_list_entry *file_master(struct file_desc *d);
 extern struct file_desc *find_file_desc_raw(int type, u32 id);
 
+extern int setup_and_serve_out(struct fdinfo_list_entry *fle, int new_fd);
 extern int recv_desc_from_peer(struct file_desc *d, int *fd);
 extern int send_desc_to_peer(int fd, struct file_desc *d);
 extern int restore_fown(int fd, FownEntry *fown);
@@ -163,11 +173,13 @@ extern void show_saved_files(void);
 
 extern int prepare_fds(struct pstree_item *me);
 extern int prepare_fd_pid(struct pstree_item *me);
-extern int prepare_ctl_tty(int pid, struct rst_info *rst_info, u32 ctl_tty_id);
-extern int prepare_shared_fdinfo(void);
+extern int prepare_files(void);
 extern int restore_fs(struct pstree_item *);
 extern int prepare_fs_pid(struct pstree_item *);
 extern int set_fd_flags(int fd, int flags);
+
+extern struct collect_image_info files_cinfo;
+#define files_collected() (files_cinfo.flags & COLLECT_HAPPENED)
 
 extern int close_old_fds(void);
 #ifndef AT_EMPTY_PATH
@@ -180,17 +192,18 @@ extern int shared_fdt_prepare(struct pstree_item *item);
 
 extern struct collect_image_info ext_file_cinfo;
 extern int dump_unsupp_fd(struct fd_parms *p, int lfd,
-			  struct cr_img *, char *more, char *info);
+		char *more, char *info, FdinfoEntry *);
 
 extern int inherit_fd_parse(char *optarg);
 extern int inherit_fd_add(int fd, char *key);
 extern void inherit_fd_log(void);
-extern int inherit_fd_resolve_clash(int fd);
-extern int inherit_fd_fini(void);
+extern int inherit_fd_move_to_fdstore(void);
 
 extern int inherit_fd_lookup_id(char *id);
 
 extern bool inherited_fd(struct file_desc *, int *fdp);
+
+extern int inherit_fd_fini(void);
 
 extern FdinfoEntry *dup_fdinfo(FdinfoEntry *old, int fd, unsigned flags);
 int dup_fle(struct pstree_item *task, struct fdinfo_list_entry *ple,

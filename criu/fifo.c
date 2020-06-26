@@ -8,6 +8,7 @@
 #include "image.h"
 #include "files.h"
 #include "files-reg.h"
+#include "file-ids.h"
 #include "pipes.h"
 
 #include "fifo.h"
@@ -33,7 +34,6 @@ struct fifo_info {
 	struct file_desc	d;
 	FifoEntry		*fe;
 	bool			restore_data;
-	struct file_desc	*reg_d;
 };
 
 static LIST_HEAD(fifo_head);
@@ -41,15 +41,19 @@ static struct pipe_data_dump pd_fifo = { .img_type = CR_FD_FIFO_DATA, };
 
 static int dump_one_fifo(int lfd, u32 id, const struct fd_parms *p)
 {
-	struct cr_img *img = img_from_set(glob_imgset, CR_FD_FIFO);
+	struct cr_img *img = img_from_set(glob_imgset, CR_FD_FILES);
+	FileEntry fe = FILE_ENTRY__INIT;
 	FifoEntry e = FIFO_ENTRY__INIT;
+	u32 rf_id;
+
+	fd_id_generate_special(NULL, &rf_id);
 
 	/*
 	 * It's a trick here, we use regular files dumping
 	 * code to save path to a fifo, then we reuse it
 	 * on restore.
 	 */
-	if (dump_one_reg_file(lfd, id, p))
+	if (dump_one_reg_file(lfd, rf_id, p))
 		return -1;
 
 	pr_info("Dumping fifo %d with id %#x pipe_id %#x\n",
@@ -57,8 +61,14 @@ static int dump_one_fifo(int lfd, u32 id, const struct fd_parms *p)
 
 	e.id		= id;
 	e.pipe_id	= pipe_id(p);
+	e.has_regf_id	= true;
+	e.regf_id	= rf_id;
 
-	if (pb_write_one(img, &e, PB_FIFO))
+	fe.type = FD_TYPES__FIFO;
+	fe.id = e.id;
+	fe.fifo = &e;
+
+	if (pb_write_one(img, &fe, PB_FILE))
 		return -1;
 
 	return dump_one_pipe_data(&pd_fifo, lfd, p);
@@ -109,29 +119,24 @@ out:
 static int open_fifo_fd(struct file_desc *d, int *new_fd)
 {
 	struct fifo_info *info = container_of(d, struct fifo_info, d);
+	struct file_desc *reg_d;
 	int fd;
 
-	fd = open_path(info->reg_d, do_open_fifo, info);
+	reg_d = collect_special_file(info->fe->has_regf_id ?
+			info->fe->regf_id : info->fe->id);
+	if (!reg_d)
+		return -1;
+
+	fd = open_path(reg_d, do_open_fifo, info);
 	if (fd < 0)
 		return -1;
 	*new_fd = fd;
 	return 0;
 }
 
-static void collect_fifo_fd(struct file_desc *d,
-		struct fdinfo_list_entry *fle, struct rst_info *ri)
-{
-	struct fifo_info *info;
-
-	info = container_of(d, struct fifo_info, d);
-	info->reg_d = collect_special_file(info->fe->id);
-	BUG_ON(info->reg_d == NULL);
-}
-
 static struct file_desc_ops fifo_desc_ops = {
 	.type		= FD_TYPES__FIFO,
 	.open		= open_fifo_fd,
-	.collect_fd	= collect_fifo_fd,
 };
 
 static int collect_one_fifo(void *o, ProtobufCMessage *base, struct cr_img *i)

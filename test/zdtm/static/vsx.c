@@ -23,7 +23,7 @@ int main(int argc, char *argv[])
 #include <asm/cputable.h>
 
 /*
- * This test verifies that data stored in the VSX regsiters are still there
+ * This test verifies that data stored in the VSX registers are still there
  * once the restart is done.
  *
  * The test is filling the registers with dedicated values and then check
@@ -388,8 +388,7 @@ int main(int argc, char *argv[])
 			test_msg("Data mismatch\n");
 			fail();
 		}
-	}
-	else {
+	} else {
 		test_msg("The CPU is missing some features.\n");
 		fail();
 	}

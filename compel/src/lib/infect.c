@@ -33,8 +33,10 @@
 #include "common/scm.h"
 #include "common/scm-code.c"
 
+#ifndef UNIX_PATH_MAX
 #define UNIX_PATH_MAX (sizeof(struct sockaddr_un) - \
 			(size_t)((struct sockaddr_un *) 0)->sun_path)
+#endif
 
 #define PARASITE_STACK_SIZE	(16 << 10)
 
@@ -52,7 +54,7 @@ static inline void close_safe(int *pfd)
 	}
 }
 
-static int parse_pid_status(int pid, struct seize_task_status *ss)
+static int parse_pid_status(int pid, struct seize_task_status *ss, void *data)
 {
 	char aux[128];
 	FILE *f;
@@ -107,7 +109,7 @@ int compel_stop_task(int pid)
 
 	ret = compel_interrupt_task(pid);
 	if (ret == 0)
-		ret = compel_wait_task(pid, -1, parse_pid_status, &ss);
+		ret = compel_wait_task(pid, -1, parse_pid_status, NULL, &ss, NULL);
 	return ret;
 }
 
@@ -137,7 +139,7 @@ int compel_interrupt_task(int pid)
 	 */
 	ret = ptrace(PTRACE_INTERRUPT, pid, NULL, NULL);
 	if (ret < 0) {
-		pr_warn("SEIZE %d: can't interrupt task: %s", pid, strerror(errno));
+		pr_warn("SEIZE %d: can't interrupt task: %s\n", pid, strerror(errno));
 		if (ptrace(PTRACE_DETACH, pid, NULL, NULL))
 			pr_perror("Unable to detach from %d", pid);
 	}
@@ -192,8 +194,9 @@ static int skip_sigstop(int pid, int nr_signals)
  * up with someone else.
  */
 int compel_wait_task(int pid, int ppid,
-		int (*get_status)(int pid, struct seize_task_status *),
-		struct seize_task_status *ss)
+		int (*get_status)(int pid, struct seize_task_status *, void *),
+		void (*free_status)(int pid, struct seize_task_status *, void *),
+		struct seize_task_status *ss, void *data)
 {
 	siginfo_t si;
 	int status, nr_sigstop;
@@ -220,7 +223,7 @@ try_again:
 		wait_errno = errno;
 	}
 
-	ret2 = get_status(pid, ss);
+	ret2 = get_status(pid, ss, data);
 	if (ret2)
 		goto err;
 
@@ -270,7 +273,8 @@ try_again:
 			goto err;
 		}
 
-		ret = 0;
+		if (free_status)
+			free_status(pid, ss, data);
 		goto try_again;
 	}
 
@@ -309,6 +313,8 @@ err:
 
 int compel_resume_task(pid_t pid, int orig_st, int st)
 {
+	int ret = 0;
+
 	pr_debug("\tUnseizing %d into %d\n", pid, st);
 
 	if (st == COMPEL_TASK_DEAD) {
@@ -331,15 +337,17 @@ int compel_resume_task(pid_t pid, int orig_st, int st)
 		 */
 		if (orig_st == COMPEL_TASK_STOPPED)
 			kill(pid, SIGSTOP);
-	} else
+	} else {
 		pr_err("Unknown final state %d\n", st);
+		ret = -1;
+	}
 
 	if (ptrace(PTRACE_DETACH, pid, NULL, NULL)) {
 		pr_perror("Unable to detach from %d", pid);
 		return -1;
 	}
 
-	return 0;
+	return ret;
 }
 
 static int gen_parasite_saddr(struct sockaddr_un *saddr, int key)
@@ -610,6 +618,9 @@ static int parasite_init_daemon(struct parasite_ctl *ctl)
 
 	args->sigframe = (uintptr_t)ctl->rsigframe;
 	args->log_level = compel_log_get_loglevel();
+#ifdef ARCH_HAS_LONG_PAGES
+	args->page_size = PAGE_SIZE;
+#endif
 
 	futex_set(&args->daemon_connected, 0);
 
@@ -664,7 +675,8 @@ static int parasite_start_daemon(struct parasite_ctl *ctl)
 	 * while in daemon it is not such.
 	 */
 
-	if (get_task_regs(pid, &ctl->orig.regs, ictx->save_regs, ictx->regs_arg)) {
+	if (get_task_regs(pid, &ctl->orig.regs, ictx->save_regs,
+			ictx->regs_arg, ictx->flags)) {
 		pr_err("Can't obtain regs for thread %d\n", pid);
 		return -1;
 	}
@@ -692,8 +704,8 @@ static int parasite_mmap_exchange(struct parasite_ctl *ctl, unsigned long size)
 
 	ctl->map_length = round_up(size, page_size());
 
-	fd = ctl->ictx.open_proc(ctl->rpid, O_RDWR, "map_files/%p-%p",
-		 ctl->remote_map, ctl->remote_map + ctl->map_length);
+	fd = ctl->ictx.open_proc(ctl->rpid, O_RDWR, "map_files/%lx-%lx",
+		 (long)ctl->remote_map, (long)ctl->remote_map + ctl->map_length);
 	if (fd < 0)
 		return -1;
 
@@ -710,14 +722,25 @@ static int parasite_mmap_exchange(struct parasite_ctl *ctl, unsigned long size)
 	return 0;
 }
 
+static void parasite_memfd_close(struct parasite_ctl *ctl, int fd)
+{
+	bool compat = !compel_mode_native(ctl);
+	long ret;
+	int err;
+
+	err = compel_syscall(ctl, __NR(close, compat), &ret, fd, 0, 0, 0, 0, 0);
+	if (err || ret)
+		pr_err("Can't close memfd\n");
+}
+
 static int parasite_memfd_exchange(struct parasite_ctl *ctl, unsigned long size)
 {
 	void *where = (void *)ctl->ictx.syscall_ip + BUILTIN_SYSCALL_SIZE;
+	bool compat_task = !compel_mode_native(ctl);
 	uint8_t orig_code[MEMFD_FNAME_SZ] = MEMFD_FNAME;
 	pid_t pid = ctl->rpid;
 	long sret = -ENOSYS;
 	int ret, fd, lfd;
-	bool __maybe_unused compat_task = !compel_mode_native(ctl);
 
 	if (ctl->ictx.flags & INFECT_NO_MEMFD)
 		return 1;
@@ -733,10 +756,9 @@ static int parasite_memfd_exchange(struct parasite_ctl *ctl, unsigned long size)
 			     (unsigned long)where, 0, 0, 0, 0, 0);
 
 	if (ptrace_poke_area(pid, orig_code, where, sizeof(orig_code))) {
-		fd = (int)(long)sret;
+		fd = (int)sret;
 		if (fd >= 0)
-			compel_syscall(ctl, __NR(close, compat_task), &sret,
-					fd, 0, 0, 0, 0, 0);
+			parasite_memfd_close(ctl, fd);
 		pr_err("Can't restore memfd args (pid: %d)\n", pid);
 		return -1;
 	}
@@ -744,7 +766,7 @@ static int parasite_memfd_exchange(struct parasite_ctl *ctl, unsigned long size)
 	if (ret < 0)
 		return ret;
 
-	fd = (int)(long)sret;
+	fd = (int)sret;
 	if (fd == -ENOSYS)
 		return 1;
 	if (fd < 0) {
@@ -779,7 +801,7 @@ static int parasite_memfd_exchange(struct parasite_ctl *ctl, unsigned long size)
 		goto err_curef;
 	}
 
-	compel_syscall(ctl, __NR(close, compat_task), &sret, fd, 0, 0, 0, 0, 0);
+	parasite_memfd_close(ctl, fd);
 	close(lfd);
 
 	pr_info("Set up parasite blob using memfd\n");
@@ -788,7 +810,7 @@ static int parasite_memfd_exchange(struct parasite_ctl *ctl, unsigned long size)
 err_curef:
 	close(lfd);
 err_cure:
-	compel_syscall(ctl, __NR(close, compat_task), &sret, fd, 0, 0, 0, 0, 0);
+	parasite_memfd_close(ctl, fd);
 	return -1;
 }
 
@@ -1121,15 +1143,9 @@ static int save_regs_plain(void *to, user_regs_struct_t *r, user_fpregs_struct_t
 	return 0;
 }
 
-#ifndef RT_SIGFRAME_UC_SIGMASK
-#define RT_SIGFRAME_UC_SIGMASK(sigframe)				\
-	(k_rtsigset_t*)&RT_SIGFRAME_UC(sigframe)->uc_sigmask
-#endif
-
 static int make_sigframe_plain(void *from, struct rt_sigframe *f, struct rt_sigframe *rtf, k_rtsigset_t *b)
 {
 	struct plain_regs_struct *prs = from;
-	k_rtsigset_t *blk_sigset;
 
 	/*
 	 * Make sure it's zeroified.
@@ -1139,11 +1155,8 @@ static int make_sigframe_plain(void *from, struct rt_sigframe *f, struct rt_sigf
 	if (sigreturn_prep_regs_plain(f, &prs->regs, &prs->fpregs))
 		return -1;
 
-	blk_sigset = RT_SIGFRAME_UC_SIGMASK(f);
 	if (b)
-		memcpy(blk_sigset, b, sizeof(k_rtsigset_t));
-	else
-		memset(blk_sigset, 0, sizeof(k_rtsigset_t));
+		rt_sigframe_copy_sigset(f, b);
 
 	if (RT_SIGFRAME_HAS_FPU(f)) {
 		if (sigreturn_prep_fpu_frame_plain(f, rtf))
@@ -1294,6 +1307,7 @@ int compel_stop_daemon(struct parasite_ctl *ctl)
 int compel_cure_remote(struct parasite_ctl *ctl)
 {
 	long ret;
+	int err;
 
 	if (compel_stop_daemon(ctl))
 		return -1;
@@ -1301,9 +1315,12 @@ int compel_cure_remote(struct parasite_ctl *ctl)
 	if (!ctl->remote_map)
 		return 0;
 
-	compel_syscall(ctl, __NR(munmap, !compel_mode_native(ctl)), &ret,
-			(unsigned long)ctl->remote_map, ctl->map_length,
-			0, 0, 0, 0);
+	err = compel_syscall(ctl, __NR(munmap, !compel_mode_native(ctl)), &ret,
+			     (unsigned long)ctl->remote_map, ctl->map_length,
+			     0, 0, 0, 0);
+	if (err)
+		return err;
+
 	if (ret) {
 		pr_err("munmap for remote map %p, %lu returned %lu\n",
 				ctl->remote_map, ctl->map_length, ret);
@@ -1344,7 +1361,7 @@ void *compel_parasite_args_p(struct parasite_ctl *ctl)
 	return ctl->addr_args;
 }
 
-void *compel_parasite_args_s(struct parasite_ctl *ctl, int args_size)
+void *compel_parasite_args_s(struct parasite_ctl *ctl, unsigned long args_size)
 {
 	BUG_ON(args_size > ctl->args_size);
 	return compel_parasite_args_p(ctl);
@@ -1566,7 +1583,7 @@ k_rtsigset_t *compel_task_sigmask(struct parasite_ctl *ctl)
 
 int compel_get_thread_regs(struct parasite_thread_ctl *tctl, save_regs_t save, void * arg)
 {
-	return get_task_regs(tctl->tid, &tctl->th.regs, save, arg);
+	return get_task_regs(tctl->tid, &tctl->th.regs, save, arg, tctl->ctl->ictx.flags);
 }
 
 struct infect_ctx *compel_infect_ctx(struct parasite_ctl *ctl)
@@ -1577,4 +1594,14 @@ struct infect_ctx *compel_infect_ctx(struct parasite_ctl *ctl)
 struct parasite_blob_desc *compel_parasite_blob_desc(struct parasite_ctl *ctl)
 {
 	return &ctl->pblob;
+}
+
+uint64_t compel_get_leader_sp(struct parasite_ctl *ctl)
+{
+	return REG_SP(ctl->orig.regs);
+}
+
+uint64_t compel_get_thread_sp(struct parasite_thread_ctl *tctl)
+{
+	return REG_SP(tctl->th.regs);
 }

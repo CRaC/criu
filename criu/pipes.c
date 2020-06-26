@@ -47,7 +47,7 @@ static int pipe_data_read(struct cr_img *img, struct pipe_data_rst *r)
 	 */
 
 	r->data = mmap(NULL, bytes, PROT_READ | PROT_WRITE,
-			MAP_SHARED | MAP_ANON, 0, 0);
+			MAP_SHARED | MAP_ANONYMOUS, 0, 0);
 	if (r->data == MAP_FAILED) {
 		pr_perror("Can't map mem for pipe buffers");
 		return -1;
@@ -75,7 +75,7 @@ int do_collect_pipe_data(struct pipe_data_rst *r, ProtobufCMessage *msg,
 }
 
 /* Choose who will restore a pipe. */
-static int mark_pipe_master(void *unused)
+static int mark_pipe_master_cb(struct pprep_head *ph)
 {
 	LIST_HEAD(head);
 
@@ -141,6 +141,8 @@ static int mark_pipe_master(void *unused)
 	return 0;
 }
 
+static MAKE_PPREP_HEAD(mark_pipe_master);
+
 static struct pipe_data_rst *pd_hash_pipes[PIPE_DATA_HASH_SIZE];
 
 int restore_pipe_data(int img_type, int pfd, u32 id, struct pipe_data_rst **hash)
@@ -158,8 +160,18 @@ int restore_pipe_data(int img_type, int pfd, u32 id, struct pipe_data_rst **hash
 		return 0;
 	}
 
+	if (pd->pde->has_size) {
+		pr_info("Restoring size %#x for %#x\n",
+				pd->pde->size, pd->pde->pipe_id);
+		ret = fcntl(pfd, F_SETPIPE_SZ, pd->pde->size);
+		if (ret < 0) {
+			pr_perror("Can't restore pipe size");
+			return -1;
+		}
+	}
+
 	if (!pd->pde->bytes)
-		goto out;
+		return 0;
 
 	if (!pd->data) {
 		pr_err("Double data restore occurred on %#x\n", id);
@@ -173,14 +185,13 @@ int restore_pipe_data(int img_type, int pfd, u32 id, struct pipe_data_rst **hash
 		ret = vmsplice(pfd, &iov, 1, SPLICE_F_GIFT | SPLICE_F_NONBLOCK);
 		if (ret < 0) {
 			pr_perror("%#x: Error splicing data", id);
-			goto err;
+			return -1;
 		}
 
 		if (ret == 0 || ret > iov.iov_len /* sanity */) {
 			pr_err("%#x: Wanted to restore %zu bytes, but got %d\n", id,
 					iov.iov_len, ret);
-			ret = -1;
-			goto err;
+			return -1;
 		}
 
 		iov.iov_base += ret;
@@ -199,19 +210,7 @@ int restore_pipe_data(int img_type, int pfd, u32 id, struct pipe_data_rst **hash
 
 	munmap(pd->data, pd->pde->bytes);
 	pd->data = NULL;
-out:
-	ret = 0;
-	if (pd->pde->has_size) {
-		pr_info("Restoring size %#x for %#x\n",
-				pd->pde->size, pd->pde->pipe_id);
-		ret = fcntl(pfd, F_SETPIPE_SZ, pd->pde->size);
-		if (ret < 0)
-			pr_perror("Can't restore pipe size");
-		else
-			ret = 0;
-	}
-err:
-	return ret;
+	return 0;
 }
 
 static int userns_reopen(void *_arg, int fd, pid_t pid)
@@ -279,8 +278,8 @@ static char *pipe_d_name(struct file_desc *d, char *buf, size_t s)
 	struct pipe_info *pi;
 
 	pi = container_of(d, struct pipe_info, d);
-	if (snprintf(buf, s, "pipe:[%d]", pi->pe->pipe_id) >= s) {
-		pr_err("Not enough room for pipe %d identifier string\n",
+	if (snprintf(buf, s, "pipe:[%u]", pi->pe->pipe_id) >= s) {
+		pr_err("Not enough room for pipe %u identifier string\n",
 				pi->pe->pipe_id);
 		return NULL;
 	}
@@ -372,10 +371,7 @@ int collect_one_pipe_ops(void *o, ProtobufCMessage *base, struct file_desc_ops *
 			list_add(&pi->pipe_list, &tmp->pipe_list);
 	}
 
-	if (list_empty(&pipes))
-		if (add_post_prepare_cb(mark_pipe_master, NULL))
-			return -1;
-
+	add_post_prepare_cb_once(&mark_pipe_master);
 	list_add_tail(&pi->list, &pipes);
 
 	return 0;
@@ -443,6 +439,12 @@ int dump_one_pipe_data(struct pipe_data_dump *pd, int lfd, const struct fd_parms
 		goto err;
 	}
 
+	/* steal_pipe has to be able to fit all data from a target pipe */
+	if (fcntl(steal_pipe[1], F_SETPIPE_SZ, pipe_size) < 0) {
+		pr_perror("Unable to set a pipe size");
+		goto err;
+	}
+
 	bytes = tee(lfd, steal_pipe[1], pipe_size, SPLICE_F_NONBLOCK);
 	if (bytes < 0) {
 		if (errno != EAGAIN) {
@@ -488,6 +490,7 @@ static struct pipe_data_dump pd_pipes = { .img_type = CR_FD_PIPES_DATA, };
 
 static int dump_one_pipe(int lfd, u32 id, const struct fd_parms *p)
 {
+	FileEntry fe = FILE_ENTRY__INIT;
 	PipeEntry pe = PIPE_ENTRY__INIT;
 
 	pr_info("Dumping pipe %d with id %#x pipe_id %#x\n",
@@ -503,7 +506,11 @@ static int dump_one_pipe(int lfd, u32 id, const struct fd_parms *p)
 	pe.flags	= p->flags & ~O_DIRECT;
 	pe.fown		= (FownEntry *)&p->fown;
 
-	if (pb_write_one(img_from_set(glob_imgset, CR_FD_PIPES), &pe, PB_PIPE))
+	fe.type = FD_TYPES__PIPE;
+	fe.id = pe.id;
+	fe.pipe = &pe;
+
+	if (pb_write_one(img_from_set(glob_imgset, CR_FD_FILES), &fe, PB_FILE))
 		return -1;
 
 	return dump_one_pipe_data(&pd_pipes, lfd, p);

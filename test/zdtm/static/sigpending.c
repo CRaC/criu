@@ -28,9 +28,26 @@ static int thread_nr;
 # define offsetof(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
 #endif
 
-#ifdef __i386__
+/* cr_siginfo is declared to get an offset of _sifields */
+union cr_siginfo {
+	struct {
+		int si_signo;
+		int si_errno;
+		int si_code;
+
+		union {
+			int _pad[10];
+			/* ... */
+		} _sifields;
+	} _info;
+	siginfo_t info;
+};
+typedef union cr_siginfo cr_siginfo_t;
+
+#define siginf_body(s) (&((cr_siginfo_t *)(s))->_info._sifields)
+
 /*
- * On x86_32 kernel puts only relevant union member when signal arrives,
+ * The kernel puts only relevant union member when signal arrives,
  * leaving _si_fields to be filled with junk from stack. Check only
  * first 12 bytes:
  *	// POSIX.1b signals.
@@ -43,10 +60,7 @@ static int thread_nr;
  * Look at __copy_siginfo_to_user32() for more information.
  */
 # define _si_fields_sz 12
-#else
-# define _si_fields_sz (sizeof(siginfo_t) - offsetof(siginfo_t, _sifields))
-#endif
-#define siginfo_filled (offsetof(siginfo_t, _sifields) + _si_fields_sz)
+#define siginfo_filled (offsetof(cr_siginfo_t, _info._sifields) + _si_fields_sz)
 
 static pthread_mutex_t exit_lock;
 static pthread_mutex_t init_lock;
@@ -90,7 +104,7 @@ static void sig_handler(int signal, siginfo_t *info, void *data)
 		}
 
 		crc = ~0;
-		if (datachk((uint8_t *) &info->_sifields, _si_fields_sz, &crc)) {
+		if (datachk((uint8_t *) siginf_body(info), _si_fields_sz, &crc)) {
 			fail("CRC mismatch\n");
 			return;
 		}
@@ -172,7 +186,7 @@ int send_siginfo(int signo, pid_t pid, pid_t tid, int group, siginfo_t *info)
 	info->si_code = si_code;
 	si_code--;
 	info->si_signo = signo;
-	datagen((uint8_t *) &info->_sifields, _si_fields_sz, &crc);
+	datagen((uint8_t *) siginf_body(info), _si_fields_sz, &crc);
 
 	sent_sigs++;
 

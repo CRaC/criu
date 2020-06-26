@@ -27,15 +27,12 @@ extern int dump_verify_tty_sids(void);
 extern struct collect_image_info tty_info_cinfo;
 extern struct collect_image_info tty_cinfo;
 extern struct collect_image_info tty_cdata;
-extern int prepare_shared_tty(void);
 
 struct mount_info;
 extern int devpts_restore(struct mount_info *pm);
 
 extern int tty_prep_fds(void);
-extern void tty_fini_fds(void);
-
-extern int tty_restore_ctl_terminal(struct file_desc *d, int fd);
+extern int tty_init_restore(void);
 
 extern int devpts_check_bindmount(struct mount_info *m);
 

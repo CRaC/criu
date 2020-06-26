@@ -93,6 +93,9 @@
 #define SECCOMP_MAGIC		0x64413049 /* Kostomuksha */
 #define BINFMT_MISC_MAGIC	0x67343323 /* Apatity */
 #define AUTOFS_MAGIC		0x49353943 /* Sochi */
+#define FILES_MAGIC		0x56303138 /* Toropets */
+#define MEMFD_INODE_MAGIC	0x48453499 /* Dnipro */
+#define TIMENS_MAGIC		0x43114433 /* Beslan */
 
 #define IFADDR_MAGIC		RAW_IMAGE_MAGIC
 #define ROUTE_MAGIC		RAW_IMAGE_MAGIC
@@ -102,6 +105,7 @@
 #define TMPFS_DEV_MAGIC		RAW_IMAGE_MAGIC
 #define IPTABLES_MAGIC		RAW_IMAGE_MAGIC
 #define IP6TABLES_MAGIC		RAW_IMAGE_MAGIC
+#define NFTABLES_MAGIC		RAW_IMAGE_MAGIC
 #define NETNF_CT_MAGIC		RAW_IMAGE_MAGIC
 #define NETNF_EXP_MAGIC		RAW_IMAGE_MAGIC
 
@@ -114,5 +118,11 @@
  */
 #define STATS_MAGIC		0x57093306 /* Ostashkov */
 #define IRMAP_CACHE_MAGIC	0x57004059 /* Ivanovo */
+
+/*
+ * Main magic for kerndat_s structure.
+ */
+
+#define KDAT_MAGIC		0x57023458 /* Torzhok */
 
 #endif /* __CR_MAGIC_H__ */

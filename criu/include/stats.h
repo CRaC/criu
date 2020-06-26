@@ -25,6 +25,13 @@ enum {
 	CNT_PAGES_SCANNED,
 	CNT_PAGES_SKIPPED_PARENT,
 	CNT_PAGES_WRITTEN,
+	CNT_PAGES_LAZY,
+	CNT_PAGE_PIPES,
+	CNT_PAGE_PIPE_BUFS,
+
+	CNT_SHPAGES_SCANNED,
+	CNT_SHPAGES_SKIPPED_PARENT,
+	CNT_SHPAGES_WRITTEN,
 
 	DUMP_CNT_NR_STATS,
 };
@@ -38,6 +45,7 @@ enum {
 };
 
 extern void cnt_add(int c, unsigned long val);
+extern void cnt_sub(int c, unsigned long val);
 
 #define DUMP_STATS	1
 #define RESTORE_STATS	2

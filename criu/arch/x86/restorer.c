@@ -3,13 +3,25 @@
 
 #include "types.h"
 #include "restorer.h"
+#include "asm/compat.h"
 #include "asm/restorer.h"
 #include <compel/asm/fpu.h>
 
+#include <compel/plugins/std/syscall-codes.h>
 #include <compel/plugins/std/string.h>
 #include <compel/plugins/std/syscall.h>
 #include "log.h"
 #include "cpu.h"
+
+int arch_map_vdso(unsigned long map_at, bool compatible)
+{
+	int vdso_type = compatible ? ARCH_MAP_VDSO_32 : ARCH_MAP_VDSO_64;
+
+	pr_debug("Mapping %s vDSO at %lx\n",
+		compatible ? "compatible" : "native", map_at);
+
+	return sys_arch_prctl(vdso_type, map_at);
+}
 
 int restore_nonsigframe_gpregs(UserX86RegsEntry *r)
 {
@@ -33,6 +45,17 @@ int restore_nonsigframe_gpregs(UserX86RegsEntry *r)
 }
 
 #ifdef CONFIG_COMPAT
+
+int set_compat_robust_list(uint32_t head_ptr, uint32_t len)
+{
+	struct syscall_args32 s = {
+		.nr	= __NR32_set_robust_list,
+		.arg0	= head_ptr,
+		.arg1	= len,
+	};
+
+	return do_full_int80(&s);
+}
 
 static int prepare_stack32(void **stack32)
 {

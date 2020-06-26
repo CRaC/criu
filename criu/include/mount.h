@@ -12,6 +12,20 @@ struct ns_id;
 
 #define MOUNT_INVALID_DEV	(0)
 
+#define MNT_UNREACHABLE INT_MIN
+
+/*
+ * We have remounted these mount writable temporary, and we
+ * should return it back to readonly at the end of file restore.
+ */
+#define REMOUNTED_RW 1
+/*
+ * We have remounted these mount writable in service mount namespace,
+ * thus we shouldn't return it back to readonly, as service mntns
+ * will be destroyed anyway.
+ */
+#define REMOUNTED_RW_SERVICE 2
+
 struct mount_info {
 	int			mnt_id;
 	int			parent_mnt_id;
@@ -63,8 +77,13 @@ struct mount_info {
 	struct list_head	mnt_slave_list;	/* list of slave mounts */
 	struct list_head	mnt_slave;	/* slave list entry */
 	struct mount_info	*mnt_master;	/* slave is on master->mnt_slave_list */
+	struct list_head	mnt_propagate;	/* circular list of mounts which propagate from each other */
+	struct list_head	mnt_notprop;	/* temporary list used in can_mount_now */
 
 	struct list_head	postpone;
+
+	int			is_overmounted;
+	int			remounted_rw;
 
 	void			*private;	/* associated filesystem data */
 };
@@ -77,7 +96,7 @@ extern int collect_binfmt_misc(void);
 static inline int collect_binfmt_misc(void) { return 0; }
 #endif
 
-extern struct mount_info *mnt_entry_alloc();
+extern struct mount_info *mnt_entry_alloc(void);
 extern void mnt_entry_free(struct mount_info *mi);
 
 extern int __mntns_get_root_fd(pid_t pid);
@@ -121,5 +140,9 @@ struct ns_id;
 extern struct mount_info *parse_mountinfo(pid_t pid, struct ns_id *nsid, bool for_dump);
 
 extern int check_mnt_id(void);
+
+extern int remount_readonly_mounts(void);
+extern int try_remount_writable(struct mount_info *mi, bool ns);
+extern bool mnt_is_overmounted(struct mount_info *mi);
 
 #endif /* __CR_MOUNT_H__ */

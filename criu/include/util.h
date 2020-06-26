@@ -37,6 +37,8 @@
 struct vma_area;
 struct list_head;
 
+extern int service_fd_rlim_cur;
+
 extern void pr_vma(unsigned int loglevel, const struct vma_area *vma_area);
 
 #define pr_info_vma(vma_area)	pr_vma(LOG_INFO, vma_area)
@@ -60,6 +62,9 @@ extern void close_proc(void);
 extern int open_pid_proc(pid_t pid);
 extern int close_pid_proc(void);
 extern int set_proc_fd(int fd);
+
+extern pid_t sys_clone_unified(unsigned long flags, void *child_stack, void *parent_tid,
+			       void *child_tid, unsigned long newtls);
 
 /*
  * Values for pid argument of the proc opening routines below.
@@ -171,9 +176,11 @@ extern int is_anon_link_type(char *link, char *type);
 extern int cr_system(int in, int out, int err, char *cmd, char *const argv[], unsigned flags);
 extern int cr_system_userns(int in, int out, int err, char *cmd,
 				char *const argv[], unsigned flags, int userns_pid);
-extern int cr_daemon(int nochdir, int noclose, int *keep_fd, int close_fd);
+extern int cr_daemon(int nochdir, int noclose, int close_fd);
 extern int close_status_fd(void);
 extern int is_root_user(void);
+
+extern void set_proc_self_fd(int fd);
 
 static inline bool dir_dots(const struct dirent *de)
 {
@@ -193,7 +200,7 @@ extern int read_fd_link(int lfd, char *buf, size_t size);
 #define USEC_PER_SEC	1000000L
 #define NSEC_PER_SEC    1000000000L
 
-int vaddr_to_pfn(unsigned long vaddr, u64 *pfn);
+int vaddr_to_pfn(int fd, unsigned long vaddr, u64 *pfn);
 
 /*
  * Check whether @str starts with @sub and report the
@@ -201,12 +208,10 @@ int vaddr_to_pfn(unsigned long vaddr, u64 *pfn);
  */
 static inline bool strstartswith2(const char *str, const char *sub, char *end)
 {
-	const char *osub = sub;
-
 	while (1) {
 		if (*sub == '\0') /* end of sub -- match */ {
 			if (end) {
-				if (sub == osub + 1) /* pure root */
+				if (*(sub-1) == '/') /* "/", "./" or "path/" */
 					*end = '/';
 				else
 					*end = *str;
@@ -271,10 +276,14 @@ static inline int sk_wait_data(int sk)
 	return poll(&pfd, 1, -1);
 }
 
+void fd_set_nonblocking(int fd, bool on);
 void tcp_nodelay(int sk, bool on);
 void tcp_cork(int sk, bool on);
 
 const char *ns_to_string(unsigned int ns);
+
+int xatol(const char *string, long *number);
+int xatoi(const char *string, int *number);
 
 char *xstrcat(char *str, const char *fmt, ...)
 	__attribute__ ((__format__ (__printf__, 2, 3)));
@@ -283,11 +292,94 @@ char *xsprintf(const char *fmt, ...)
 
 void print_data(unsigned long addr, unsigned char *data, size_t size);
 
-int setup_tcp_server(char *type);
+int setup_tcp_server(char *type, char *addr, unsigned short *port);
 int run_tcp_server(bool daemon_mode, int *ask, int cfd, int sk);
-int setup_tcp_client(char *addr);
+int setup_tcp_client(char *hostname);
 
 #define LAST_PID_PATH		"sys/kernel/ns_last_pid"
 #define PID_MAX_PATH		"sys/kernel/pid_max"
+
+#define block_sigmask(saved_mask, sig_mask)	({					\
+		sigset_t ___blocked_mask;						\
+		int ___ret = 0;								\
+		sigemptyset(&___blocked_mask);						\
+		sigaddset(&___blocked_mask, sig_mask);					\
+		if (sigprocmask(SIG_BLOCK, &___blocked_mask, saved_mask) == -1) {	\
+			pr_perror("Can not set mask of blocked signals");		\
+			___ret = -1;							\
+		}									\
+		___ret;									\
+	})
+
+#define restore_sigmask(saved_mask)	({						\
+		int ___ret = 0;								\
+		if (sigprocmask(SIG_SETMASK, saved_mask, NULL) == -1) {			\
+			pr_perror("Can not unset mask of blocked signals");		\
+			___ret = -1;							\
+		}									\
+		___ret;									\
+	})
+
+/*
+ * Helpers to organize asynchronous reading from a bunch
+ * of file descriptors.
+ */
+#include <sys/epoll.h>
+
+struct epoll_rfd {
+	int fd;
+	/*
+	 * EPOLLIN notification. The data is available for read in
+	 * rfd->fd.
+	 * @return 0 to resume polling, 1 to stop polling or a
+	 * negative error code
+	 */
+	int (*read_event)(struct epoll_rfd *);
+
+	/*
+	 * EPOLLHUP | EPOLLRDHUP notification. The remote side has
+	 * close the connection for rfd->fd.
+	 * @return 0 to resume polling, 1 to stop polling or a
+	 * negative error code
+	 */
+	int (*hangup_event)(struct epoll_rfd *);
+};
+
+extern int epoll_add_rfd(int epfd, struct epoll_rfd *);
+extern int epoll_del_rfd(int epfd, struct epoll_rfd *rfd);
+extern int epoll_run_rfds(int epfd, struct epoll_event *evs, int nr_fds, int tmo);
+extern int epoll_prepare(int nr_events, struct epoll_event **evs);
+
+extern void rlimit_unlimit_nofile(void);
+
+extern int call_in_child_process(int (*fn)(void *), void *arg);
+#ifdef __GLIBC__
+extern void print_stack_trace(pid_t pid);
+#else
+static inline void print_stack_trace(pid_t pid) {}
+#endif
+
+#define block_sigmask(saved_mask, sig_mask)	({					\
+		sigset_t ___blocked_mask;						\
+		int ___ret = 0;								\
+		sigemptyset(&___blocked_mask);						\
+		sigaddset(&___blocked_mask, sig_mask);					\
+		if (sigprocmask(SIG_BLOCK, &___blocked_mask, saved_mask) == -1) {	\
+			pr_perror("Can not set mask of blocked signals");		\
+			___ret = -1;							\
+		}									\
+		___ret;									\
+	})
+
+#define restore_sigmask(saved_mask)	({						\
+		int ___ret = 0;								\
+		if (sigprocmask(SIG_SETMASK, saved_mask, NULL) == -1) {			\
+			pr_perror("Can not unset mask of blocked signals");		\
+			___ret = -1;							\
+		}									\
+		___ret;									\
+	})
+
+extern int mount_detached_fs(const char *fsname);
 
 #endif /* __CR_UTIL_H__ */

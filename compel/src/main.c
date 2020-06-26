@@ -13,15 +13,13 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 
-#include "uapi/compel/compel.h"
-
 #include "version.h"
 #include "piegen.h"
 #include "log.h"
 
 #define CFLAGS_DEFAULT_SET					\
 	"-Wstrict-prototypes "					\
-	"-fno-stack-protector -nostdlib -fomit-frame-pointer "
+	"-fno-stack-protector -nostdlib -fomit-frame-pointer -ffreestanding "
 
 #define COMPEL_CFLAGS_PIE	CFLAGS_DEFAULT_SET "-fpie"
 #define COMPEL_CFLAGS_NOPIC	CFLAGS_DEFAULT_SET "-fno-pic"
@@ -52,12 +50,14 @@ static const flags_t flags = {
 #elif defined CONFIG_PPC64
 	.arch		= "ppc64",
 	.cflags		= COMPEL_CFLAGS_PIE,
+#elif defined CONFIG_S390
+	.arch		= "s390",
+	.cflags		= COMPEL_CFLAGS_PIE,
 #else
 #error "CONFIG_<ARCH> not defined, or unsupported ARCH"
 #endif
 };
 
-piegen_opt_t opts = {};
 const char *uninst_root;
 
 static int piegen(void)
@@ -103,7 +103,7 @@ err:
 	if (opts.fout)
 		fclose(opts.fout);
 	if (!ret)
-		printf("%s generated successfully.\n", opts.output_filename);
+		pr_info("%s generated successfully.\n", opts.output_filename);
 	return ret;
 }
 
@@ -125,7 +125,8 @@ static int usage(int rc) {
 
 	fprintf(out,
 "Usage:\n"
-"  compel [--compat] includes | cflags | ldflags | plugins\n"
+"  compel [--compat] includes | cflags | ldflags\n"
+"  compel plugins [PLUGIN_NAME ...]\n"
 "  compel [--compat] [--static] libs\n"
 "  compel -f FILE -o FILE [-p NAME] [-l N] hgen\n"
 "    -f, --file FILE		input (parasite object) file name\n"
@@ -180,26 +181,34 @@ static void print_ldflags(bool compat)
 	if (uninst_root) {
 		printf("%s/arch/%s/scripts/compel-pack%s.lds.S\n",
 				uninst_root, flags.arch, compat_str);
-	}
-	else {
+	} else {
 		printf("%s/compel/scripts/compel-pack%s.lds.S\n",
 				LIBEXECDIR, compat_str);
 
 	}
 }
 
-static void print_plugins(const char *list[])
+static void print_plugin(const char *name)
 {
 	const char suffix[] = ".lib.a";
 
-	while (*list != NULL) {
-		if (uninst_root)
-			printf("%s/plugins/%s%s\n",
-					uninst_root, *list, suffix);
-		else
-			printf("%s/compel/%s%s\n", LIBEXECDIR, *list, suffix);
-		list++;
-	}
+	if (uninst_root)
+		printf("%s/plugins/%s%s\n",
+				uninst_root, name, suffix);
+	else
+		printf("%s/compel/%s%s\n", LIBEXECDIR, name, suffix);
+}
+
+static void print_plugins(char *const list[])
+{
+	char *builtin_list[] = { "std", NULL };
+	char **p = builtin_list;
+
+	while (*p != NULL)
+		print_plugin(*p++);
+
+	while (*list != NULL)
+		print_plugin(*list++);
 }
 
 static int print_libs(bool is_static)
@@ -212,8 +221,7 @@ static int print_libs(bool is_static)
 			return 1;
 		}
 		printf("%s/%s\n", uninst_root, STATIC_LIB);
-	}
-	else {
+	} else {
 		printf("%s/%s\n", LIBDIR, (is_static) ? STATIC_LIB : DYN_LIB);
 	}
 
@@ -245,8 +253,7 @@ static char *gen_prefix(const char *path)
 	for (i = len - 1; i >= 0; i--) {
 		if (!p1 && path[i] == '.') {
 			p2 = path + i - 1;
-		}
-		else if (!p1 && path[i] == '/') {
+		} else if (!p1 && path[i] == '/') {
 			p1 = path + i + 1;
 			break;
 		}
@@ -294,7 +301,6 @@ int main(int argc, char *argv[])
 	bool is_static = false;
 	int opt, idx;
 	char *action;
-	const char *plugins_list[] = { "std", NULL };
 
 	static const char short_opts[] = "csf:o:p:hVl:";
 	static struct option long_opts[] = {
@@ -372,9 +378,7 @@ int main(int argc, char *argv[])
 	}
 
 	if (!strcmp(action, "plugins")) {
-		/* TODO: add option to specify additional plugins
-		 * if/when we'll have any */
-		print_plugins(plugins_list);
+		print_plugins(argv + optind);
 		return 0;
 	}
 

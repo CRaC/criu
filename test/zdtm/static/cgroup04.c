@@ -59,19 +59,19 @@ int mount_and_add(const char *controller, const char *path, const char *prop, co
 		goto err_rd;
 	}
 
-	sprintf(paux, "%s/%s", subdir, path);
+	ssprintf(paux, "%s/%s", subdir, path);
 	mkdir(paux, 0600);
 
-	sprintf(paux, "%s/%s/%s", subdir, path, prop);
+	ssprintf(paux, "%s/%s/%s", subdir, path, prop);
 	if (write_value(paux, value) < 0)
 		goto err_rs;
 
 	sprintf(aux, "%d", getpid());
-	sprintf(paux, "%s/%s/tasks", subdir, path);
+	ssprintf(paux, "%s/%s/tasks", subdir, path);
 	if (write_value(paux, aux) < 0)
 		goto err_rs;
 
-	sprintf(paux, "%s/%s/special_prop_check", subdir, path);
+	ssprintf(paux, "%s/%s/special_prop_check", subdir, path);
 	mkdir(paux, 0600);
 
 	return 0;
@@ -115,7 +115,7 @@ int main(int argc, char **argv)
 	char buf[1024], path[PATH_MAX];
 	struct stat sb;
 
-	char *deny[] = {
+	char *dev_allow[] = {
 		"c *:* m",
 		"b *:* m",
 		"c 1:3 rwm",
@@ -136,8 +136,8 @@ int main(int argc, char **argv)
 
 	/* need to allow /dev/null for restore */
 	sprintf(path, "%s/devices/%s/devices.allow", dirname, cgname);
-	for (i = 0; i < ARRAY_SIZE(deny); i++) {
-		if (write_value(path, deny[i]) < 0)
+	for (i = 0; i < ARRAY_SIZE(dev_allow); i++) {
+		if (write_value(path, dev_allow[i]) < 0)
 			goto out;
 	}
 
@@ -148,8 +148,8 @@ int main(int argc, char **argv)
 	test_waitsig();
 
 	buf[0] = 0;
-	for (i = 0; i < ARRAY_SIZE(deny); i++) {
-		strcat(buf, deny[i]);
+	for (i = 0; i < ARRAY_SIZE(dev_allow); i++) {
+		strcat(buf, dev_allow[i]);
 		strcat(buf, "\n");
 	}
 

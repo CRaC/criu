@@ -1,25 +1,48 @@
 #ifndef __CR_OPTIONS_H__
 #define __CR_OPTIONS_H__
 
+#include <sys/types.h>
 #include <stdbool.h>
-#include "config.h"
+#include "common/config.h"
 #include "common/list.h"
+
+/* Configuration and CLI parsing order defines */
+#define PARSING_GLOBAL_CONF	1
+#define PARSING_USER_CONF	2
+#define PARSING_ENV_CONF	3
+#define PARSING_CMDLINE_CONF	4
+#define PARSING_ARGV		5
+#define PARSING_RPC_CONF	6
+#define PARSING_LAST		7
+
+#define SET_CHAR_OPTS(__dest, __src) \
+	do { \
+		free(opts.__dest); \
+		opts.__dest = xstrdup(__src); \
+	} while(0)
 
 /*
  * CPU capability options.
  */
-#define CPU_CAP_NONE		(0u)
-#define CPU_CAP_ALL		(-1u)
-#define CPU_CAP_FPU		(1u)		/* Only FPU capability required */
-#define CPU_CAP_CPU		(2u)		/* Strict CPU capability required */
-#define CPU_CAP_INS		(4u)		/* Instructions CPU capatibility */
-#define CPU_CAP_DEFAULT		(CPU_CAP_FPU)
+#define CPU_CAP_NONE		(0u << 0)	/* Don't check capability at all */
+#define CPU_CAP_FPU		(1u << 0)	/* Only FPU capability required */
+#define CPU_CAP_CPU		(1u << 1)	/* Strict CPU capability required */
+#define CPU_CAP_INS		(1u << 2)	/* Instructions CPU capability */
+#define CPU_CAP_IMAGE		(1u << 3)	/* Write capability on dump and read on restore*/
+#define CPU_CAP_ALL		(CPU_CAP_FPU | CPU_CAP_CPU | CPU_CAP_INS)
+#define CPU_CAP_DEFAULT		(CPU_CAP_FPU | CPU_CAP_INS)
 
 struct cg_root_opt {
 	struct list_head node;
 	char *controller;
 	char *newroot;
 };
+
+/*
+ * Pre-dump variants
+ */
+#define PRE_DUMP_SPLICE		1		/* Pre-dump using parasite */
+#define PRE_DUMP_READ			2		/* Pre-dump using process_vm_readv syscall */
 
 /*
  * Cgroup management options.
@@ -49,23 +72,22 @@ struct irmap_path_opt {
 
 struct cr_options {
 	int			final_state;
-	char			*show_dump_file;
-	char			*show_fmt;
-	bool			check_extra_features;
-	bool			check_experimental_features;
-	bool			show_pages_content;
+	int			check_extra_features;
+	int			check_experimental_features;
 	union {
-		bool		restore_detach;
+		int		restore_detach;
 		bool		daemon_mode;
 	};
-	bool			restore_sibling;
+	int			restore_sibling;
 	bool			ext_unix_sk;
-	bool			shell_job;
-	bool			handle_file_locks;
-	bool			tcp_established_ok;
-	bool			evasive_devices;
-	bool			link_remap_ok;
-	bool			log_file_per_pid;
+	int			shell_job;
+	int			handle_file_locks;
+	int			tcp_established_ok;
+	int			tcp_close;
+	int			evasive_devices;
+	int			link_remap_ok;
+	int			log_file_per_pid;
+	int			pre_dump_mode;
 	bool			swrk_restore;
 	char			*output;
 	char			*root;
@@ -76,25 +98,26 @@ struct cr_options {
 	struct list_head	external;
 	struct list_head	join_ns;
 	char			*libdir;
-	bool			use_page_server;
+	int			use_page_server;
 	unsigned short		port;
 	char			*addr;
 	int			ps_socket;
-	bool			track_mem;
+	int			track_mem;
 	char			*img_parent;
-	bool			auto_dedup;
+	int			auto_dedup;
 	unsigned int		cpu_cap;
-	bool			force_irmap;
+	int			force_irmap;
 	char			**exec_cmd;
 	unsigned int		manage_cgroups;
 	char			*new_global_cg_root;
 	char			*cgroup_props;
 	char			*cgroup_props_file;
 	struct list_head	new_cgroup_roots;
+	char			*cgroup_yard;
 	bool			autodetect_ext_mounts;
-	bool			enable_external_sharing;
-	bool			enable_external_masters;
-	bool			aufs;		/* auto-deteced, not via cli */
+	int			enable_external_sharing;
+	int			enable_external_masters;
+	bool			aufs;		/* auto-detected, not via cli */
 	bool			overlayfs;
 #ifdef CONFIG_BINFMT_MISC_VIRTUALIZED
 	bool			has_binfmt_misc; /* auto-detected */
@@ -105,7 +128,8 @@ struct cr_options {
 	char			*lsm_profile;
 	unsigned int		timeout;
 	unsigned int		empty_ns;
-	bool			tcp_skip_in_flight;
+	int			tcp_skip_in_flight;
+	bool			lazy_pages;
 	char			*work_dir;
 
 	/*
@@ -114,16 +138,28 @@ struct cr_options {
 	 * the deprecated stuff is not working, but it's still possible
 	 * to turn one ON while the code is in.
 	 */
-	bool			deprecated_ok;
-	bool			display_stats;
-	bool			weak_sysctls;
+	int			deprecated_ok;
+	int			display_stats;
+	int			weak_sysctls;
 	int			status_fd;
 	bool			orphan_pts_master;
+	pid_t			tree_id;
+	int			log_level;
+	char			*imgs_dir;
+	char			*tls_cacert;
+	char			*tls_cacrl;
+	char			*tls_cert;
+	char			*tls_key;
+	int			tls;
+	int			tls_no_cn_verify;
 	bool			mmap_page_image;
 };
 
 extern struct cr_options opts;
+extern char *rpc_cfg_file;
 
+extern int parse_options(int argc, char **argv, bool *usage_error, bool *has_exec_cmd, int state);
+extern int check_options(void);
 extern void init_opts(void);
 
 #endif /* __CR_OPTIONS_H__ */

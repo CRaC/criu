@@ -20,6 +20,8 @@ static struct fdstore_desc {
 
 int fdstore_init(void)
 {
+	/* In kernel a bufsize has type int and a value is doubled. */
+	uint32_t buf[2] = { INT_MAX / 2, INT_MAX / 2 };
 	struct sockaddr_un addr;
 	unsigned int addrlen;
 	struct stat st;
@@ -44,6 +46,13 @@ int fdstore_init(void)
 		return -1;
 	}
 
+	if (setsockopt(sk, SOL_SOCKET, SO_SNDBUFFORCE, &buf[0], sizeof(buf[0])) < 0 ||
+	    setsockopt(sk, SOL_SOCKET, SO_RCVBUFFORCE, &buf[1], sizeof(buf[1])) < 0) {
+		pr_perror("Unable to set SO_SNDBUFFORCE/SO_RCVBUFFORCE");
+		close(sk);
+		return -1;
+	}
+
 	addr.sun_family = AF_UNIX;
 	addrlen = snprintf(addr.sun_path, sizeof(addr.sun_path), "X/criu-fdstore-%"PRIx64, st.st_ino);
 	addrlen += sizeof(addr.sun_family);
@@ -54,7 +63,7 @@ int fdstore_init(void)
 	 * This socket is connected to itself, so all messages are queued to
 	 * its receive queue. Here we are going to use this socket to store
 	 * file descriptors. For that we need to send a file descriptor in
-	 * a queue and remeber its sequence number. Then we can set SO_PEEK_OFF
+	 * a queue and remember its sequence number. Then we can set SO_PEEK_OFF
 	 * to get a file descriptor without dequeuing it.
 	 */
 	if (bind(sk, (struct sockaddr *) &addr, addrlen)) {
@@ -69,7 +78,6 @@ int fdstore_init(void)
 	}
 
 	ret = install_service_fd(FDSTORE_SK_OFF, sk);
-	close(sk);
 	if (ret < 0)
 		return -1;
 
@@ -79,11 +87,13 @@ int fdstore_init(void)
 int fdstore_add(int fd)
 {
 	int sk = get_service_fd(FDSTORE_SK_OFF);
-	int id;
+	int id, ret;
 
 	mutex_lock(&desc->lock);
 
-	if (send_fd(sk, NULL, 0, fd)) {
+	ret = send_fd(sk, NULL, 0, fd);
+	if (ret) {
+		pr_perror("Can't send fd %d into store\n", fd);
 		mutex_unlock(&desc->lock);
 		return -1;
 	}

@@ -14,12 +14,12 @@ TEST_OPTION(filename, string, "file name", 1);
 
 #define FILE_NUM 4
 static int fds[FILE_NUM];
-static struct flock64 lcks[FILE_NUM];
+static struct flock lcks[FILE_NUM];
 static short types[] = {F_RDLCK, F_RDLCK, F_RDLCK, F_RDLCK};
 static off_t starts[] = {0, 10, 0, 70};
 static off_t lens[]  = {20, 30, 100, 200};
 
-void fill_lock(struct flock64 *lock, off_t start, off_t len, short int type)
+void fill_lock(struct flock *lock, off_t start, off_t len, short int type)
 {
 	lock->l_start = start;
 	lock->l_len = len;
@@ -45,7 +45,7 @@ int init_file_locks(void)
 	}
 
 	for (i = 0; i < FILE_NUM; ++i)
-		if (fcntl(fds[i], F_OFD_SETLKW, &lcks[i]) < 0) {
+		if (zdtm_fcntl(fds[i], F_OFD_SETLKW, &lcks[i]) < 0) {
 			pr_perror("Can't set ofd lock");
 			return -1;
 		}

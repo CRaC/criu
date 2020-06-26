@@ -13,55 +13,26 @@ $(__nmk_dir)%.mk: ;
 include $(__nmk_dir)include.mk
 include $(__nmk_dir)macro.mk
 
-CFLAGS		+= $(USERCFLAGS)
-export CFLAGS
-
-HOSTCFLAGS	?= $(CFLAGS)
-export HOSTCFLAGS
+ifeq ($(origin HOSTCFLAGS), undefined)
+        HOSTCFLAGS := $(CFLAGS) $(USERCFLAGS)
+endif
 
 #
-# Architecture specific options.
-ifneq ($(filter-out x86 arm arm64 ppc64,$(ARCH)),)
+# Supported Architectures
+ifneq ($(filter-out x86 arm aarch64 ppc64 s390,$(ARCH)),)
         $(error "The architecture $(ARCH) isn't supported")
 endif
 
-ifeq ($(ARCH),x86)
-        SRCARCH		:= x86
-        LDARCH		:= i386:x86-64
-        VDSO		:= y
+# The PowerPC 64 bits architecture could be big or little endian.
+# They are handled in the same way.
+ifeq ($(SUBARCH),ppc64)
+        error := $(error ppc64 big endian is not yet supported)
 endif
 
+#
+# Architecture specific options.
 ifeq ($(ARCH),arm)
-        SRCARCH		:= arm
-endif
-
-ifeq ($(ARCH),arm64)
-        ARCH		:= aarch64
-        SRCARCH		:= aarch64
-        VDSO		:= y
-endif
-
-ifeq ($(ARCH),ppc64)
-        SRCARCH		:= ppc64
-        LDARCH		:= powerpc:common64
-        VDSO		:= y
-endif
-
-LDARCH ?= $(SRCARCH)
-
-export SRCARCH LDARCH VDSO
-
-SRCARCH			?= $(ARCH)
-LDARCH			?= $(SRCARCH)
-
-export SRCARCH LDARCH VDSO
-
-UNAME-M := $(shell uname -m)
-export UNAME-M
-
-ifeq ($(ARCH),arm)
-        ARMV		:= $(shell echo $(UNAME-M) | sed -nr 's/armv([[:digit:]]).*/\1/p; t; i7')
-        DEFINES		:= -DCONFIG_ARMV$(ARMV)
+        ARMV		:= $(shell echo $(SUBARCH) | sed -nr 's/armv([[:digit:]]).*/\1/p; t; i7')
 
         ifeq ($(ARMV),6)
                 USERCFLAGS += -march=armv6
@@ -71,41 +42,67 @@ ifeq ($(ARCH),arm)
                 USERCFLAGS += -march=armv7-a
         endif
 
+        ifeq ($(ARMV),8)
+                # Running 'setarch linux32 uname -m' returns armv8l on travis aarch64.
+                # This tells CRIU to handle armv8l just as armv7hf. Right now this is
+                # only used for compile testing. No further verification of armv8l exists.
+                USERCFLAGS += -march=armv7-a
+                ARMV := 7
+        endif
+
+        DEFINES		:= -DCONFIG_ARMV$(ARMV) -DCONFIG_VDSO_32
+
         PROTOUFIX	:= y
+	# For simplicity - compile code in Arm mode without interwork.
+	# We could choose Thumb mode as default instead - but a dirty
+	# experiment shows that with 90Kb PIEs Thumb code doesn't save
+	# even one page. So, let's stick so far to Arm mode as it's more
+	# universal around all different Arm variations, until someone
+	# will find any use for Thumb mode. -dima
+        CFLAGS_PIE	:= -marm
 endif
 
 ifeq ($(ARCH),aarch64)
-	DEFINES		:= -DCONFIG_AARCH64
+        DEFINES		:= -DCONFIG_AARCH64
+endif
+
+ifeq ($(ARCH),ppc64)
+        LDARCH		:= powerpc:common64
+        DEFINES		:= -DCONFIG_PPC64 -D__SANE_USERSPACE_TYPES__
 endif
 
 ifeq ($(ARCH),x86)
+        LDARCH		:= i386:x86-64
         DEFINES		:= -DCONFIG_X86_64
 endif
 
 #
-# The PowerPC 64 bits architecture could be big or little endian.
-# They are handled in the same way.
+# CFLAGS_PIE:
 #
-ifeq ($(ARCH),ppc64)
-        ifeq ($(UNAME-M),ppc64)
-                error := $(error ppc64 big endian not yet supported)
-        endif
-
-        DEFINES		:= -DCONFIG_PPC64
+# Ensure with -fno-optimize-sibling-calls that we don't create GOT
+# (Global Offset Table) relocations with gcc compilers that don't have
+# commit "S/390: Fix 64 bit sibcall".
+ifeq ($(ARCH),s390)
+        ARCH		:= s390
+        DEFINES		:= -DCONFIG_S390
+        CFLAGS_PIE	:= -fno-optimize-sibling-calls
 endif
 
-export PROTOUFIX DEFINES USERCFLAGS
+CFLAGS_PIE		+= -DCR_NOGLIBC
+export CFLAGS_PIE
+
+LDARCH ?= $(ARCH)
+export LDARCH
+export PROTOUFIX DEFINES
 
 #
 # Independent options for all tools.
 DEFINES			+= -D_FILE_OFFSET_BITS=64
 DEFINES			+= -D_GNU_SOURCE
 
-CFLAGS			+= $(USERCFLAGS)
+WARNINGS		:= -Wall -Wformat-security -Wdeclaration-after-statement -Wstrict-prototypes
 
-WARNINGS		:= -Wall -Wformat-security
-
-CFLAGS-GCOV		:= --coverage -fno-exceptions -fno-inline
+CFLAGS-GCOV		:= --coverage -fno-exceptions -fno-inline -fprofile-update=atomic
 export CFLAGS-GCOV
 
 ifneq ($(GCOV),)
@@ -136,10 +133,13 @@ ifeq ($(GMON),1)
 export GMON GMONLDOPT
 endif
 
-CFLAGS			+= $(WARNINGS) $(DEFINES) -iquote include/
+AFLAGS			+= -D__ASSEMBLY__
+CFLAGS			+= $(USERCFLAGS) $(WARNINGS) $(DEFINES) -iquote include/
+HOSTCFLAGS		+= $(WARNINGS) $(DEFINES) -iquote include/
+export AFLAGS CFLAGS USERCLFAGS HOSTCFLAGS
 
 # Default target
-all: criu lib
+all: criu lib crit
 .PHONY: all
 
 #
@@ -193,12 +193,13 @@ criu-deps	+= include/common/asm
 
 #
 # Configure variables.
-export CONFIG_HEADER := criu/include/config.h
-ifeq ($(filter clean mrproper,$(MAKECMDGOALS)),)
+export CONFIG_HEADER := include/common/config.h
+ifeq ($(filter tags etags cscope clean mrproper,$(MAKECMDGOALS)),)
 include Makefile.config
 else
 # To clean all files, enable make/build options here
 export CONFIG_COMPAT := y
+export CONFIG_GNUTLS := y
 endif
 
 #
@@ -206,8 +207,6 @@ endif
 # on anything else.
 $(eval $(call gen-built-in,images))
 criu-deps	+= images/built-in.o
-
-.PHONY: .FORCE
 
 #
 # Compel get used by CRIU, build it earlier
@@ -217,13 +216,10 @@ include Makefile.compel
 # Next the socket CR library
 #
 SOCCR_A := soccr/libsoccr.a
-SOCCR_CONFIG := soccr/config.h
-$(SOCCR_CONFIG): $(CONFIG_HEADER)
-	$(Q) test -f $@ || ln -s ../$(CONFIG_HEADER) $@
 soccr/Makefile: ;
-soccr/%: $(SOCCR_CONFIG) .FORCE
+soccr/%: $(CONFIG_HEADER) .FORCE
 	$(Q) $(MAKE) $(build)=soccr $@
-soccr/built-in.o: $(SOCCR_CONFIG) .FORCE
+soccr/built-in.o: $(CONFIG_HEADER) .FORCE
 	$(Q) $(MAKE) $(build)=soccr all
 $(SOCCR_A): |soccr/built-in.o
 criu-deps	+= $(SOCCR_A)
@@ -245,14 +241,22 @@ criu: $(criu-deps)
 	$(Q) $(MAKE) $(build)=criu all
 .PHONY: criu
 
+crit/Makefile: ;
+crit/%: criu .FORCE
+	$(Q) $(MAKE) $(build)=crit $@
+crit: criu
+	$(Q) $(MAKE) $(build)=crit all
+.PHONY: crit
+
+
 #
-# Libraries next once criu it ready
+# Libraries next once crit it ready
 # (we might generate headers and such
 # when building criu itself).
 lib/Makefile: ;
-lib/%: criu .FORCE
+lib/%: crit .FORCE
 	$(Q) $(MAKE) $(build)=lib $@
-lib: criu
+lib: crit
 	$(Q) $(MAKE) $(build)=lib all
 .PHONY: lib
 
@@ -264,6 +268,7 @@ clean mrproper:
 	$(Q) $(MAKE) $(build)=compel $@
 	$(Q) $(MAKE) $(build)=compel/plugins $@
 	$(Q) $(MAKE) $(build)=lib $@
+	$(Q) $(MAKE) $(build)=crit $@
 .PHONY: clean mrproper
 
 clean-top:
@@ -276,7 +281,6 @@ clean: clean-top
 
 mrproper-top: clean-top
 	$(Q) $(RM) $(CONFIG_HEADER)
-	$(Q) $(RM) $(SOCCR_CONFIG)
 	$(Q) $(RM) $(VERSION_HEADER)
 	$(Q) $(RM) $(COMPEL_VERSION_HEADER)
 	$(Q) $(RM) include/common/asm
@@ -296,11 +300,11 @@ docs:
 .PHONY: docs
 
 zdtm: all
-	$(Q) MAKEFLAGS= $(MAKE) -C test/zdtm all
+	$(Q) $(MAKE) -C test/zdtm all
 .PHONY: zdtm
 
 test: zdtm
-	$(Q) MAKEFLAGS= $(MAKE) -C test
+	$(Q) $(MAKE) -C test
 .PHONY: test
 
 #
@@ -326,22 +330,23 @@ criu-$(tar-name).tar.bz2:
 dist tar: criu-$(tar-name).tar.bz2 ;
 .PHONY: dist tar
 
+TAGS_FILES_REGEXP := . -name '*.[hcS]' ! -path './.*' \( ! -path './test/*' -o -path './test/zdtm/lib/*' \)
 tags:
 	$(call msg-gen, $@)
 	$(Q) $(RM) tags
-	$(Q) $(FIND) . -name '*.[hcS]' ! -path './.*' ! -path './test/*' -print | xargs $(CTAGS) -a
+	$(Q) $(FIND) $(TAGS_FILES_REGEXP) -print | xargs $(CTAGS) -a
 .PHONY: tags
 
 etags:
 	$(call msg-gen, $@)
 	$(Q) $(RM) TAGS
-	$(Q) $(FIND) . -name '*.[hcS]' ! -path './.*' ! -path './test/*' -print | xargs $(ETAGS) -a
+	$(Q) $(FIND) $(TAGS_FILES_REGEXP) -print | xargs $(ETAGS) -a
 .PHONY: etags
 
 
 cscope:
 	$(call msg-gen, $@)
-	$(Q) $(FIND) . -name '*.[hcS]' ! -path './.*' ! -path './test/*' ! -type l -print > cscope.files
+	$(Q) $(FIND) $(TAGS_FILES_REGEXP) ! -type l -print > cscope.files
 	$(Q) $(CSCOPE) -bkqu
 .PHONY: cscope
 
@@ -381,7 +386,11 @@ help:
 .PHONY: help
 
 lint:
+	flake8 --version
 	flake8 --config=scripts/flake8.cfg test/zdtm.py
+	flake8 --config=scripts/flake8.cfg test/inhfd/*.py
+	flake8 --config=scripts/flake8.cfg test/others/rpc/config_file.py
+	flake8 --config=scripts/flake8.cfg lib/py/images/pb2dict.py
 
 include Makefile.install
 

@@ -6,11 +6,11 @@
 
 #define PAGE_ALLOC_COSTLY_ORDER 3 /* from the kernel source code */
 struct kernel_pipe_buffer {
-        struct page *page;
-        unsigned int offset, len;
-        const struct pipe_buf_operations *ops;
-        unsigned int flags;
-        unsigned long private;
+	struct page *page;
+	unsigned int offset, len;
+	const struct pipe_buf_operations *ops;
+	unsigned int flags;
+	unsigned long private;
 };
 
 /*
@@ -91,27 +91,44 @@ struct kernel_pipe_buffer {
  */
 
 struct page_pipe_buf {
-	int p[2];		/* pipe with pages */
-	unsigned int pipe_size;	/* how many pages can be fit into pipe */
-	unsigned int pages_in;	/* how many pages are there */
-	unsigned int nr_segs;	/* how many iov-s are busy */
-	struct iovec *iov;	/* vaddr:len map */
-	struct list_head l;	/* links into page_pipe->bufs */
+	int			p[2];		/* pipe with pages */
+	unsigned int		pipe_size;	/* how many pages can be fit into pipe */
+	unsigned int		pipe_off;	/* where this buf is started in a pipe */
+	unsigned int		pages_in;	/* how many pages are there */
+	unsigned int		nr_segs;	/* how many iov-s are busy */
+#define PPB_LAZY (1 << 0)
+	unsigned int		flags;
+	struct iovec		*iov;		/* vaddr:len map */
+	struct list_head	l;		/* links into page_pipe->bufs */
 };
 
-struct page_pipe {
-	unsigned int nr_pipes;	/* how many page_pipe_bufs in there */
-	struct list_head bufs;	/* list of bufs */
-	struct list_head free_bufs;	/* list of bufs */
-	unsigned int nr_iovs;	/* number of iovs */
-	unsigned int free_iov;	/* first free iov */
-	struct iovec *iovs;	/* iovs. They are provided into create_page_pipe
-				   and all bufs have their iov-s in there */
+/*
+ * Page pipe buffers with different flags cannot share the same pipe.
+ * We track the last ppb that was used for each type separately in the
+ * prev[] array in the struct page_pipe (below).
+ * Currently we have 2 types: the buffers that are always stored in
+ * the images and the buffers that are lazily migrated
+ */
+#define PP_PIPE_TYPES	2
 
-	unsigned int nr_holes;	/* number of holes allocated */
-	unsigned int free_hole;	/* number of holes in use */
-	struct iovec *holes;	/* holes */
-	unsigned flags;		/* PP_FOO flags below */
+#define PP_HOLE_PARENT (1 << 0)
+
+struct page_pipe {
+	unsigned int		nr_pipes;		/* how many page_pipe_bufs in there */
+	struct list_head	bufs;			/* list of bufs */
+	struct list_head	free_bufs;		/* list of bufs */
+	struct page_pipe_buf	*prev[PP_PIPE_TYPES];	/* last ppb of each type for pipe sharing */
+	unsigned int		nr_iovs;		/* number of iovs */
+	unsigned int		free_iov;		/* first free iov */
+
+	struct iovec		*iovs;			/* iovs. They are provided into create_page_pipe
+							   and all bufs have their iov-s in there */
+
+	unsigned int		nr_holes;		/* number of holes allocated */
+	unsigned int		free_hole;		/* number of holes in use */
+	struct iovec		*holes;			/* holes */
+	unsigned int		*hole_flags;
+	unsigned int		flags;			/* PP_FOO flags below */
 };
 
 #define PP_CHUNK_MODE	0x1	/* Restrict the maximum buffer size of pipes
@@ -120,10 +137,24 @@ struct page_pipe {
 
 struct page_pipe *create_page_pipe(unsigned int nr_segs, struct iovec *iovs, unsigned flags);
 extern void destroy_page_pipe(struct page_pipe *p);
-extern int page_pipe_add_page(struct page_pipe *p, unsigned long addr);
-extern int page_pipe_add_hole(struct page_pipe *p, unsigned long addr);
+extern int page_pipe_add_page(struct page_pipe *p, unsigned long addr,
+			      unsigned int flags);
+extern int page_pipe_add_hole(struct page_pipe *pp, unsigned long addr,
+			      unsigned int flags);
 
 extern void debug_show_page_pipe(struct page_pipe *pp);
 void page_pipe_reinit(struct page_pipe *pp);
+
+extern void page_pipe_destroy_ppb(struct page_pipe_buf *ppb);
+
+struct pipe_read_dest {
+	int p[2];
+	int sink_fd;
+};
+
+extern int pipe_read_dest_init(struct pipe_read_dest *prd);
+extern int page_pipe_read(struct page_pipe *pp, struct pipe_read_dest *prd,
+			  unsigned long addr, unsigned int *nr_pages,
+			  unsigned int ppb_flags);
 
 #endif /* __CR_PAGE_PIPE_H__ */

@@ -6,12 +6,13 @@
 #include <sys/mount.h>
 #include <stdarg.h>
 #include <sys/ioctl.h>
+#include <sys/uio.h>
 
+#include "common/config.h"
 #include "int.h"
 #include "types.h"
 #include <compel/plugins/std/syscall.h>
 #include "parasite.h"
-#include "config.h"
 #include "fcntl.h"
 #include "prctl.h"
 #include "common/lock.h"
@@ -38,6 +39,10 @@ static struct parasite_dump_pages_args *mprotect_args = NULL;
 #define PR_GET_PDEATHSIG  2
 #endif
 
+#ifndef PR_GET_CHILD_SUBREAPER
+#define PR_GET_CHILD_SUBREAPER  37
+#endif
+
 static int mprotect_vmas(struct parasite_dump_pages_args *args)
 {
 	struct parasite_vma_entry *vmas, *vma;
@@ -48,7 +53,7 @@ static int mprotect_vmas(struct parasite_dump_pages_args *args)
 		vma = vmas + i;
 		ret = sys_mprotect((void *)vma->start, vma->len, vma->prot | args->add_prot);
 		if (ret) {
-			pr_err("mprotect(%08lx, %lu) failed with code %d\n",
+			pr_err("mprotect(%08lx, %ld) failed with code %d\n",
 						vma->start, vma->len, ret);
 			break;
 		}
@@ -66,6 +71,8 @@ static int dump_pages(struct parasite_dump_pages_args *args)
 {
 	int p, ret, tsock;
 	struct iovec *iovs;
+	int off, nr_segs;
+	unsigned long spliced_bytes = 0;
 
 	tsock = parasite_get_rpc_sock();
 	p = recv_fd(tsock);
@@ -73,11 +80,29 @@ static int dump_pages(struct parasite_dump_pages_args *args)
 		return -1;
 
 	iovs = pargs_iovs(args);
-	ret = sys_vmsplice(p, &iovs[args->off], args->nr_segs,
-				SPLICE_F_GIFT | SPLICE_F_NONBLOCK);
-	if (ret != PAGE_SIZE * args->nr_pages) {
+	off = 0;
+	nr_segs = args->nr_segs;
+	if (nr_segs > UIO_MAXIOV)
+		nr_segs = UIO_MAXIOV;
+	while (1) {
+		ret = sys_vmsplice(p, &iovs[args->off + off], nr_segs,
+					SPLICE_F_GIFT | SPLICE_F_NONBLOCK);
+		if (ret < 0) {
+			sys_close(p);
+			pr_err("Can't splice pages to pipe (%d/%d/%d)\n",
+						ret, nr_segs, args->off + off);
+			return -1;
+		}
+		spliced_bytes += ret;
+		off += nr_segs;
+		if (off == args->nr_segs)
+			break;
+		if (off + nr_segs > args->nr_segs)
+			nr_segs = args->nr_segs - off;
+	}
+	if (spliced_bytes != args->nr_pages * PAGE_SIZE) {
 		sys_close(p);
-		pr_err("Can't splice pages to pipe (%d/%d)\n", ret, args->nr_pages);
+		pr_err("Can't splice all pages to pipe (%ld/%d)\n", spliced_bytes, args->nr_pages);
 		return -1;
 	}
 
@@ -151,16 +176,28 @@ static int dump_thread_common(struct parasite_dump_thread *ti)
 
 	arch_get_tls(&ti->tls);
 	ret = sys_prctl(PR_GET_TID_ADDRESS, (unsigned long) &ti->tid_addr, 0, 0, 0);
-	if (ret)
+	if (ret) {
+		pr_err("Unable to get the clear_child_tid address: %d\n", ret);
 		goto out;
+	}
 
 	ret = sys_sigaltstack(NULL, &ti->sas);
-	if (ret)
+	if (ret) {
+		pr_err("Unable to get signal stack context: %d\n", ret);
 		goto out;
+	}
 
 	ret = sys_prctl(PR_GET_PDEATHSIG, (unsigned long)&ti->pdeath_sig, 0, 0, 0);
-	if (ret)
+	if (ret) {
+		pr_err("Unable to get the parent death signal: %d\n", ret);
 		goto out;
+	}
+
+	ret = sys_prctl(PR_GET_NAME, (unsigned long) &ti->comm, 0, 0, 0);
+	if (ret) {
+		pr_err("Unable to get the thread name: %d\n", ret);
+		goto out;
+	}
 
 	ret = dump_creds(ti->creds);
 out:
@@ -169,6 +206,8 @@ out:
 
 static int dump_misc(struct parasite_dump_misc *args)
 {
+	int ret;
+
 	args->brk = sys_brk(0);
 
 	args->pid = sys_getpid();
@@ -177,8 +216,13 @@ static int dump_misc(struct parasite_dump_misc *args)
 	args->umask = sys_umask(0);
 	sys_umask(args->umask); /* never fails */
 	args->dumpable = sys_prctl(PR_GET_DUMPABLE, 0, 0, 0, 0);
+	args->thp_disabled = sys_prctl(PR_GET_THP_DISABLE, 0, 0, 0, 0);
 
-	return 0;
+	ret = sys_prctl(PR_GET_CHILD_SUBREAPER, (unsigned long)&args->child_subreaper, 0, 0, 0);
+	if (ret)
+		pr_err("PR_GET_CHILD_SUBREAPER failed (%d)\n", ret);
+
+	return ret;
 }
 
 static int dump_creds(struct parasite_dump_creds *args)
@@ -249,7 +293,7 @@ static int dump_creds(struct parasite_dump_creds *args)
 	args->uids[3] = sys_setfsuid(-1L);
 
 	/*
-	 * FIXME In https://github.com/xemul/criu/issues/95 it is
+	 * FIXME In https://github.com/checkpoint-restore/criu/issues/95 it is
 	 * been reported that only low 16 bits are set upon syscall
 	 * on ARMv7.
 	 *
@@ -273,15 +317,60 @@ grps_err:
 	return -1;
 }
 
+static int fill_fds_fown(int fd, struct fd_opts *p)
+{
+	int flags, ret;
+	struct f_owner_ex owner_ex;
+	uint32_t v[2];
+
+	/*
+	 * For O_PATH opened files there is no owner at all.
+	 */
+	flags = sys_fcntl(fd, F_GETFL, 0);
+	if (flags < 0) {
+		pr_err("fcntl(%d, F_GETFL) -> %d\n", fd, flags);
+		return -1;
+	}
+	if (flags & O_PATH) {
+		p->fown.pid = 0;
+		return 0;
+	}
+
+	ret = sys_fcntl(fd, F_GETOWN_EX, (long)&owner_ex);
+	if (ret) {
+		pr_err("fcntl(%d, F_GETOWN_EX) -> %d\n", fd, ret);
+		return -1;
+	}
+
+	/*
+	 * Simple case -- nothing is changed.
+	 */
+	if (owner_ex.pid == 0) {
+		p->fown.pid = 0;
+		return 0;
+	}
+
+	ret = sys_fcntl(fd, F_GETOWNER_UIDS, (long)&v);
+	if (ret) {
+		pr_err("fcntl(%d, F_GETOWNER_UIDS) -> %d\n", fd, ret);
+		return -1;
+	}
+
+	p->fown.uid	 = v[0];
+	p->fown.euid	 = v[1];
+	p->fown.pid_type = owner_ex.type;
+	p->fown.pid	 = owner_ex.pid;
+
+	return 0;
+}
+
 static int fill_fds_opts(struct parasite_drain_fd *fds, struct fd_opts *opts)
 {
 	int i;
 
 	for (i = 0; i < fds->nr_fds; i++) {
-		int flags, fd = fds->fds[i], ret;
+		int flags, fd = fds->fds[i];
 		struct fd_opts *p = opts + i;
-		struct f_owner_ex owner_ex;
-		uint32_t v[2];
 
 		flags = sys_fcntl(fd, F_GETFD, 0);
 		if (flags < 0) {
@@ -291,30 +380,8 @@ static int fill_fds_opts(struct parasite_drain_fd *fds, struct fd_opts *opts)
 
 		p->flags = (char)flags;
 
-		ret = sys_fcntl(fd, F_GETOWN_EX, (long)&owner_ex);
-		if (ret) {
-			pr_err("fcntl(%d, F_GETOWN_EX) -> %d\n", fd, ret);
+		if (fill_fds_fown(fd, p))
 			return -1;
-		}
-
-		/*
-		 * Simple case -- nothing is changed.
-		 */
-		if (owner_ex.pid == 0) {
-			p->fown.pid = 0;
-			continue;
-		}
-
-		ret = sys_fcntl(fd, F_GETOWNER_UIDS, (long)&v);
-		if (ret) {
-			pr_err("fcntl(%d, F_GETOWNER_UIDS) -> %d\n", fd, ret);
-			return -1;
-		}
-
-		p->fown.uid	 = v[0];
-		p->fown.euid	 = v[1];
-		p->fown.pid_type = owner_ex.type;
-		p->fown.pid	 = owner_ex.pid;
 	}
 
 	return 0;
@@ -539,7 +606,6 @@ err_io:
 #undef __tty_ioctl
 }
 
-#ifdef CONFIG_VDSO
 static int parasite_check_vdso_mark(struct parasite_vdso_vma_entry *args)
 {
 	struct vdso_mark *m = (void *)args->start;
@@ -547,19 +613,21 @@ static int parasite_check_vdso_mark(struct parasite_vdso_vma_entry *args)
 	if (is_vdso_mark(m)) {
 		/*
 		 * Make sure we don't meet some corrupted entry
-		 * where signature matches but verions is not!
+		 * where signature matches but versions do not!
 		 */
 		if (m->version != VDSO_MARK_CUR_VERSION) {
 			pr_err("vdso: Mark version mismatch!\n");
 			return -EINVAL;
 		}
-		args->is_marked = 1;
-		args->proxy_vdso_addr = m->proxy_vdso_addr;
-		args->proxy_vvar_addr = m->proxy_vvar_addr;
+		args->is_marked		= 1;
+		args->orig_vdso_addr	= m->orig_vdso_addr;
+		args->orig_vvar_addr	= m->orig_vvar_addr;
+		args->rt_vvar_addr	= m->rt_vvar_addr;
 	} else {
-		args->is_marked = 0;
-		args->proxy_vdso_addr = VDSO_BAD_ADDR;
-		args->proxy_vvar_addr = VVAR_BAD_ADDR;
+		args->is_marked		= 0;
+		args->orig_vdso_addr	= VDSO_BAD_ADDR;
+		args->orig_vvar_addr	= VVAR_BAD_ADDR;
+		args->rt_vvar_addr	= VVAR_BAD_ADDR;
 
 		if (args->try_fill_symtable) {
 			struct vdso_symtable t;
@@ -573,13 +641,6 @@ static int parasite_check_vdso_mark(struct parasite_vdso_vma_entry *args)
 
 	return 0;
 }
-#else
-static inline int parasite_check_vdso_mark(struct parasite_vdso_vma_entry *args)
-{
-	pr_err("Unexpected VDSO check command\n");
-	return -1;
-}
-#endif
 
 static int parasite_dump_cgroup(struct parasite_dump_cgroup_args *args)
 {
@@ -606,7 +667,7 @@ static int parasite_dump_cgroup(struct parasite_dump_cgroup_args *args)
 		return -1;
 	}
 
-	if (len == sizeof(*args)) {
+	if (len == sizeof(args->contents)) {
 		pr_warn("/proc/self/cgroup was bigger than the page size\n");
 		return -1;
 	}

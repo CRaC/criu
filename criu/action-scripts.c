@@ -43,14 +43,12 @@ enum {
 };
 
 static int scripts_mode = SCRIPTS_NONE;
-static int rpc_sk;
 static LIST_HEAD(scripts);
 
 static int run_shell_scripts(const char *action)
 {
 	int retval = 0;
 	struct script *script;
-	char image_dir[PATH_MAX];
 	static unsigned env_set = 0;
 
 #define ENV_IMGDIR	0x1
@@ -62,6 +60,7 @@ static int run_shell_scripts(const char *action)
 	}
 
 	if (!(env_set & ENV_IMGDIR)) {
+		char image_dir[PATH_MAX];
 		sprintf(image_dir, "/proc/%ld/fd/%d", (long) getpid(), get_service_fd(IMG_FD_OFF));
 		if (setenv("CRTOOLS_IMAGE_DIR", image_dir, 1)) {
 			pr_perror("Can't set CRTOOLS_IMAGE_DIR=%s", image_dir);
@@ -72,10 +71,10 @@ static int run_shell_scripts(const char *action)
 
 	if (!(env_set & ENV_ROOTPID) && root_item) {
 		int pid;
-		char root_item_pid[16];
 
 		pid = root_item->pid->real;
 		if (pid != -1) {
+			char root_item_pid[16];
 			snprintf(root_item_pid, sizeof(root_item_pid), "%d", pid);
 			if (setenv("CRTOOLS_INIT_PID", root_item_pid, 1)) {
 				pr_perror("Can't set CRTOOLS_INIT_PID=%s", root_item_pid);
@@ -103,8 +102,13 @@ static int run_shell_scripts(const char *action)
 int rpc_send_fd(enum script_actions act, int fd)
 {
 	const char *action = action_names[act];
+	int rpc_sk;
 
 	if (scripts_mode != SCRIPTS_RPC)
+		return -1;
+
+	rpc_sk = get_service_fd(RPC_SK_OFF);
+	if (rpc_sk < 0)
 		return -1;
 
 	pr_debug("\tRPC\n");
@@ -122,8 +126,7 @@ int run_scripts(enum script_actions act)
 		return 0;
 
 	if (scripts_mode == SCRIPTS_RPC) {
-		pr_debug("\tRPC\n");
-		ret = send_criu_rpc_script(act, (char *)action, rpc_sk, -1);
+		ret = rpc_send_fd(act, -1);
 		goto out;
 	}
 
@@ -161,7 +164,8 @@ int add_rpc_notify(int sk)
 	BUG_ON(scripts_mode == SCRIPTS_SHELL);
 	scripts_mode = SCRIPTS_RPC;
 
-	rpc_sk = install_service_fd(RPC_SK_OFF, sk);
+	if (install_service_fd(RPC_SK_OFF, dup(sk)) < 0)
+		return -1;
 
 	return 0;
 }
