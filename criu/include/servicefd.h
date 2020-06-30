@@ -28,8 +28,6 @@ enum sfd_type {
 	RPC_SK_OFF,
 	FDSTORE_SK_OFF,
 
-	PAGES_FD_OFF,
-
 	SERVICE_FD_MAX
 };
 

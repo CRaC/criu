@@ -48,7 +48,6 @@ struct page_read {
 			  void *, unsigned flags);
 	/* Advance page_read to the next entry */
 	int (*advance)(struct page_read *pr);
-	int (*seek0)(struct page_read *pr);
 	void (*close)(struct page_read *);
 	void (*skip_pages)(struct page_read *, unsigned long len);
 	int (*sync)(struct page_read *pr);
@@ -84,8 +83,6 @@ struct page_read {
 	int curr_pme;
 
 	struct list_head	async;
-
-	int prot; /* prot flags of current vma, valid only during read */
 };
 
 /* flags for ->read_pages */

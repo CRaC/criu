@@ -267,24 +267,14 @@ int vdso_proxify(struct vdso_maps *rt, bool *added_proxy,
 		 VmaEntry *vmas, size_t nr_vmas,
 		 bool compat_vdso, bool force_trampolines)
 {
-	VmaEntry vma_vdso_buf;
 	VmaEntry *vma_vdso = NULL, *vma_vvar = NULL;
 	struct vdso_symtable s = VDSO_SYMTABLE_INIT;
 	unsigned int i;
 
 	for (i = 0; i < nr_vmas; i++) {
-		if (vma_entry_is(&vmas[i], VMA_AREA_VDSO)) {
-			if (!vma_vdso) {
-				vma_vdso_buf = vmas[i];
-				vma_vdso = &vma_vdso_buf;
-			} else if (vmas[i].end == vma_vdso->start) {
-				vma_vdso->start = vmas[i].start;
-			} else if (vma_vdso->end == vmas[i].start) {
-				vma_vdso->end = vmas[i].end;
-			} else {
-				BUG();
-			}
-		} else if (vma_entry_is(&vmas[i], VMA_AREA_VVAR))
+		if (vma_entry_is(&vmas[i], VMA_AREA_VDSO))
+			vma_vdso = &vmas[i];
+		else if (vma_entry_is(&vmas[i], VMA_AREA_VVAR))
 			vma_vvar = &vmas[i];
 	}
 
