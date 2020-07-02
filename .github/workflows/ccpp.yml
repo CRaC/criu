@@ -28,6 +28,18 @@ jobs:
 
     - run: tar -zcf criu-dist.tar.gz criu-dist
 
+    - name: Compute parameters
+      id: compute
+      run: |
+        echo "::set-output name=name::${GITHUB_REF##refs/tags/release-}"
+
+    - name: Delete old release
+      run: |
+        id=$(curl -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/release-${{ steps.compute.outputs.name }} | jq '.id')
+        curl -X DELETE -H "Authorization: token $GITHUB_TOKEN" https://api.github.com/repos/$GITHUB_REPOSITORY/releases/$id || true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
     - name: Create Release
       id: create_release
       uses: actions/create-release@v1
