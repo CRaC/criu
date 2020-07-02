@@ -222,6 +222,7 @@ struct task_restore_args {
 	int				lsm_type;
 	int				child_subreaper;
 	bool				has_clone3_set_tid;
+	bool				mmap_page_image;
 } __aligned(64);
 
 /*

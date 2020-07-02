@@ -3643,6 +3643,8 @@ static int sigreturn_restore(pid_t pid, struct task_restore_args *task_args, uns
 
 	task_args->auto_dedup		= opts.auto_dedup;
 
+	task_args->mmap_page_image	= opts.mmap_page_image;
+
 	/*
 	 * In the restorer we need to know if it is SELinux or not. For SELinux
 	 * we must change the process context before creating threads. For

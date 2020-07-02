@@ -1380,6 +1380,25 @@ int cleanup_current_inotify_events(struct task_restore_args *task_args)
 	return 0;
 }
 
+static ssize_t mmap_image(int fd, const struct iovec *iov, int iovcnt,
+                      off_t offset) {
+	int i;
+	void *mmapret;
+	size_t mmaped = 0;
+
+	for (i = 0; i < iovcnt; ++i) {
+		mmapret = (void *)sys_mmap(iov[i].iov_base, iov[i].iov_len,
+				PROT_READ | PROT_WRITE | PROT_EXEC,
+				MAP_PRIVATE | MAP_FIXED,
+				fd, offset + mmaped);
+		if (mmapret != iov[i].iov_base) {
+			return -1;
+		}
+		mmaped += iov[i].iov_len;
+	}
+	return mmaped;
+}
+
 /*
  * The main routine to restore task via sigreturn.
  * This one is very special, we never return there
@@ -1566,7 +1585,11 @@ long __export_restore_task(struct task_restore_args *args)
 			pr_debug("Preadv %lx:%d... (%d iovs)\n",
 					(unsigned long)iovs->iov_base,
 					(int)iovs->iov_len, nr);
-			r = sys_preadv(args->vma_ios_fd, iovs, nr, rio->off);
+			if (!args->mmap_page_image)
+				r = sys_preadv(args->vma_ios_fd, iovs, nr, rio->off);
+			else
+				r = mmap_image(args->vma_ios_fd, iovs, nr, rio->off);
+
 			if (r < 0) {
 				pr_err("Can't read pages data (%d)\n", (int)r);
 				goto core_restore_end;
