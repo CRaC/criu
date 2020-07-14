@@ -785,6 +785,8 @@ out:
 
 static int has_time_namespace(void)
 {
+#if 0
+
 	if (access("/proc/self/timens_offsets", F_OK) < 0) {
 		if (errno == ENOENT) {
 			pr_debug("Time namespaces are not supported.\n");
@@ -796,6 +798,10 @@ static int has_time_namespace(void)
 	}
 	kdat.has_timens = true;
 	return 0;
+#else
+	kdat.has_timens = false;
+	return 0;
+#endif
 }
 
 int __attribute__((weak)) kdat_x86_has_ptrace_fpu_xsave_bug(void)
