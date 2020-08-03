@@ -1031,7 +1031,7 @@ static int pty_open_unpaired_slave(struct file_desc *d, struct tty_info *slave)
 			return -1;
 		}
 #else
-		pr_err("Don't have tty to inherit, trying to reuse current session\n");
+		pr_info("Don't have tty to inherit, trying to reuse current session\n");
 #endif
 
 #if 0
