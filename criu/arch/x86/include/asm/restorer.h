@@ -63,9 +63,18 @@ static inline int set_compat_robust_list(uint32_t head_ptr, uint32_t len)
 		     "jmp clone_end				\n"	\
 									\
 		     "thread_run:				\n"	\
+		     "movl $"__stringify(__NR_gettid)", %%eax	\n"	\
+		     "syscall					\n"	\
+		     "cmpq %%rax, %7 \n" \
+		     "je cont \n" \
+		     "mov $2, %%rdi \n" \
+		     "movl $"__stringify(__NR_exit)", %%eax	\n"	\
+		     "syscall					\n"	\
+									\
+		     "cont:\n" \
 		     "xorq %%rbp, %%rbp				\n"	\
-		     "popq %%rax				\n"	\
-		     "popq %%rdi				\n"	\
+		     "movq 0(%%rsp), %%rax			\n"	\
+		     "movq 8(%%rsp), %%rdi			\n"	\
 		     "callq *%%rax				\n"	\
 									\
 		     "clone_end:				\n"	\
@@ -75,7 +84,8 @@ static inline int set_compat_robust_list(uint32_t head_ptr, uint32_t len)
 		       "g"(&parent_tid),				\
 		       "g"(&thread_args[i].pid),			\
 		       "g"(clone_restore_fn),				\
-		       "g"(&thread_args[i])				\
+		       "g"(&thread_args[i]),				\
+		       "g"(thread_args[i].pid)                          \
 		     : "rax", "rcx", "rdi", "rsi", "rdx", "r10", "r11", "memory")
 
 /* int clone3(struct clone_args *args, size_t size) */

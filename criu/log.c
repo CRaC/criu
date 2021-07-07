@@ -153,7 +153,7 @@ static void print_versions(void)
 {
 	struct utsname buf;
 
-	pr_info("Version: %s (gitid %s)\n", CRIU_VERSION, CRIU_GITID);
+	pr_info("Version: %s (gitid %s+1)\n", CRIU_VERSION, CRIU_GITID);
 
 	if (uname(&buf) < 0) {
 		pr_perror("Reading kernel version failed!");

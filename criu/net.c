@@ -3420,7 +3420,7 @@ int kerndat_link_nsid(void)
 		int nsfd, sk, ret;
 
 		if (unshare(CLONE_NEWNET)) {
-			pr_perror("Unable create a network namespace");
+			pr_pwarn("Unable create a network namespace");
 			exit(1);
 		}
 
@@ -3429,13 +3429,13 @@ int kerndat_link_nsid(void)
 			exit(1);
 
 		if (unshare(CLONE_NEWNET)) {
-			pr_perror("Unable create a network namespace");
+			pr_pwarn("Unable create a network namespace");
 			exit(1);
 		}
 
 		sk = socket(PF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
 		if (sk < 0) {
-			pr_perror("Unable to create a netlink socket");
+			pr_pwarn("Unable to create a netlink socket");
 			exit(1);
 		}
 

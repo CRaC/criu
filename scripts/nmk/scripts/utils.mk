@@ -3,7 +3,7 @@ ifndef ____nmk_defined__utils
 #
 # Usage: option := $(call try-compile,language,source-to-build,cc-options,cc-defines)
 try-compile = $(shell sh -c 'echo "$(2)" |					\
-        $(CC) $(CFLAGS) $(LDFLAGS) $(4) -x $(1) - $(3) -o /dev/null > /dev/null 2>&1 &&		\
+        $(CC) $(CFLAGS) $(LDFLAGS) $(4) -Wno-error -x $(1) - $(3) -o /dev/null 1>&2 &&		\
         echo true || echo false')
 
 #

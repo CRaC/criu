@@ -110,6 +110,11 @@
 #define arch_export_unmap_compat	__export_unmap_compat
 #endif
 
+#define NOT_THAT_PID_ECODE 2
+
+// don't use ptrace during restore
+#define PTRACE 0
+
 struct pstree_item *current;
 
 static int restore_task_with_children(void *);
@@ -1386,17 +1391,18 @@ static inline int fork_with_pid(struct pstree_item *item)
 		int fd = -1;
 
 		if (!kdat.has_clone3_set_tid) {
-			fd = open_proc_rw(PROC_GEN, LAST_PID_PATH);
-			if (fd < 0)
-				goto err;
+			fd = do_open_proc(PROC_GEN, O_RDWR, LAST_PID_PATH);
+			if (fd < 0) {
+				pr_pwarn("Can't open %d/" LAST_PID_PATH " on procfs", PROC_GEN);
+			}
 		}
 
 		lock_last_pid();
 
-		if (!kdat.has_clone3_set_tid) {
+		if (!kdat.has_clone3_set_tid && 0 <= fd) {
 			len = snprintf(buf, sizeof(buf), "%d", pid - 1);
 			if (write(fd, buf, len) != len) {
-				pr_perror("%d: Write %s to %s", pid, buf,
+				pr_warn("%d: Write %s to %s: %m\n", pid, buf,
 					LAST_PID_PATH);
 				close(fd);
 				goto err_unlock;
@@ -1425,11 +1431,29 @@ static inline int fork_with_pid(struct pstree_item *item)
 		 * The cgroup namespace is also unshared explicitly in the
 		 * move_in_cgroup(), so drop this flag here as well.
 		 */
+		int flags = (ca.clone_flags &
+				~(CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_NEWTIME)) | SIGCHLD;
+		int cnt = 1024;
+
 		close_pid_proc();
-		ret = clone_noasan(restore_task_with_children,
-				(ca.clone_flags &
-				 ~(CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_NEWTIME)) | SIGCHLD,
-				&ca);
+		ret = 0;
+		do {
+			if (ret + 1 == vpid(ca.item)) {
+				flags = (ca.clone_flags &
+						~(CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_NEWTIME)) | SIGCHLD;
+			}
+			ret = clone_noasan(restore_task_with_children,
+					flags,
+					&ca);
+			if (ret < vpid(ca.item)) {
+				flags = SIGCHLD;
+			}
+			pr_debug("clone pid %d\n", ret);
+		} while (0 < ret && ret < vpid(ca.item) && 0 < --cnt);
+
+		if (ret != vpid(ca.item)) {
+			ret = -1;
+		}
 	}
 
 	if (ret < 0) {
@@ -1437,17 +1461,15 @@ static inline int fork_with_pid(struct pstree_item *item)
 		goto err_unlock;
 	}
 
-
 	if (item == root_item) {
 		item->pid->real = ret;
-		pr_debug("PID: real %d virt %d\n",
+		pr_debug("PID1: real %d virt %d\n",
 				item->pid->real, vpid(item));
 	}
 
 err_unlock:
 	if (!(ca.clone_flags & CLONE_NEWPID))
 		unlock_last_pid();
-err:
 	if (ca.core)
 		core_entry__free_unpacked(ca.core, NULL);
 	return ret;
@@ -1472,6 +1494,11 @@ static void sigchld_handler(int signal, siginfo_t *siginfo, void *data)
 
 		exit = WIFEXITED(status);
 		status = exit ? WEXITSTATUS(status) : WTERMSIG(status);
+
+		if (exit && status == NOT_THAT_PID_ECODE) {
+			// expected orhpain process/thread
+			continue;
+		}
 
 		break;
 	}
@@ -1701,6 +1728,12 @@ static int restore_task_with_children(void *_arg)
 
 	current = ca->item;
 
+	pid = getpid();
+	if (pid < vpid(current)) {
+		/* Expected pid mismatch, communcate back */
+		exit(NOT_THAT_PID_ECODE);
+	}
+
 	if (current != root_item) {
 		char buf[12];
 		int fd;
@@ -1718,7 +1751,7 @@ static int restore_task_with_children(void *_arg)
 		buf[ret] = '\0';
 
 		current->pid->real = atoi(buf);
-		pr_debug("PID: real %d virt %d\n",
+		pr_debug("PID2: real %d virt %d\n",
 				current->pid->real, vpid(current));
 	}
 
@@ -1875,6 +1908,8 @@ err:
 		futex_abort_and_wake(&task_entries->nr_in_progress);
 	exit(1);
 }
+
+#if PTRACE
 
 static int attach_to_tasks(bool root_seized)
 {
@@ -2051,6 +2086,8 @@ static int finalize_restore_detach(void)
 	return 0;
 }
 
+#endif // PTRACE
+
 static void ignore_kids(void)
 {
 	struct sigaction sa = { .sa_handler = SIG_DFL };
@@ -2114,9 +2151,11 @@ static int write_restored_pid(void)
 
 static int restore_root_task(struct pstree_item *init)
 {
+#if PTRACE
 	enum trace_flags flag = TRACE_ALL;
-	int ret, fd, mnt_ns_fd = -1;
 	int root_seized = 0;
+#endif
+	int ret, fd, mnt_ns_fd = -1;
 	struct pstree_item *item;
 
 	ret = run_scripts(ACT_PRE_RESTORE);
@@ -2169,6 +2208,7 @@ static int restore_root_task(struct pstree_item *init)
 
 	restore_origin_ns_hook();
 
+#if PTRACE
 	if (rsti(init)->clone_flags & CLONE_PARENT) {
 		struct sigaction act;
 
@@ -2191,6 +2231,7 @@ static int restore_root_task(struct pstree_item *init)
 			goto out_kill;
 		}
 	}
+#endif
 
 	if (!root_ns_mask)
 		goto skip_ns_bouncing;
@@ -2313,23 +2354,27 @@ skip_ns_bouncing:
 	 * Network is unlocked. If something fails below - we lose data
 	 * or a connection.
 	 */
+#if PTRACE
 	attach_to_tasks(root_seized);
+#endif
 
 	if (restore_switch_stage(CR_STATE_RESTORE_CREDS))
 		goto out_kill_network_unlocked;
 
 	timing_stop(TIME_RESTORE);
-
+#if PTRACE
 	if (catch_tasks(root_seized, &flag)) {
 		pr_err("Can't catch all tasks\n");
 		goto out_kill_network_unlocked;
 	}
+#endif
 
 	if (lazy_pages_finish_restore())
 		goto out_kill_network_unlocked;
 
 	__restore_switch_stage(CR_STATE_COMPLETE);
 
+#if PTRACE
 	ret = compel_stop_on_syscall(task_entries->nr_threads,
 		__NR(rt_sigreturn, 0), __NR(rt_sigreturn, 1), flag);
 	if (ret) {
@@ -2341,6 +2386,7 @@ skip_ns_bouncing:
 		pr_err("Unable to flush breakpoints\n");
 
 	finalize_restore();
+#endif
 
 	ret = run_scripts(ACT_PRE_RESUME);
 	if (ret)
@@ -2352,8 +2398,10 @@ skip_ns_bouncing:
 	fini_cgroup();
 
 	/* Detaches from processes and they continue run through sigreturn. */
+#if PTRACE
 	if (finalize_restore_detach())
 		goto out_kill_network_unlocked;
+#endif
 
 	pr_info("Restore finished successfully. Tasks resumed.\n");
 	write_stats(RESTORE_STATS);

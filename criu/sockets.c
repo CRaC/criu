@@ -220,7 +220,7 @@ static int probe_err(int err, struct ns_id *ns, void *arg)
 	if (err == expected_err)
 		return 0;
 
-	pr_err("Diag module missing (%d)\n", err);
+	pr_warn("Diag module missing (%d)\n", err);
 	return err;
 }
 

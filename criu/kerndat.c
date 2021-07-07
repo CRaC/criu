@@ -862,6 +862,9 @@ static void kerndat_save_cache(void)
 	int fd, ret;
 	struct statfs s;
 
+	pr_debug("skip kerndat_save_cache\n");
+	return;
+
 	fd = open(KERNDAT_CACHE_FILE_TMP, O_CREAT | O_EXCL | O_WRONLY, 0600);
 	if (fd < 0)
 		/*
@@ -915,7 +918,7 @@ static int kerndat_uffd(void)
 	 * have a problem!"
 	 */
 	if (uffd < 0) {
-		if (uffd == -ENOSYS)
+		if (uffd == -ENOSYS || uffd == -EPERM)
 			return 0;
 
 		pr_err("Lazy pages are not available\n");
@@ -942,7 +945,7 @@ int kerndat_has_thp_disable(void)
 	bool vma_match = false;
 
 	if (prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0)) {
-		if (errno != EINVAL)
+		if (errno != EINVAL && errno != EPERM)
 			return -1;
 		pr_info("PR_SET_THP_DISABLE is not available\n");
 		return 0;
@@ -1029,7 +1032,7 @@ static bool kerndat_has_clone3_set_tid(void)
 	}
 	if (pid == -1 && errno == EINVAL) {
 		kdat.has_clone3_set_tid = true;
-	} else {
+	} else if (pid == -1 && errno != EPERM) {
 		pr_perror("Unexpected error from clone3\n");
 		return -1;
 	}

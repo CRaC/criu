@@ -1570,8 +1570,8 @@ int prepare_userns_creds(void)
 {
 	/* UID and GID must be set after restoring /proc/PID/{uid,gid}_maps */
 	if (setuid(0) || setgid(0) || setgroups(0, NULL)) {
-		pr_perror("Unable to initialize id-s");
-		return -1;
+		pr_warn("Unable to initialize id-s: %m\n");
+
 	}
 
 	/*
@@ -1581,8 +1581,8 @@ int prepare_userns_creds(void)
 	 * very end.
 	 */
 	if (prctl(PR_SET_DUMPABLE, 1, 0)) {
-		pr_perror("Unable to set PR_SET_DUMPABLE");
-		return -1;
+		int seterr = errno;
+		pr_warn("Unable to set PR_SET_DUMPABLE (current %d): %s\n", prctl(PR_GET_DUMPABLE), strerror(seterr));
 	}
 
 	return 0;

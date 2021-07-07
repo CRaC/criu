@@ -440,7 +440,11 @@ static int do_open_image(struct cr_img *img, int dfd, int type, unsigned long of
 			goto skip_magic;
 		}
 
-		pr_perror("Unable to open %s", path);
+		if (type == CR_FD_STATS) {
+			pr_warn("Unable to open %s", path);
+		} else {
+			pr_perror("Unable to open %s", path);
+		}
 		goto err;
 	}
 

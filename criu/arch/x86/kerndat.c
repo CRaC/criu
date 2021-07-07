@@ -177,8 +177,9 @@ int kdat_compatible_cr(void)
 static int kdat_x86_has_ptrace_fpu_xsave_bug_child(void *arg)
 {
 	if (ptrace(PTRACE_TRACEME, 0, 0, 0)) {
-		pr_perror("%d: ptrace(PTRACE_TRACEME) failed", getpid());
-		_exit(1);
+		int err = errno;
+		pr_pwarn("%d: ptrace(PTRACE_TRACEME) failed", getpid());
+		_exit(err == EPERM ? 2 : 1);
 	}
 
 	if (kill(getpid(), SIGSTOP))
@@ -229,7 +230,10 @@ int kdat_x86_has_ptrace_fpu_xsave_bug(void)
 	}
 
 	if (!WIFSTOPPED(stat)) {
-		pr_err("Born child is unstoppable! (might be dead)\n");
+		pr_warn("Born child is unstoppable! (might be dead)\n");
+		if (WIFEXITED(stat) && WEXITSTATUS(stat) == 2) {
+			ret = 0;
+		}
 		goto out_kill;
 	}
 
@@ -248,9 +252,9 @@ int kdat_x86_has_ptrace_fpu_xsave_bug(void)
 
 out_kill:
 	if (kill(child, SIGKILL))
-		pr_perror("Failed to kill my own child");
+		pr_pwarn("Failed to kill my own child");
 	if (waitpid(child, &stat, 0) < 0)
-		pr_perror("Failed wait for a dead child");
+		pr_pwarn("Failed wait for a dead child");
 
 	return ret;
 }

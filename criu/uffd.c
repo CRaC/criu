@@ -269,7 +269,7 @@ int uffd_open(int flags, unsigned long *features)
 
 	uffd = syscall(SYS_userfaultfd, flags);
 	if (uffd == -1) {
-		pr_perror("Lazy pages are not available");
+		pr_pwarn("Lazy pages are not available");
 		return -errno;
 	}
 

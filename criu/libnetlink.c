@@ -220,7 +220,7 @@ int __wrap_nlmsg_parse(struct nlmsghdr *nlh, int hdrlen, struct nlattr *tb[],
 			 nlmsg_attrlen(nlh, hdrlen), policy);
 }
 
-int32_t nla_get_s32(const struct nlattr *nla)
+__attribute__((weak)) int32_t nla_get_s32(const struct nlattr *nla)
 {
 	return *(const int32_t *) nla_data(nla);
 }

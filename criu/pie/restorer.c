@@ -71,9 +71,34 @@
 	({								\
 		long __ret = sys_prctl(opcode, val1, val2, val3, 0);	\
 		if (__ret)						\
-			 pr_err("prctl failed @%d with %ld\n", __LINE__, __ret);\
+			 pr_warn("prctl failed @%d with %ld\n", __LINE__, __ret);\
 		__ret;							\
 	})
+
+static int range_ret(const char *err_id, int leftret, int rightret) {
+	if (leftret || rightret) {
+		pr_warn("prctl set range %s left=%d right=%d\n", err_id, leftret, rightret);
+	}
+	return leftret | rightret;
+}
+
+static long sys_prctl_mm_set_range(const char *err_id, long l_id, long l_val, long r_id, long r_val) {
+	int lret, rret;
+
+	lret = sys_prctl(PR_SET_MM, l_id, l_val, 0, 0);
+	if (lret == -EINVAL) { // probably current ARG_END is below desired ARG_START
+		int lret2 = sys_prctl(PR_SET_MM, r_id, r_val, 0, 0);
+		int rret2 = sys_prctl(PR_SET_MM, l_id, l_val, 0, 0);
+		return range_ret(err_id, lret2, rret2);
+	}
+
+	if (lret != 0) {
+		return range_ret(err_id, lret, -1);
+	}
+
+	rret = sys_prctl(PR_SET_MM, r_id, r_val, 0, 0);
+	return range_ret(err_id, lret, rret);
+}
 
 static struct task_entries *task_entries_local;
 static futex_t thread_inprogress;
@@ -204,7 +229,7 @@ static int restore_creds(struct thread_creds_args *args, int procfd,
 	if (args->groups) {
 		ret = sys_setgroups(ce->n_groups, args->groups);
 		if (ret) {
-			pr_err("Can't setup supplementary group IDs: %d\n", ret);
+			pr_warn("Can't setup supplementary group IDs: %d\n", ret);
 			return -1;
 		}
 	}
@@ -216,7 +241,7 @@ static int restore_creds(struct thread_creds_args *args, int procfd,
 
 	ret = sys_prctl(PR_SET_SECUREBITS, 1 << SECURE_NO_SETUID_FIXUP, 0, 0, 0);
 	if (ret) {
-		pr_err("Unable to set SECURE_NO_SETUID_FIXUP: %d\n", ret);
+		pr_warn("Unable to set SECURE_NO_SETUID_FIXUP: %d\n", ret);
 		return -1;
 	}
 
@@ -228,25 +253,25 @@ static int restore_creds(struct thread_creds_args *args, int procfd,
 
 	ret = sys_setresuid(ce->uid, ce->euid, ce->suid);
 	if (ret) {
-		pr_err("Unable to set real, effective and saved user ID: %d\n", ret);
+		pr_warn("Unable to set real, effective and saved user ID: %d\n", ret);
 		return -1;
 	}
 
 	sys_setfsuid(ce->fsuid);
 	if (sys_setfsuid(-1) != ce->fsuid) {
-		pr_err("Unable to set fsuid\n");
+		pr_warn("Unable to set fsuid\n");
 		return -1;
 	}
 
 	ret = sys_setresgid(ce->gid, ce->egid, ce->sgid);
 	if (ret) {
-		pr_err("Unable to set real, effective and saved group ID: %d\n", ret);
+		pr_warn("Unable to set real, effective and saved group ID: %d\n", ret);
 		return -1;
 	}
 
 	sys_setfsgid(ce->fsgid);
 	if (sys_setfsgid(-1) != ce->fsgid) {
-		pr_err("Unable to set fsgid\n");
+		pr_warn("Unable to set fsgid\n");
 		return -1;
 	}
 
@@ -257,7 +282,7 @@ static int restore_creds(struct thread_creds_args *args, int procfd,
 
 	ret = sys_prctl(PR_SET_SECUREBITS, ce->secbits, 0, 0, 0);
 	if (ret) {
-		pr_err("Unable to set PR_SET_SECUREBITS: %d\n", ret);
+		pr_warn("Unable to set PR_SET_SECUREBITS: %d\n", ret);
 		return -1;
 	}
 
@@ -275,7 +300,7 @@ static int restore_creds(struct thread_creds_args *args, int procfd,
 				continue;
 			ret = sys_prctl(PR_CAPBSET_DROP, i + b * 32, 0, 0, 0);
 			if (ret) {
-				pr_err("Unable to drop capability %d: %d\n",
+				pr_warn("Unable to drop capability %d: %d\n",
 								i + b * 32, ret);
 				return -1;
 			}
@@ -300,7 +325,7 @@ static int restore_creds(struct thread_creds_args *args, int procfd,
 
 	ret = sys_capset(&hdr, data);
 	if (ret) {
-		pr_err("Unable to restore capabilities: %d\n", ret);
+		pr_warn("Unable to restore capabilities: %d\n", ret);
 		return -1;
 	}
 
@@ -357,7 +382,7 @@ static int restore_dumpable_flag(MmEntry *mme)
 	if (mme->dumpable == 0 || mme->dumpable == 1) {
 		ret = sys_prctl(PR_SET_DUMPABLE, mme->dumpable, 0, 0, 0);
 		if (ret) {
-			pr_err("Unable to set PR_SET_DUMPABLE: %d\n", ret);
+			pr_warn("Unable to set PR_SET_DUMPABLE: %d\n", ret);
 			return -1;
 		}
 		return 0;
@@ -377,7 +402,7 @@ static int restore_dumpable_flag(MmEntry *mme)
 			mme->dumpable, current_dumpable);
 		ret = sys_prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
 		if (ret) {
-			pr_err("Unable to set PR_SET_DUMPABLE: %d\n", ret);
+			pr_warn("Unable to set PR_SET_DUMPABLE: %d\n", ret);
 			return -1;
 		}
 	}
@@ -582,16 +607,21 @@ long __export_restore_thread(struct thread_restore_args *args)
 	int my_pid = sys_gettid();
 	int ret;
 
-	if (my_pid != args->pid) {
-		pr_err("Thread pid mismatch %d/%d\n", my_pid, args->pid);
-		goto core_restore_end;
-	}
-
 	/* All signals must be handled by thread leader */
 	ksigfillset(&to_block);
 	ret = sys_sigprocmask(SIG_SETMASK, &to_block, NULL, sizeof(k_rtsigset_t));
 	if (ret) {
 		pr_err("Unable to block signals %d\n", ret);
+		goto core_restore_end;
+	}
+
+	if (my_pid < args->pid) {
+		pr_info("Thread expected pid mismatch %d/%d\n", my_pid, args->pid);
+		sys_exit(2); // the exit code is ignored actually
+	}
+
+	if (my_pid != args->pid) {
+		pr_err("Thread pid mismatch %d/%d\n", my_pid, args->pid);
 		goto core_restore_end;
 	}
 
@@ -602,8 +632,7 @@ long __export_restore_thread(struct thread_restore_args *args)
 
 	ret = sys_prctl(PR_SET_NAME, (unsigned long) &args->comm, 0, 0, 0);
 	if (ret) {
-		pr_err("Unable to set a thread name: %d\n", ret);
-		goto core_restore_end;
+		pr_warn("Unable to set a thread name: %d\n", ret);
 	}
 
 	pr_info("%ld: Restored\n", sys_gettid());
@@ -624,10 +653,13 @@ long __export_restore_thread(struct thread_restore_args *args)
 
 	ret = restore_creds(args->creds_args, args->ta->proc_fd,
 			    args->ta->lsm_type);
-	ret = ret || restore_dumpable_flag(&args->ta->mm);
-	ret = ret || restore_pdeath_sig(args);
-	if (ret)
-		BUG();
+	ret = restore_dumpable_flag(&args->ta->mm) || ret;
+	ret = restore_pdeath_sig(args) || ret;
+
+	if (ret) {
+		pr_warn("Restore thread error %d\n", ret);
+		ret = 0;
+	}
 
 	restore_finish_stage(task_entries_local, CR_STATE_RESTORE_CREDS);
 
@@ -637,7 +669,7 @@ long __export_restore_thread(struct thread_restore_args *args)
 	rst_sigreturn(new_sp, rt_sigframe);
 
 core_restore_end:
-	pr_err("Restorer abnormal termination for %ld\n", sys_getpid());
+	pr_err("Restorer abnormal termination for %ld %ld\n", sys_getpid(), sys_gettid());
 	futex_abort_and_wake(&task_entries_local->nr_in_progress);
 	sys_exit_group(1);
 	return -1;
@@ -650,7 +682,7 @@ static long restore_self_exe_late(struct task_restore_args *args)
 	pr_info("Restoring EXE link\n");
 	ret = sys_prctl_safe(PR_SET_MM, PR_SET_MM_EXE_FILE, fd, 0);
 	if (ret)
-		pr_err("Can't restore EXE link (%d)\n", ret);
+		pr_warn("Can't restore EXE link (%d)\n", ret);
 	sys_close(fd);
 
 	return ret;
@@ -1700,7 +1732,7 @@ long __export_restore_task(struct task_restore_args *args)
 	 */
 	ret = sys_prctl_safe(PR_SET_NAME, (long)args->comm, 0, 0);
 	if (ret)
-		goto core_restore_end;
+		pr_warn("Ignoring prctl(PR_SET_NAME) failure\n");
 
 	/*
 	 * New kernel interface with @PR_SET_MM_MAP will become
@@ -1724,19 +1756,40 @@ long __export_restore_task(struct task_restore_args *args)
 		.exe_fd		= args->fd_exe_link,
 	};
 	ret = sys_prctl(PR_SET_MM, PR_SET_MM_MAP, (long)&prctl_map, sizeof(prctl_map), 0);
-	if (ret == -EINVAL) {
-		ret  = sys_prctl_safe(PR_SET_MM, PR_SET_MM_START_CODE,	(long)args->mm.mm_start_code, 0);
-		ret |= sys_prctl_safe(PR_SET_MM, PR_SET_MM_END_CODE,	(long)args->mm.mm_end_code, 0);
-		ret |= sys_prctl_safe(PR_SET_MM, PR_SET_MM_START_DATA,	(long)args->mm.mm_start_data, 0);
-		ret |= sys_prctl_safe(PR_SET_MM, PR_SET_MM_END_DATA,	(long)args->mm.mm_end_data, 0);
+	if (ret == -EINVAL || ret == -EPERM) {
+		int dataret;
+
+		ret = sys_prctl_mm_set_range("MM_CODE",
+				PR_SET_MM_START_CODE,	(long)args->mm.mm_start_code,
+				PR_SET_MM_END_CODE, 	(long)args->mm.mm_end_code);
+
+		dataret = sys_prctl_mm_set_range("MM_DATA1",
+				PR_SET_MM_START_DATA,	(long)args->mm.mm_start_data,
+				PR_SET_MM_END_DATA,	(long)args->mm.mm_end_data);
+		// do not set ret, will try after MM_BRK
+
 		ret |= sys_prctl_safe(PR_SET_MM, PR_SET_MM_START_STACK,	(long)args->mm.mm_start_stack, 0);
-		ret |= sys_prctl_safe(PR_SET_MM, PR_SET_MM_START_BRK,	(long)args->mm.mm_start_brk, 0);
-		ret |= sys_prctl_safe(PR_SET_MM, PR_SET_MM_BRK,		(long)args->mm.mm_brk, 0);
-		ret |= sys_prctl_safe(PR_SET_MM, PR_SET_MM_ARG_START,	(long)args->mm.mm_arg_start, 0);
-		ret |= sys_prctl_safe(PR_SET_MM, PR_SET_MM_ARG_END,	(long)args->mm.mm_arg_end, 0);
-		ret |= sys_prctl_safe(PR_SET_MM, PR_SET_MM_ENV_START,	(long)args->mm.mm_env_start, 0);
-		ret |= sys_prctl_safe(PR_SET_MM, PR_SET_MM_ENV_END,	(long)args->mm.mm_env_end, 0);
-		ret |= sys_prctl_safe(PR_SET_MM, PR_SET_MM_AUXV,	(long)args->mm_saved_auxv, args->mm_saved_auxv_size);
+
+		ret |= sys_prctl_mm_set_range("MM_BRK",
+				PR_SET_MM_START_BRK,	(long)args->mm.mm_start_brk,
+				PR_SET_MM_BRK,		(long)args->mm.mm_brk);
+
+		if (!ret && dataret == -EINVAL) {
+			// try to set data again
+			ret |= sys_prctl_mm_set_range("MM_DATA2",
+					PR_SET_MM_START_DATA,	(long)args->mm.mm_start_data,
+					PR_SET_MM_END_DATA,	(long)args->mm.mm_end_data);
+		}
+
+		ret |= sys_prctl_mm_set_range("MM_ARG",
+				PR_SET_MM_ARG_START, (long)args->mm.mm_arg_start,
+				PR_SET_MM_ARG_END,   (long)args->mm.mm_arg_end);
+
+		ret |= sys_prctl_mm_set_range("MM_ENV",
+				PR_SET_MM_ENV_START,	(long)args->mm.mm_env_start,
+				PR_SET_MM_ENV_END,	(long)args->mm.mm_env_end);
+
+		ret |= sys_prctl_safe(PR_SET_MM, PR_SET_MM_AUXV, (long)args->mm_saved_auxv, args->mm_saved_auxv_size);
 
 		/*
 		 * Because of requirements applied from kernel side
@@ -1745,6 +1798,11 @@ long __export_restore_task(struct task_restore_args *args)
 		 * new ones from image file.
 		 */
 		ret |= restore_self_exe_late(args);
+
+		if (ret) {
+			pr_warn("Ignoring restore_task error 1 %ld\n", ret);
+			ret = 0;
+		}
 	} else {
 		if (ret)
 			pr_err("sys_prctl(PR_SET_MM, PR_SET_MM_MAP) failed with %d\n", (int)ret);
@@ -1804,8 +1862,7 @@ long __export_restore_task(struct task_restore_args *args)
 			/* One level pid ns hierarhy */
 			fd = sys_openat(args->proc_fd, LAST_PID_PATH, O_RDWR, 0);
 			if (fd < 0) {
-				pr_err("can't open last pid fd %d\n", fd);
-				goto core_restore_end;
+				pr_warn("can't open last pid fd %d\n", fd);
 			}
 
 		}
@@ -1833,14 +1890,18 @@ long __export_restore_task(struct task_restore_args *args)
 				pr_debug("Using clone3 to restore the process\n");
 				RUN_CLONE3_RESTORE_FN(ret, c_args, sizeof(c_args), &thread_args[i], args->clone_restore_fn);
 			} else {
-				last_pid_len = std_vprint_num(last_pid_buf, sizeof(last_pid_buf), thread_args[i].pid - 1, &s);
-				sys_lseek(fd, 0, SEEK_SET);
-				ret = sys_write(fd, s, last_pid_len);
-				if (ret < 0) {
-					pr_err("Can't set last_pid %ld/%s\n", ret, last_pid_buf);
-					sys_close(fd);
-					mutex_unlock(&task_entries_local->last_pid_mutex);
-					goto core_restore_end;
+				int cnt;
+
+				if (0 <= fd) {
+					last_pid_len = std_vprint_num(last_pid_buf, sizeof(last_pid_buf), thread_args[i].pid - 1, &s);
+					sys_lseek(fd, 0, SEEK_SET);
+					ret = sys_write(fd, s, last_pid_len);
+					if (ret < 0) {
+						pr_err("Can't set last_pid %ld/%s\n", ret, last_pid_buf);
+						sys_close(fd);
+						mutex_unlock(&task_entries_local->last_pid_mutex);
+						goto core_restore_end;
+					}
 				}
 
 				/*
@@ -1849,7 +1910,12 @@ long __export_restore_task(struct task_restore_args *args)
 				 * thread will run with own stack and we must not
 				 * have any additional instructions... oh, dear...
 				 */
-				RUN_CLONE_RESTORE_FN(ret, clone_flags, new_sp, parent_tid, thread_args, args->clone_restore_fn);
+				ret = 0;
+				cnt = 1024;
+				do {
+					pr_debug("loop clone ret %ld target %d\n", ret, thread_args[i].pid);
+					RUN_CLONE_RESTORE_FN(ret, clone_flags, new_sp, parent_tid, thread_args, args->clone_restore_fn);
+				} while (0 < ret && ret < thread_args[i].pid && 0 < --cnt);
 			}
 			if (ret != thread_args[i].pid) {
 				pr_err("Unable to create a thread: %ld\n", ret);
@@ -1941,16 +2007,18 @@ long __export_restore_task(struct task_restore_args *args)
 	 */
 	ret = restore_creds(args->t->creds_args, args->proc_fd,
 			    args->lsm_type);
-	ret = ret || restore_dumpable_flag(&args->mm);
-	ret = ret || restore_pdeath_sig(args->t);
-	ret = ret || restore_child_subreaper(args->child_subreaper);
+	ret = restore_dumpable_flag(&args->mm) || ret;
+	ret = restore_pdeath_sig(args->t) || ret;
+	ret = restore_child_subreaper(args->child_subreaper) || ret;
 
 	futex_set_and_wake(&thread_inprogress, args->nr_threads);
 
 	restore_finish_stage(task_entries_local, CR_STATE_RESTORE_CREDS);
 
-	if (ret)
-		BUG();
+	if (ret) {
+		pr_warn("Ignoring restore_task error 2 %ld\n", ret);
+		ret = 0;
+	}
 
 	/* Wait until children stop to use args->task_entries */
 	futex_wait_while_gt(&thread_inprogress, 1);

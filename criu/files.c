@@ -1329,8 +1329,32 @@ out:
 	return ret;
 }
 
+static int checkfdis(int fd, const char *path)
+{
+        struct stat st1, st2;
+        if (stat(path, &st1)) {
+		pr_perror("cannot stat %s", path);
+                return -1;
+        }
+        if (fstat(fd, &st2)) {
+		pr_perror("cannot fstat %d", fd);
+                return -1;
+        }
+
+        if (st1.st_dev == st2.st_dev &&
+                        st1.st_ino == st2.st_ino) {
+                return 0;
+        }
+
+        return 1;
+}
+
 static int fchroot(int fd)
 {
+	if (!checkfdis(fd, "/")) {
+                return 0;
+        }
+
 	/*
 	 * There's no such thing in syscalls. We can emulate
 	 * it using fchdir()

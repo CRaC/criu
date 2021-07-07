@@ -82,7 +82,7 @@ int check_tun_netns_cr(bool *result)
 
 	tun = open(TUN_DEV_GEN_PATH, O_RDONLY);
 	if (tun < 0) {
-		pr_perror("Unable to create tun");
+		pr_pwarn("Unable to create tun");
 		goto out;
 	}
 	check_has_netns_ioc(tun, &val, "tun");

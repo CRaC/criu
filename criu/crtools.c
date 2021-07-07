@@ -176,7 +176,7 @@ int main(int argc, char *argv[], char *envp[])
 	if (kerndat_init())
 		return 1;
 
-       if (fault_injected(FI_CANNOT_MAP_VDSO))
+	if (fault_injected(FI_CANNOT_MAP_VDSO))
                kdat.can_map_vdso = 0;
 
 	if (opts.deprecated_ok)

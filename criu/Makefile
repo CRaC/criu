@@ -27,7 +27,7 @@ CFLAGS			+= -iquote include
 CFLAGS			+= -iquote images
 CFLAGS			+= -iquote $(ARCH_DIR)/include
 CFLAGS			+= -iquote .
-CFLAGS			+= $(shell pkg-config --cflags libnl-3.0)
+CFLAGS			+= $(shell pkg-config --cflags --static libnl-3.0)
 CFLAGS			+= $(CONFIG-DEFINES)
 
 ifeq ($(GMON),1)
