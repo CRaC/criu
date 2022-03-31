@@ -30,6 +30,8 @@ static char iptable_cmd_ipv6[] = "ip6tables";
 
 void preload_netfilter_modules(void)
 {
+// We don't use netfilter at all
+#if 0
 	int fd = -1;
 
 	/* same as socket modules, ip_tables and ip6_tables will be loaded by
@@ -45,6 +47,7 @@ void preload_netfilter_modules(void)
 	cr_system(fd, fd, fd, iptable_cmd_ipv6,
 		(char *[]) { iptable_cmd_ipv6, "-L", "-n", NULL}, 0);
 	close_safe(&fd);
+#endif
 }
 
 /* IPv4-Mapped IPv6 Addresses */
