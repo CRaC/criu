@@ -1431,26 +1431,39 @@ static inline int fork_with_pid(struct pstree_item *item)
 		 * The cgroup namespace is also unshared explicitly in the
 		 * move_in_cgroup(), so drop this flag here as well.
 		 */
-		int flags = (ca.clone_flags &
-				~(CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_NEWTIME)) | SIGCHLD;
-		int cnt = 1024;
 
 		close_pid_proc();
-		ret = 0;
-		do {
-			if (ret + 1 == vpid(ca.item)) {
-				flags = (ca.clone_flags &
-						~(CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_NEWTIME)) | SIGCHLD;
-			}
-			ret = clone_noasan(restore_task_with_children,
-					flags,
-					&ca);
-			if (ret < vpid(ca.item)) {
-				flags = SIGCHLD;
-			}
-			pr_debug("clone pid %d\n", ret);
-		} while (0 < ret && ret < vpid(ca.item) && 0 < --cnt);
+		ret = clone_noasan(restore_task_with_children,
+				(ca.clone_flags &
+				 ~(CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_NEWTIME)) | SIGCHLD,
+				&ca);
+		if (ret < vpid(ca.item)) {
+			const int close_cnt = 20;
+			int cnt = 1024;
 
+			waitpid(ret, NULL, 0);
+
+			while (0 < ret && ret < vpid(ca.item) - close_cnt && 0 < --cnt) {
+				ret = syscall(SYS_clone, SIGCHLD, NULL, NULL, 0);
+				if (!ret) {
+					syscall(SYS_exit, NOT_THAT_PID_ECODE);
+				}
+				pr_debug("clone pid %d\n", ret);
+			} while (0 < ret && ret < vpid(ca.item) - close_cnt && 0 < --cnt);
+
+			if (0 < ret && vpid(ca.item) <= ret + close_cnt) {
+				while (0 < ret && ret < vpid(ca.item)) {
+					ret = clone_noasan(restore_task_with_children,
+							(ca.clone_flags &
+							 ~(CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_NEWTIME)) | SIGCHLD,
+							&ca);
+					pr_debug("clone pid 2 %d\n", ret);
+					if (ret != vpid(ca.item)) {
+						waitpid(ret, NULL, 0);
+					}
+				}
+			}
+		}
 		if (ret != vpid(ca.item)) {
 			ret = -1;
 		}
