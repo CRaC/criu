@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include <fcntl.h>
+#include <dlfcn.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -3153,7 +3154,60 @@ static void prep_libc_rseq_info(struct rst_rseq_param *rseq)
 	rseq->rseq_abi_size = __rseq_size;
 	rseq->signature = RSEQ_SIG;
 }
+
+#elif defined(__GLIBC__)
+
+#define NO_RSEQ_OFFSET ((void*)(-1))
+
+#if defined(__x86_64__)
+#define CRIU_RSEQ_SIG 0x53053053
+#elif defined(__aarch64__)
+#ifdef __AARCH64EB__
+#define CRIU_RSEQ_SIG 0x00bc28d4
+#else // __AARCH64EB__
+#define CRIU_RSEQ_SIG 0xd428bc00
+#endif // __AARCH64EB__
+#elif defined(__PPC64__)
+#define CRIU_RSEQ_SIG 0x0fe5000b
+#elif defined(__s390x__)
+#define CRIU_RSEQ_SIG 0xB2FF0FFF
 #else
+#error "Unknown arch for RSEQ_SIG"
+#endif
+
+static void prep_libc_rseq_info(struct rst_rseq_param *rseq)
+{
+	static ptrdiff_t *rseq_offset_p;
+	static unsigned int *rseq_size_p;
+
+	if (!kdat.has_rseq) {
+		rseq->rseq_abi_pointer = 0;
+		return;
+	}
+
+	if (!rseq_offset_p) {
+		rseq_offset_p = dlsym(RTLD_DEFAULT, "__rseq_offset");
+		rseq_size_p   = dlsym(RTLD_DEFAULT, "__rseq_size");
+
+		if (!(rseq_offset_p && rseq_size_p)) {
+			rseq_offset_p = NO_RSEQ_OFFSET;
+		}
+	}
+
+	if (rseq_offset_p == NO_RSEQ_OFFSET) {
+		// This glibc version does not use rseq
+		rseq->rseq_abi_pointer = 0;
+		return;
+	}
+
+	rseq->rseq_abi_pointer = encode_pointer(__criu_thread_pointer() + *rseq_offset_p);
+	rseq->rseq_abi_size = *rseq_size_p;
+	rseq->signature = CRIU_RSEQ_SIG;
+
+}
+
+#else // __GLIBC__
+
 static void prep_libc_rseq_info(struct rst_rseq_param *rseq)
 {
 	/*
@@ -3165,7 +3219,8 @@ static void prep_libc_rseq_info(struct rst_rseq_param *rseq)
 	 */
 	rseq->rseq_abi_pointer = 0;
 }
-#endif
+
+#endif // __GLIBC__
 
 static rlim_t decode_rlim(rlim_t ival)
 {

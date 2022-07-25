@@ -5,9 +5,10 @@
 #ifdef __has_include
 #if __has_include("sys/rseq.h")
 #include <sys/rseq.h>
+#endif
+#endif
+
 #include "asm/thread_pointer.h"
-#endif
-#endif
 
 #ifndef __GLIBC_HAVE_KERNEL_RSEQ
 /*
