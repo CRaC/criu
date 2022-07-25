@@ -7,10 +7,10 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check that we can migrate with a named pipe "
-			"open in a directory which has been mounted over by "
-			"another filesystem";
-const char *test_author	= "Roman Kagan <rkagan@parallels.com>";
+const char *test_doc = "Check that we can migrate with a named pipe "
+		       "open in a directory which has been mounted over by "
+		       "another filesystem";
+const char *test_author = "Roman Kagan <rkagan@parallels.com>";
 
 char *dirname;
 TEST_OPTION(dirname, string, "directory name", 1);
@@ -54,17 +54,17 @@ int main(int argc, char **argv)
 	test_waitsig();
 
 	if (umount(dirname) < 0) {
-		fail("can't umount %s: %m", dirname);
+		fail("can't umount %s", dirname);
 		goto cleanup;
 	}
 
 	if (close(fd) < 0) {
-		fail("can't close %s: %m", path);
+		fail("can't close %s", path);
 		goto unlink;
 	}
 
 	if (stat(path, &st) < 0) {
-		fail("can't stat %s: %m", path);
+		fail("can't stat %s", path);
 		goto unlink;
 	}
 
@@ -74,7 +74,7 @@ int main(int argc, char **argv)
 	}
 
 	if (unlink(path) < 0) {
-		fail("can't unlink %s: %m", path);
+		fail("can't unlink %s", path);
 		goto rmdir;
 	}
 

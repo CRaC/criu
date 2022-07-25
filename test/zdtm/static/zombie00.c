@@ -8,8 +8,8 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "See if we can wait() for a zombified child after migration";
-const char *test_author	= "Roman Kagan <rkagan@parallels.com>";
+const char *test_doc = "See if we can wait() for a zombified child after migration";
+const char *test_author = "Roman Kagan <rkagan@parallels.com>";
 
 struct zombie {
 	int pid;
@@ -17,9 +17,9 @@ struct zombie {
 	int exitcode;
 };
 
-#define NR_ZOMBIES	4
+#define NR_ZOMBIES 4
 
-int main(int argc, char ** argv)
+int main(int argc, char **argv)
 {
 	int i, status;
 	struct zombie zombie[NR_ZOMBIES];
@@ -56,8 +56,7 @@ int main(int argc, char ** argv)
 			_exit(13); /* just in case */
 		}
 
-		test_msg("kid %d will %d/%d\n", zombie[i].pid,
-				zombie[i].exited, zombie[i].exitcode);
+		test_msg("kid %d will %d/%d\n", zombie[i].pid, zombie[i].exited, zombie[i].exitcode);
 	}
 
 	/*
@@ -78,28 +77,28 @@ int main(int argc, char ** argv)
 
 	for (i = 0; i < NR_ZOMBIES; i++) {
 		if (waitpid(zombie[i].pid, &status, 0) != zombie[i].pid) {
-			fail("Exit with wrong pid\n");
+			fail("Exit with wrong pid");
 			exit(1);
 		}
 
 		if (zombie[i].exited) {
 			if (!WIFEXITED(status)) {
-				fail("Not exited, but should (%d)\n", zombie[i].pid);
+				fail("Not exited, but should (%d)", zombie[i].pid);
 				exit(1);
 			}
 
 			if (WEXITSTATUS(status) != zombie[i].exitcode) {
-				fail("Exit with wrong status (%d)\n", zombie[i].pid);
+				fail("Exit with wrong status (%d)", zombie[i].pid);
 				exit(1);
 			}
 		} else {
 			if (!WIFSIGNALED(status)) {
-				fail("Not killed, but should (%d)\n", zombie[i].pid);
+				fail("Not killed, but should (%d)", zombie[i].pid);
 				exit(1);
 			}
 
 			if (WTERMSIG(status) != zombie[i].exitcode) {
-				fail("Killed with wrong signal (%d)\n", zombie[i].pid);
+				fail("Killed with wrong signal (%d)", zombie[i].pid);
 				exit(1);
 			}
 		}

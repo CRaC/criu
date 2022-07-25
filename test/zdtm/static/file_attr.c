@@ -9,24 +9,27 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check that attributes and content of an open, "
-			  "written to, and then unlinked file migrate "
-			  "correctly";
-const char *test_author	= "Roman Kagan <rkagan@parallels.com>";
+const char *test_doc = "Check that attributes and content of an open, "
+		       "written to, and then unlinked file migrate "
+		       "correctly";
+const char *test_author = "Roman Kagan <rkagan@parallels.com>";
 
 char *filename;
 TEST_OPTION(filename, string, "file name", 1);
-#define DEF_PERMS 06604		/* -rwS--Sr--, really esoteric one */
+#define DEF_PERMS 06604 /* -rwS--Sr--, really esoteric one */
 unsigned int perms = DEF_PERMS;
-TEST_OPTION(perms, uint, "permissions to set on file "
-	    "(default " __stringify(DEF_PERMS) ")", 0);
-#define DEF_MTIME 123456	/* another really esoteric one */
+TEST_OPTION(perms, uint,
+	    "permissions to set on file "
+	    "(default " __stringify(DEF_PERMS) ")",
+	    0);
+#define DEF_MTIME 123456 /* another really esoteric one */
 unsigned int mtime = DEF_MTIME;
-TEST_OPTION(mtime, uint, "mtime to set on file "
-	    "(default " __stringify(DEF_MTIME) ")", 0);
+TEST_OPTION(mtime, uint,
+	    "mtime to set on file "
+	    "(default " __stringify(DEF_MTIME) ")",
+	    0);
 
-
-int main(int argc, char ** argv)
+int main(int argc, char **argv)
 {
 	int fd;
 	struct utimbuf ut;
@@ -49,7 +52,7 @@ int main(int argc, char ** argv)
 		exit(1);
 	}
 
-	ut = (struct utimbuf) {
+	ut = (struct utimbuf){
 		.actime = 0,
 		.modtime = mtime,
 	};
@@ -72,23 +75,23 @@ int main(int argc, char ** argv)
 	test_waitsig();
 
 	if (lseek(fd, 0, SEEK_SET) < 0) {
-		fail("lseeking to the beginning of file failed: %m\n");
+		fail("lseeking to the beginning of file failed");
 		goto out;
 	}
 
 	if (read(fd, buf, sizeof(buf)) != sizeof(buf)) {
-		fail("can't read %s: %m\n", filename);
+		fail("can't read %s", filename);
 		goto out;
 	}
 
 	crc = ~0;
 	if (datachk(buf, sizeof(buf), &crc)) {
-		fail("CRC mismatch\n");
+		fail("CRC mismatch");
 		goto out;
 	}
 
 	if (fstat(fd, &st) < 0) {
-		fail("can't fstat %s: %m", filename);
+		fail("can't fstat %s", filename);
 		goto out;
 	}
 
@@ -103,12 +106,12 @@ int main(int argc, char ** argv)
 	}
 
 	if (close(fd)) {
-		fail("close failed: %m\n");
+		fail("close failed");
 		goto out_noclose;
 	}
 
 	if (unlink(filename) != -1 || errno != ENOENT) {
-		fail("file %s should have been deleted before migration: unlink: %m\n", filename);
+		fail("file %s should have been deleted before migration: unlink", filename);
 		goto out_noclose;
 	}
 

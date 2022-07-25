@@ -7,9 +7,9 @@
 
 #include "zdtmtst.h"
 
-const char *test_author	= "Andrei Vagin <avagin@virtuozzo.com>";
+const char *test_author = "Andrei Vagin <avagin@virtuozzo.com>";
 
-#define MEM_SIZE (1<<25)
+#define MEM_SIZE (1 << 25)
 
 int main(int argc, char **argv)
 {
@@ -71,7 +71,7 @@ int main(int argc, char **argv)
 	}
 
 	if (status != *sum) {
-		fail("checksum mismatch: %x %x\n", status, *sum);
+		fail("checksum mismatch: %x %x", status, *sum);
 		return 1;
 	}
 

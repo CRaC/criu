@@ -12,8 +12,8 @@
 
 /* Enabling the right policy happens in selinux00.hook and selinx00.checkskip */
 
-const char *test_doc	= "Check that a SELinux profile is restored";
-const char *test_author	= "Adrian Reber <areber@redhat.com>";
+const char *test_doc = "Check that a SELinux profile is restored";
+const char *test_author = "Adrian Reber <areber@redhat.com>";
 
 /* This is all based on Tycho's apparmor code */
 
@@ -39,7 +39,7 @@ int setprofile(void)
 
 	fd = open("/proc/self/attr/current", O_WRONLY);
 	if (fd < 0) {
-		fail("Could not open /proc/self/attr/current\n");
+		fail("Could not open /proc/self/attr/current");
 		return -1;
 	}
 
@@ -47,7 +47,7 @@ int setprofile(void)
 	close(fd);
 
 	if (len < 0) {
-		fail("Could not write context\n");
+		fail("Could not write context");
 		return -1;
 	}
 
@@ -60,23 +60,21 @@ int checkprofile(void)
 	char context[1024];
 	int len;
 
-
 	fd = open("/proc/self/attr/current", O_RDONLY);
 	if (fd < 0) {
-		fail("Could not open /proc/self/attr/current\n");
+		fail("Could not open /proc/self/attr/current");
 		return -1;
 	}
 
 	len = read(fd, context, strlen(CONTEXT));
 	close(fd);
 	if (len != strlen(CONTEXT)) {
-		fail("SELinux context has unexpected length %d, expected %zd\n",
-			len, strlen(CONTEXT));
+		fail("SELinux context has unexpected length %d, expected %zd", len, strlen(CONTEXT));
 		return -1;
 	}
 
 	if (strncmp(context, CONTEXT, strlen(CONTEXT)) != 0) {
-		fail("Wrong SELinux context %s expected %s\n", context, CONTEXT);
+		fail("Wrong SELinux context %s expected %s", context, CONTEXT);
 		return -1;
 	}
 
@@ -94,14 +92,14 @@ int check_sockcreate(void)
 		free(output);
 		/* sockcreate should be empty, if fscanf found something
 		 * it is wrong.*/
-		fail("sockcreate should be empty\n");
+		fail("sockcreate should be empty");
 		return -1;
 	}
 
 	if (output) {
 		free(output);
 		/* Same here, output should still be NULL. */
-		fail("sockcreate should be empty\n");
+		fail("sockcreate should be empty");
 		return -1;
 	}
 

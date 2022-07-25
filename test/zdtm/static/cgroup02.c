@@ -8,8 +8,8 @@
 #include <sys/mount.h>
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check that empty cgroups are preserved";
-const char *test_author	= "Tycho Andersen <tycho.andersen@canonical.com>";
+const char *test_doc = "Check that empty cgroups are preserved";
+const char *test_author = "Tycho Andersen <tycho.andersen@canonical.com>";
 
 char *dirname;
 TEST_OPTION(dirname, string, "cgroup directory name", 1);
@@ -148,18 +148,17 @@ int main(int argc, char **argv)
 	}
 
 	if (!found_zdtmtstroot) {
-		fail("oldroot not rewritten to zdtmtstroot!\n");
+		fail("oldroot not rewritten to zdtmtstroot!");
 		goto out_close;
 	}
 
 	if (!found_newroot) {
-		fail("oldroot not rewritten to newroot!\n");
+		fail("oldroot not rewritten to newroot!");
 		goto out_close;
 	}
 
 	pass();
 	ret = 0;
-
 
 out_close:
 	fclose(cgf);

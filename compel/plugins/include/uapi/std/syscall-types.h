@@ -40,11 +40,12 @@ struct rusage;
 struct iocb;
 struct pollfd;
 struct clone_args;
+struct open_how;
 
 typedef unsigned long aio_context_t;
 
 #ifndef F_GETFD
-# define F_GETFD 1
+#define F_GETFD 1
 #endif
 
 struct krlimit {
@@ -57,7 +58,6 @@ typedef int kernel_timer_t;
 
 #include <compel/plugins/std/asm/syscall-types.h>
 
-
 extern long sys_preadv_raw(int fd, struct iovec *iov, unsigned long nr, unsigned long pos_l, unsigned long pos_h);
 
 static inline long sys_preadv(int fd, struct iovec *iov, unsigned long nr, off_t off)
@@ -67,7 +67,7 @@ static inline long sys_preadv(int fd, struct iovec *iov, unsigned long nr, off_t
 #elif BITS_PER_LONG == 32
 	return sys_preadv_raw(fd, iov, nr, off, ((uint64_t)off) >> 32);
 #else
-#	error "BITS_PER_LONG isn't defined"
+#error "BITS_PER_LONG isn't defined"
 #endif
 }
 

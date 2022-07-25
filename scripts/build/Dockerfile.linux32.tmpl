@@ -1,8 +1,8 @@
 ARG CC=gcc
-ARG ENV1=FOOBAR
 
-RUN apt-get update && apt-get install -y \
-	ccache \
+COPY scripts/ci/apt-install /bin/apt-install
+
+RUN apt-install \
 	libnet-dev \
 	libnl-route-3-dev \
 	$CC \
@@ -21,17 +21,15 @@ RUN apt-get update && apt-get install -y \
 	pkg-config \
 	protobuf-c-compiler \
 	protobuf-compiler \
-	python-minimal \
-	python-future
+	python3-minimal \
+	python3-future
 
 COPY . /criu
 WORKDIR /criu
-ENV CC="ccache $CC" CCACHE_DIR=/tmp/.ccache CCACHE_NOCOMPRESS=1 $ENV1=yes
 
 RUN uname -m && setarch linux32 uname -m && setarch --list
 
-RUN mv .ccache /tmp && make mrproper && ccache -s && \
-	date && \
+RUN make mrproper && date && \
 # Check single object build
 	setarch linux32 make -j $(nproc) CC="$CC" criu/parasite-syscall.o && \
 # Compile criu

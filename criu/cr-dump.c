@@ -15,7 +15,6 @@
 #include <sys/time.h>
 #include <sys/wait.h>
 
-
 #include <sched.h>
 #include <sys/resource.h>
 
@@ -46,6 +45,7 @@
 #include "proc_parse.h"
 #include "parasite.h"
 #include "parasite-syscall.h"
+#include "compel/ptrace.h"
 #include "files.h"
 #include "files-reg.h"
 #include "shmem.h"
@@ -82,6 +82,10 @@
 #include "eventpoll.h"
 #include "memfd.h"
 #include "timens.h"
+#include "img-streamer.h"
+#include "pidfd-store.h"
+#include "apparmor.h"
+#include "asm/dump.h"
 
 /*
  * Architectures can overwrite this function to restore register sets that
@@ -91,13 +95,12 @@
  * with_threads = true : The register sets of the tasks with all their threads
  *			 are restored
  */
-int __attribute__((weak)) arch_set_thread_regs(struct pstree_item *item,
-					       bool with_threads)
+int __attribute__((weak)) arch_set_thread_regs(struct pstree_item *item, bool with_threads)
 {
 	return 0;
 }
 
-#define PERSONALITY_LENGTH	9
+#define PERSONALITY_LENGTH 9
 static char loc_buf[PERSONALITY_LENGTH];
 
 void free_mappings(struct vm_area_list *vma_area_list)
@@ -113,8 +116,7 @@ void free_mappings(struct vm_area_list *vma_area_list)
 	vm_area_list_init(vma_area_list);
 }
 
-int collect_mappings(pid_t pid, struct vm_area_list *vma_area_list,
-						dump_filemap_t dump_file)
+int collect_mappings(pid_t pid, struct vm_area_list *vma_area_list, dump_filemap_t dump_file)
 {
 	int ret = -1;
 
@@ -126,8 +128,7 @@ int collect_mappings(pid_t pid, struct vm_area_list *vma_area_list,
 	if (ret < 0)
 		goto err;
 
-	pr_info("Collected, longest area occupies %lu pages\n",
-		vma_area_list->nr_priv_pages_longest);
+	pr_info("Collected, longest area occupies %lu pages\n", vma_area_list->nr_priv_pages_longest);
 	pr_info_vma_list(&vma_area_list->h);
 
 	pr_info("----------------------------------------\n");
@@ -187,6 +188,25 @@ static int dump_sched_info(int pid, ThreadCoreEntry *tc)
 	return 0;
 }
 
+static int check_thread_rseq(pid_t tid, const struct parasite_check_rseq *ti_rseq)
+{
+	if (!kdat.has_rseq || kdat.has_ptrace_get_rseq_conf)
+		return 0;
+
+	pr_debug("%d has rseq_inited = %d\n", tid, ti_rseq->rseq_inited);
+
+	/*
+	 * We have no kdat.has_ptrace_get_rseq_conf and user
+	 * process has rseq() used, let's fail dump.
+	 */
+	if (ti_rseq->rseq_inited) {
+		pr_err("%d has rseq but kernel lacks get_rseq_conf feature\n", tid);
+		return -1;
+	}
+
+	return 0;
+}
+
 struct cr_imgset *glob_imgset;
 
 static int collect_fds(pid_t pid, struct parasite_drain_fd **dfds)
@@ -214,8 +234,10 @@ static int collect_fds(pid_t pid, struct parasite_drain_fd **dfds)
 
 			size += PAGE_SIZE;
 			t = xrealloc(*dfds, size);
-			if (!t)
+			if (!t) {
+				closedir(fd_dir);
 				return -1;
+			}
 			*dfds = t;
 		}
 
@@ -321,8 +343,7 @@ static int dump_task_fs(pid_t pid, struct parasite_dump_misc *misc, struct cr_im
 
 	close(fd);
 
-	pr_info("Dumping task cwd id %#x root id %#x\n",
-			fe.cwd_id, fe.root_id);
+	pr_info("Dumping task cwd id %#x root id %#x\n", fe.cwd_id, fe.root_id);
 
 	return pb_write_one(img_from_set(imgset, CR_FD_FS), &fe, PB_FS);
 }
@@ -336,7 +357,7 @@ static int dump_task_rlimits(int pid, TaskRlimitsEntry *rls)
 {
 	int res;
 
-	for (res = 0; res <rls->n_rlimits ; res++) {
+	for (res = 0; res < rls->n_rlimits; res++) {
 		struct rlimit64 lim;
 
 		if (syscall(__NR_prlimit64, pid, res, NULL, &lim)) {
@@ -408,8 +429,7 @@ static int dump_filemap(struct vma_area *vma_area, int fd)
 	if (vma_area->aufs_rpath) {
 		struct fd_link aufs_link;
 
-		strlcpy(aufs_link.name, vma_area->aufs_rpath,
-				sizeof(aufs_link.name));
+		strlcpy(aufs_link.name, vma_area->aufs_rpath, sizeof(aufs_link.name));
 		aufs_link.len = strlen(aufs_link.name);
 		p.link = &aufs_link;
 	}
@@ -430,8 +450,7 @@ static int check_sysvipc_map_dump(pid_t pid, VmaEntry *vma)
 	if (root_ns_mask & CLONE_NEWIPC)
 		return 0;
 
-	pr_err("Task %d with SysVIPC shmem map @%"PRIx64" doesn't live in IPC ns\n",
-			pid, vma->start);
+	pr_err("Task %d with SysVIPC shmem map @%" PRIx64 " doesn't live in IPC ns\n", pid, vma->start);
 	return -1;
 }
 
@@ -463,10 +482,8 @@ err:
 	return ret;
 }
 
-static int dump_task_mm(pid_t pid, const struct proc_pid_stat *stat,
-		const struct parasite_dump_misc *misc,
-		const struct vm_area_list *vma_area_list,
-		const struct cr_imgset *imgset)
+static int dump_task_mm(pid_t pid, const struct proc_pid_stat *stat, const struct parasite_dump_misc *misc,
+			const struct vm_area_list *vma_area_list, const struct cr_imgset *imgset)
 {
 	MmEntry mme = MM_ENTRY__INIT;
 	struct vma_area *vma_area;
@@ -574,8 +591,8 @@ static int get_task_futex_robust_list(pid_t pid, ThreadCoreEntry *info)
 		goto err;
 	}
 
-	info->futex_rla		= encode_pointer(head);
-	info->futex_rla_len	= (u32)len;
+	info->futex_rla = encode_pointer(head);
+	info->futex_rla_len = (u32)len;
 
 	return 0;
 
@@ -618,7 +635,7 @@ static int dump_task_kobj_ids(struct pstree_item *item)
 	TaskKobjIdsEntry *ids = item->ids;
 
 	elem.pid = pid;
-	elem.idx = 0; /* really 0 for all */
+	elem.idx = 0;	/* really 0 for all */
 	elem.genid = 0; /* FIXME optimize */
 
 	new = 0;
@@ -692,25 +709,21 @@ int dump_thread_core(int pid, CoreEntry *core, const struct parasite_dump_thread
 	int ret;
 	ThreadCoreEntry *tc = core->thread_core;
 
-	ret = collect_lsm_profile(pid, tc->creds);
-	if (!ret) {
-		/*
-		 * XXX: It's possible to set two: 32-bit and 64-bit
-		 * futex list's heads. That makes about no sense, but
-		 * it's possible. Until we meet such application, dump
-		 * only one: native or compat futex's list pointer.
-		 */
-		if (!core_is_compat(core))
-			ret = get_task_futex_robust_list(pid, tc);
-		else
-			ret = get_task_futex_robust_list_compat(pid, tc);
-	}
+	/*
+	 * XXX: It's possible to set two: 32-bit and 64-bit
+	 * futex list's heads. That makes about no sense, but
+	 * it's possible. Until we meet such application, dump
+	 * only one: native or compat futex's list pointer.
+	 */
+	if (!core_is_compat(core))
+		ret = get_task_futex_robust_list(pid, tc);
+	else
+		ret = get_task_futex_robust_list_compat(pid, tc);
 	if (!ret)
 		ret = dump_sched_info(pid, tc);
 	if (!ret) {
 		core_put_tls(core, ti->tls);
-		CORE_THREAD_ARCH_INFO(core)->clear_tid_addr =
-			encode_pointer(ti->tid_addr);
+		CORE_THREAD_ARCH_INFO(core)->clear_tid_addr = encode_pointer(ti->tid_addr);
 		BUG_ON(!tc->sas);
 		copy_sas(tc->sas, &ti->sas);
 		if (ti->pdeath_sig) {
@@ -724,14 +737,22 @@ int dump_thread_core(int pid, CoreEntry *core, const struct parasite_dump_thread
 	if (!ret)
 		ret = seccomp_dump_thread(pid, tc);
 
+	/*
+	 * We are dumping rseq() in the dump_thread_rseq() function,
+	 * *before* processes gets infected (because of ptrace requests
+	 * API restriction). At this point, if the kernel lacks
+	 * kdat.has_ptrace_get_rseq_conf support we have to ensure
+	 * that dumpable processes haven't initialized rseq() or
+	 * fail dump if rseq() was used.
+	 */
+	if (!ret)
+		ret = check_thread_rseq(pid, &ti->rseq);
+
 	return ret;
 }
 
-static int dump_task_core_all(struct parasite_ctl *ctl,
-			      struct pstree_item *item,
-			      const struct proc_pid_stat *stat,
-			      const struct cr_imgset *cr_imgset,
-			      const struct parasite_dump_misc *misc)
+static int dump_task_core_all(struct parasite_ctl *ctl, struct pstree_item *item, const struct proc_pid_stat *stat,
+			      const struct cr_imgset *cr_imgset, const struct parasite_dump_misc *misc)
 {
 	struct cr_img *img;
 	CoreEntry *core = item->core[0];
@@ -756,6 +777,9 @@ static int dump_task_core_all(struct parasite_ctl *ctl,
 	core->tc->flags = stat->flags;
 	core->tc->task_state = item->pid->state;
 	core->tc->exit_code = 0;
+
+	core->thread_core->creds->lsm_profile = dmpi(item)->thread_lsms[0]->profile;
+	core->thread_core->creds->lsm_sockcreate = dmpi(item)->thread_lsms[0]->sockcreate;
 
 	ret = parasite_dump_thread_leader_seized(ctl, pid, core);
 	if (ret)
@@ -801,7 +825,9 @@ static int collect_pstree_ids_predump(void)
 	struct {
 		struct pstree_item i;
 		struct dmp_info d;
-	} crt = { .i.pid = &pid, };
+	} crt = {
+		.i.pid = &pid,
+	};
 
 	/*
 	 * This thing is normally done inside
@@ -841,8 +867,7 @@ static int collect_file_locks(void)
 	return parse_file_locks();
 }
 
-static int dump_task_thread(struct parasite_ctl *parasite_ctl,
-				const struct pstree_item *item, int id)
+static int dump_task_thread(struct parasite_ctl *parasite_ctl, const struct pstree_item *item, int id)
 {
 	struct parasite_thread_ctl *tctl = dmpi(item)->thread_ctls[id];
 	struct pid *tid = &item->threads[id];
@@ -862,6 +887,9 @@ static int dump_task_thread(struct parasite_ctl *parasite_ctl,
 	}
 	pstree_insert_pid(tid);
 
+	core->thread_core->creds->lsm_profile = dmpi(item)->thread_lsms[id]->profile;
+	core->thread_core->creds->lsm_sockcreate = dmpi(item)->thread_lsms[0]->sockcreate;
+
 	img = open_image(CR_FD_CORE, O_DUMP, tid->ns[0].virt);
 	if (!img)
 		goto err;
@@ -874,8 +902,7 @@ err:
 	return ret;
 }
 
-static int dump_one_zombie(const struct pstree_item *item,
-			   const struct proc_pid_stat *pps)
+static int dump_one_zombie(const struct pstree_item *item, const struct proc_pid_stat *pps)
 {
 	CoreEntry *core;
 	int ret = -1;
@@ -900,7 +927,7 @@ err:
 	return ret;
 }
 
-#define SI_BATCH	32
+#define SI_BATCH 32
 
 static int dump_signal_queue(pid_t tid, SignalQueueEntry **sqe, bool group)
 {
@@ -933,8 +960,10 @@ static int dump_signal_queue(pid_t tid, SignalQueueEntry **sqe, bool group)
 		}
 
 		nr = ret = ptrace(PTRACE_PEEKSIGINFO, tid, &arg, si);
-		if (ret == 0)
+		if (ret == 0) {
+			xfree(si);
 			break; /* Finished */
+		}
 
 		if (ret < 0) {
 			if (errno == EIO) {
@@ -943,6 +972,7 @@ static int dump_signal_queue(pid_t tid, SignalQueueEntry **sqe, bool group)
 			} else
 				pr_perror("ptrace");
 
+			xfree(si);
 			break;
 		}
 
@@ -950,11 +980,11 @@ static int dump_signal_queue(pid_t tid, SignalQueueEntry **sqe, bool group)
 		queue->signals = xrealloc(queue->signals, sizeof(*queue->signals) * queue->n_signals);
 		if (!queue->signals) {
 			ret = -1;
+			xfree(si);
 			break;
 		}
 
-		for (si_pos = queue->n_signals - nr;
-				si_pos < queue->n_signals; si_pos++) {
+		for (si_pos = queue->n_signals - nr; si_pos < queue->n_signals; si_pos++) {
 			SiginfoEntry *se;
 
 			se = xmalloc(sizeof(*se));
@@ -1004,10 +1034,233 @@ static int dump_task_signals(pid_t pid, struct pstree_item *item)
 	return 0;
 }
 
+static int read_rseq_cs(pid_t tid, struct __ptrace_rseq_configuration *rseqc, struct rseq_cs *rseq_cs,
+			struct criu_rseq *rseq)
+{
+	int ret;
+
+	/* rseq is not registered */
+	if (!rseqc->rseq_abi_pointer)
+		return 0;
+
+	/*
+	 * We need to cover the case when victim process was inside rseq critical section
+	 * at the moment when CRIU comes and seized it. We need to determine the borders
+	 * of rseq critical section at first. To achieve that we need to access thread
+	 * memory and read pointer to struct rseq_cs.
+	 *
+	 * We have two ways to access thread memory: from the parasite and using ptrace().
+	 * But it this case we can't use parasite, because if victim process returns to the
+	 * execution, on the kernel side __rseq_handle_notify_resume hook will be called,
+	 * then rseq_ip_fixup() -> clear_rseq_cs() and user space memory with struct rseq
+	 * will be cleared. So, let's use ptrace(PTRACE_PEEKDATA).
+	 */
+	ret = ptrace_peek_area(tid, rseq, decode_pointer(rseqc->rseq_abi_pointer), sizeof(struct criu_rseq));
+	if (ret) {
+		pr_err("ptrace_peek_area(%d, %lx, %lx, %lx): fail to read rseq struct\n", tid, (unsigned long)rseq,
+		       (unsigned long)(rseqc->rseq_abi_pointer), (unsigned long)sizeof(uint64_t));
+		return -1;
+	}
+
+	if (!rseq->rseq_cs)
+		return 0;
+
+	ret = ptrace_peek_area(tid, rseq_cs, decode_pointer(rseq->rseq_cs), sizeof(struct rseq_cs));
+	if (ret) {
+		pr_err("ptrace_peek_area(%d, %lx, %lx, %lx): fail to read rseq_cs struct\n", tid,
+		       (unsigned long)rseq_cs, (unsigned long)rseq->rseq_cs, (unsigned long)sizeof(struct rseq_cs));
+		return -1;
+	}
+
+	return 0;
+}
+
+static int dump_thread_rseq(struct pstree_item *item, int i)
+{
+	struct __ptrace_rseq_configuration rseqc;
+	RseqEntry *rseqe = NULL;
+	int ret;
+	CoreEntry *core = item->core[i];
+	RseqEntry **rseqep = &core->thread_core->rseq_entry;
+	struct criu_rseq rseq = {};
+	struct rseq_cs *rseq_cs = &dmpi(item)->thread_rseq_cs[i];
+	pid_t tid = item->threads[i].real;
+
+	/*
+	 * If we are here it means that rseq() syscall is supported,
+	 * but ptrace(PTRACE_GET_RSEQ_CONFIGURATION) isn't supported,
+	 * we can just fail dump here. But this is bad idea, IMHO.
+	 *
+	 * So, we will try to detect if victim process was used rseq().
+	 * See check_rseq() and check_thread_rseq() functions.
+	 */
+	if (!kdat.has_ptrace_get_rseq_conf)
+		return 0;
+
+	ret = ptrace(PTRACE_GET_RSEQ_CONFIGURATION, tid, sizeof(rseqc), &rseqc);
+	if (ret != sizeof(rseqc)) {
+		pr_perror("ptrace(PTRACE_GET_RSEQ_CONFIGURATION, %d) = %d", tid, ret);
+		return -1;
+	}
+
+	if (rseqc.flags != 0) {
+		pr_err("something wrong with ptrace(PTRACE_GET_RSEQ_CONFIGURATION, %d) flags = 0x%x\n", tid,
+		       rseqc.flags);
+		return -1;
+	}
+
+	pr_info("Dump rseq of %d: ptr = 0x%lx sign = 0x%x\n", tid, (unsigned long)rseqc.rseq_abi_pointer,
+		rseqc.signature);
+
+	rseqe = xmalloc(sizeof(*rseqe));
+	if (!rseqe)
+		return -1;
+
+	rseq_entry__init(rseqe);
+
+	rseqe->rseq_abi_pointer = rseqc.rseq_abi_pointer;
+	rseqe->rseq_abi_size = rseqc.rseq_abi_size;
+	rseqe->signature = rseqc.signature;
+
+	if (read_rseq_cs(tid, &rseqc, rseq_cs, &rseq))
+		goto err;
+
+	/* we won't save rseq_cs to the image (only pointer),
+	 * so let's combine flags from both struct rseq and struct rseq_cs
+	 * (kernel does the same when interpreting RSEQ_CS_FLAG_*)
+	 */
+	rseq_cs->flags |= rseq.flags;
+
+	if (rseq_cs->flags & RSEQ_CS_FLAG_NO_RESTART_ON_SIGNAL) {
+		rseqe->has_rseq_cs_pointer = true;
+		rseqe->rseq_cs_pointer = rseq.rseq_cs;
+	}
+
+	/* save rseq entry to the image */
+	*rseqep = rseqe;
+
+	return 0;
+
+err:
+	xfree(rseqe);
+	return -1;
+}
+
+static int dump_task_rseq(pid_t pid, struct pstree_item *item)
+{
+	int i;
+	struct rseq_cs *thread_rseq_cs;
+
+	/* if rseq() syscall isn't supported then nothing to dump */
+	if (!kdat.has_rseq)
+		return 0;
+
+	thread_rseq_cs = xzalloc(sizeof(*thread_rseq_cs) * item->nr_threads);
+	if (!thread_rseq_cs)
+		return -1;
+
+	dmpi(item)->thread_rseq_cs = thread_rseq_cs;
+
+	for (i = 0; i < item->nr_threads; i++) {
+		if (dump_thread_rseq(item, i))
+			goto free_rseq;
+	}
+
+	return 0;
+
+free_rseq:
+	xfree(thread_rseq_cs);
+	dmpi(item)->thread_rseq_cs = NULL;
+	return -1;
+}
+
+static bool task_in_rseq(struct rseq_cs *rseq_cs, uint64_t addr)
+{
+	return addr >= rseq_cs->start_ip && addr < rseq_cs->start_ip + rseq_cs->post_commit_offset;
+}
+
+static int fixup_thread_rseq(struct pstree_item *item, int i)
+{
+	CoreEntry *core = item->core[i];
+	struct rseq_cs *rseq_cs = &dmpi(item)->thread_rseq_cs[i];
+	pid_t tid = item->threads[i].real;
+
+	/* equivalent to (struct rseq)->rseq_cs is NULL */
+	if (!rseq_cs->start_ip)
+		return 0;
+
+	pr_debug(
+		"fixup_thread_rseq for %d: rseq_cs start_ip = %llx abort_ip = %llx post_commit_offset = %llx flags = %x version = %x; IP = %lx\n",
+		tid, rseq_cs->start_ip, rseq_cs->abort_ip, rseq_cs->post_commit_offset, rseq_cs->flags,
+		rseq_cs->version, (unsigned long)TI_IP(core));
+
+	if (rseq_cs->version != 0) {
+		pr_err("unsupported RSEQ ABI version = %d\n", rseq_cs->version);
+		return -1;
+	}
+
+	if (task_in_rseq(rseq_cs, TI_IP(core))) {
+		struct pid *tid = &item->threads[i];
+
+		/*
+		 * We need to fixup task instruction pointer from
+		 * the original one (which lays inside rseq critical section)
+		 * to rseq abort handler address. But we need to look on rseq_cs->flags
+		 * (please refer to struct rseq -> flags field description).
+		 * Naive idea of flags support may be like... let's change instruction pointer (IP)
+		 * to rseq_cs->abort_ip if !(rseq_cs->flags & RSEQ_CS_FLAG_NO_RESTART_ON_SIGNAL).
+		 * But unfortunately, it doesn't work properly, because the kernel does
+		 * clean up of rseq_cs field in the struct rseq (modifies userspace memory).
+		 * So, we need to preserve original value of (struct rseq)->rseq_cs field in the
+		 * image and restore it's value before releasing threads (see restore_rseq_cs()).
+		 *
+		 * It's worth to mention that we need to fixup IP in CoreEntry
+		 * (used when full dump/restore is performed) and also in
+		 * the parasite regs storage (used if --leave-running option is used,
+		 * or if dump error occurred and process execution is resumed).
+		 */
+
+		if (!(rseq_cs->flags & RSEQ_CS_FLAG_NO_RESTART_ON_SIGNAL)) {
+			pr_warn("The %d task is in rseq critical section. IP will be set to rseq abort handler addr\n",
+				tid->real);
+
+			TI_IP(core) = rseq_cs->abort_ip;
+
+			if (item->pid->real == tid->real) {
+				compel_set_leader_ip(dmpi(item)->parasite_ctl, rseq_cs->abort_ip);
+			} else {
+				compel_set_thread_ip(dmpi(item)->thread_ctls[i], rseq_cs->abort_ip);
+			}
+		}
+	}
+
+	return 0;
+}
+
+static int fixup_task_rseq(pid_t pid, struct pstree_item *item)
+{
+	int ret = 0;
+	int i;
+
+	if (!kdat.has_ptrace_get_rseq_conf)
+		return 0;
+
+	for (i = 0; i < item->nr_threads; i++) {
+		if (fixup_thread_rseq(item, i)) {
+			ret = -1;
+			goto exit;
+		}
+	}
+
+exit:
+	xfree(dmpi(item)->thread_rseq_cs);
+	dmpi(item)->thread_rseq_cs = NULL;
+	return ret;
+}
+
 static struct proc_pid_stat pps_buf;
 
-static int dump_task_threads(struct parasite_ctl *parasite_ctl,
-			     const struct pstree_item *item)
+static int dump_task_threads(struct parasite_ctl *parasite_ctl, const struct pstree_item *item)
 {
 	int i;
 
@@ -1028,7 +1281,7 @@ static int dump_task_threads(struct parasite_ctl *parasite_ctl,
  * What this routine does is just reads pid-s of dead
  * tasks in item's children list from item's ns proc.
  *
- * It does *not* find wihch real pid corresponds to
+ * It does *not* find which real pid corresponds to
  * which virtual one, but it's not required -- all we
  * need to dump for zombie can be found in the same
  * ns proc.
@@ -1092,8 +1345,16 @@ static int dump_zombies(void)
 	int ret = -1;
 	int pidns = root_ns_mask & CLONE_NEWPID;
 
-	if (pidns && set_proc_fd(get_service_fd(CR_PROC_FD_OFF)))
-		return -1;
+	if (pidns) {
+		int fd;
+
+		fd = get_service_fd(CR_PROC_FD_OFF);
+		if (fd < 0)
+			return -1;
+
+		if (set_proc_fd(fd))
+			return -1;
+	}
 
 	/*
 	 * We dump zombies separately because for pid-ns case
@@ -1123,6 +1384,13 @@ static int dump_zombies(void)
 		item->pgid = pps_buf.pgid;
 
 		BUG_ON(!list_empty(&item->children));
+
+		if (!item->sid) {
+			pr_err("A session leader of zombie process %d(%d) is outside of its pid namespace\n",
+			       item->pid->real, vpid(item));
+			goto err;
+		}
+
 		if (dump_one_zombie(item, &pps_buf) < 0)
 			goto err;
 	}
@@ -1149,6 +1417,15 @@ static int pre_dump_one_task(struct pstree_item *item, InventoryEntry *parent_ie
 	pr_info("========================================\n");
 	pr_info("Pre-dumping task (pid: %d)\n", pid);
 	pr_info("========================================\n");
+
+	/*
+	 * Add pidfd of task to pidfd_store if it is initialized.
+	 * This pidfd will be used in the next pre-dump/dump iteration
+	 * in detect_pid_reuse().
+	 */
+	ret = pidfd_store_add(pid);
+	if (ret)
+		goto err;
 
 	if (item->pid->state == TASK_STOPPED) {
 		pr_warn("Stopped tasks are not supported\n");
@@ -1276,9 +1553,21 @@ static int dump_one_task(struct pstree_item *item, InventoryEntry *parent_ie)
 		goto err;
 	}
 
+	ret = dump_task_rseq(pid, item);
+	if (ret) {
+		pr_err("Dump %d rseq failed %d\n", pid, ret);
+		goto err;
+	}
+
 	parasite_ctl = parasite_infect_seized(pid, item, &vmas);
 	if (!parasite_ctl) {
 		pr_err("Can't infect (pid: %d) with parasite\n", pid);
+		goto err;
+	}
+
+	ret = fixup_task_rseq(pid, item);
+	if (ret) {
+		pr_err("Fixup rseq for %d failed %d\n", pid, ret);
 		goto err;
 	}
 
@@ -1293,29 +1582,29 @@ static int dump_one_task(struct pstree_item *item, InventoryEntry *parent_ie)
 		pfd = parasite_get_proc_fd_seized(parasite_ctl);
 		if (pfd < 0) {
 			pr_err("Can't get proc fd (pid: %d)\n", pid);
-			goto err_cure_imgset;
+			goto err_cure;
 		}
 
 		if (install_service_fd(CR_PROC_FD_OFF, pfd) < 0)
-			goto err_cure_imgset;
+			goto err_cure;
 	}
 
 	ret = parasite_fixup_vdso(parasite_ctl, pid, &vmas);
 	if (ret) {
 		pr_err("Can't fixup vdso VMAs (pid: %d)\n", pid);
-		goto err_cure_imgset;
+		goto err_cure;
 	}
 
 	ret = parasite_collect_aios(parasite_ctl, &vmas); /* FIXME -- merge with above */
 	if (ret) {
 		pr_err("Failed to check aio rings (pid: %d)\n", pid);
-		goto err_cure_imgset;
+		goto err_cure;
 	}
 
 	ret = parasite_dump_misc_seized(parasite_ctl, &misc);
 	if (ret) {
 		pr_err("Can't dump misc (pid: %d)\n", pid);
-		goto err_cure_imgset;
+		goto err_cure;
 	}
 
 	item->pid->ns[0].virt = misc.pid;
@@ -1323,12 +1612,10 @@ static int dump_one_task(struct pstree_item *item, InventoryEntry *parent_ie)
 	item->sid = misc.sid;
 	item->pgid = misc.pgid;
 
-	pr_info("sid=%d pgid=%d pid=%d\n",
-		item->sid, item->pgid, vpid(item));
+	pr_info("sid=%d pgid=%d pid=%d\n", item->sid, item->pgid, vpid(item));
 
 	if (item->sid == 0) {
-		pr_err("A session leader of %d(%d) is outside of its pid namespace\n",
-			item->pid->real, vpid(item));
+		pr_err("A session leader of %d(%d) is outside of its pid namespace\n", item->pid->real, vpid(item));
 		goto err_cure;
 	}
 
@@ -1425,17 +1712,15 @@ static int dump_one_task(struct pstree_item *item, InventoryEntry *parent_ie)
 		goto err;
 	}
 
-	close_cr_imgset(&cr_imgset);
 	exit_code = 0;
 err:
+	close_cr_imgset(&cr_imgset);
 	close_pid_proc();
 	free_mappings(&vmas);
 	xfree(dfds);
 	return exit_code;
 
 err_cure:
-	close_cr_imgset(&cr_imgset);
-err_cure_imgset:
 	ret = compel_cure(parasite_ctl);
 	if (ret)
 		pr_err("Can't cure (pid: %d) from parasite\n", pid);
@@ -1444,17 +1729,17 @@ err_cure_imgset:
 
 static int alarm_attempts = 0;
 
-bool alarm_timeouted(void) {
+bool alarm_timeouted(void)
+{
 	return alarm_attempts > 0;
 }
 
 static void alarm_handler(int signo)
 {
-
 	pr_err("Timeout reached. Try to interrupt: %d\n", alarm_attempts);
 	if (alarm_attempts++ < 5) {
 		alarm(1);
-		/* A curren syscall will be exited with EINTR */
+		/* A current syscall will be exited with EINTR */
 		return;
 	}
 	pr_err("FATAL: Unable to interrupt the current operation\n");
@@ -1464,8 +1749,7 @@ static void alarm_handler(int signo)
 static int setup_alarm_handler(void)
 {
 	struct sigaction sa = {
-		.sa_handler	= alarm_handler,
-		.sa_flags	= 0, /* Don't restart syscalls */
+		.sa_handler = alarm_handler, .sa_flags = 0, /* Don't restart syscalls */
 	};
 
 	sigemptyset(&sa.sa_mask);
@@ -1527,8 +1811,7 @@ static int cr_pre_dump_finish(int status)
 
 		if (opts.pre_dump_mode == PRE_DUMP_READ) {
 			timing_stop(TIME_MEMWRITE);
-			ret = page_xfer_predump_pages(item->pid->real,
-							&xfer, mem_pp);
+			ret = page_xfer_predump_pages(item->pid->real, &xfer, mem_pp);
 		} else {
 			ret = page_xfer_dump_pages(&xfer, mem_pp);
 		}
@@ -1554,6 +1837,9 @@ static int cr_pre_dump_finish(int status)
 	}
 
 err:
+	if (unsuspend_lsm())
+		ret = -1;
+
 	if (disconnect_from_page_server())
 		ret = -1;
 
@@ -1629,6 +1915,9 @@ int cr_pre_dump_tasks(pid_t pid)
 		goto err;
 
 	if (collect_namespaces(false) < 0)
+		goto err;
+
+	if (collect_and_suspend_lsm() < 0)
 		goto err;
 
 	/* Errors handled later in detect_pid_reuse */
@@ -1737,6 +2026,7 @@ static int cr_dump_finish(int ret)
 	 *    start rollback procedure and cleanup everything.
 	 */
 	if (ret || post_dump_ret || opts.final_state == TASK_ALIVE) {
+		unsuspend_lsm();
 		network_unlock();
 		delete_link_remaps();
 		clean_cr_time_mounts();
@@ -1747,9 +2037,7 @@ static int cr_dump_finish(int ret)
 
 	if (arch_set_thread_regs(root_item, true) < 0)
 		return -1;
-	pstree_switch_state(root_item,
-			    (ret || post_dump_ret) ?
-			    TASK_ALIVE : opts.final_state);
+	pstree_switch_state(root_item, (ret || post_dump_ret) ? TASK_ALIVE : opts.final_state);
 	timing_stop(TIME_FROZEN);
 	free_pstree(root_item);
 	seccomp_free_entries();
@@ -1759,6 +2047,7 @@ static int cr_dump_finish(int ret)
 	free_userns_maps();
 
 	close_service_fd(CR_PROC_FD_OFF);
+	close_image_dir();
 
 	if (ret) {
 		pr_err("Dumping FAILED.\n");
@@ -1766,7 +2055,7 @@ static int cr_dump_finish(int ret)
 		write_stats(DUMP_STATS);
 		pr_info("Dumping finished successfully\n");
 	}
-	return post_dump_ret ? : (ret != 0);
+	return post_dump_ret ?: (ret != 0);
 }
 
 int cr_dump_tasks(pid_t pid)
@@ -1816,10 +2105,7 @@ int cr_dump_tasks(pid_t pid)
 	if (vdso_init_dump())
 		goto err;
 
-	if (cgp_init(opts.cgroup_props,
-		     opts.cgroup_props ?
-		     strlen(opts.cgroup_props) : 0,
-		     opts.cgroup_props_file))
+	if (cgp_init(opts.cgroup_props, opts.cgroup_props ? strlen(opts.cgroup_props) : 0, opts.cgroup_props_file))
 		goto err;
 
 	if (parse_cg_info())
@@ -1869,6 +2155,9 @@ int cr_dump_tasks(pid_t pid)
 
 	/* Errors handled later in detect_pid_reuse */
 	parent_ie = get_parent_inventory();
+
+	if (collect_and_suspend_lsm() < 0)
+		goto err;
 
 	for_each_pstree_item(item) {
 		if (dump_one_task(item, parent_ie))
@@ -1926,6 +2215,9 @@ int cr_dump_tasks(pid_t pid)
 		if (ret)
 			goto err;
 	}
+
+	if (dump_aa_namespaces() < 0)
+		goto err;
 
 	ret = dump_cgroups();
 	if (ret)

@@ -6,12 +6,12 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Lock inversion";
-const char *test_author	= "Andrey Vagin <avagin@parallels.com>";
+const char *test_doc = "Lock inversion";
+const char *test_author = "Andrey Vagin <avagin@parallels.com>";
 
 #define TEST_STRING "Hello world"
 
-int main(int argc, char ** argv)
+int main(int argc, char **argv)
 {
 	int pipe1[2];
 	int pipe2[2];
@@ -42,7 +42,7 @@ int main(int argc, char ** argv)
 			return 1;
 		}
 	} else {
-		if (dup2(pipe1[0], 12) == -1 ||	dup2(pipe2[1], 11) == -1) {
+		if (dup2(pipe1[0], 12) == -1 || dup2(pipe2[1], 11) == -1) {
 			pr_perror("dup2 failed");
 			goto err;
 		}
@@ -79,7 +79,7 @@ int main(int argc, char ** argv)
 			goto err;
 		}
 		if (strcmp(TEST_STRING, buf)) {
-			pr_perror("data curruption");
+			pr_perror("data corruption");
 			goto err;
 		}
 
@@ -109,7 +109,7 @@ int main(int argc, char ** argv)
 		}
 		close(11);
 		if (strcmp(TEST_STRING, buf)) {
-			pr_perror("data curruption");
+			pr_perror("data corruption");
 			return 1;
 		}
 	}

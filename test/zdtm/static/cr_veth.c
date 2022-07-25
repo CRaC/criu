@@ -13,8 +13,8 @@
 #include <net/if.h>
 #include "zdtmtst.h"
 
-const char *test_doc	= "check that veth C/R-s right";
-const char *test_author	= "Pavel Emelyanov <xemul@virtuozzo.com>";
+const char *test_doc = "check that veth C/R-s right";
+const char *test_author = "Pavel Emelyanov <xemul@virtuozzo.com>";
 
 #define IF_NAME "zdtmvthc0"
 
@@ -39,7 +39,7 @@ int main(int argc, char **argv)
 	test_init(argc, argv);
 
 	if (!wait_for_veth()) {
-		fail("failed to inject veth device\n");
+		fail("failed to inject veth device");
 		return 1;
 	}
 

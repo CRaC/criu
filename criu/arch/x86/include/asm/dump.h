@@ -11,8 +11,7 @@ static inline void core_put_tls(CoreEntry *core, tls_t tls)
 	ThreadInfoX86 *ti = core->thread_info;
 	int i;
 
-	for (i = 0; i < GDT_ENTRY_TLS_NUM; i++)
-	{
+	for (i = 0; i < GDT_ENTRY_TLS_NUM; i++) {
 		user_desc_t *from = &tls.desc[i];
 		UserDescT *to = ti->tls[i];
 
@@ -26,7 +25,7 @@ static inline void core_put_tls(CoreEntry *core, tls_t tls)
 		COPY_TLS(read_exec_only);
 		COPY_TLS(limit_in_pages);
 		COPY_TLS(seg_not_present);
-		COPY_TLS(useable);
+		COPY_TLS(usable);
 #undef COPY_TLS
 	}
 }

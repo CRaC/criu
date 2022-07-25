@@ -76,6 +76,11 @@ The following levels are available:
 *-D*, *--images-dir* 'path'::
     Use 'path' as a base directory where to look for sets of image files.
 
+*--stream*::
+    dump/restore images using criu-image-streamer.
+    See https://github.com/checkpoint-restore/criu-image-streamer for detailed
+    usage.
+
 *--prev-images-dir* 'path'::
     Use 'path' as a parent directory where to look for sets of image files.
     This option makes sense in case of incremental dumps.
@@ -101,7 +106,7 @@ be restored with *mount(src, mountpoint, flags, options)*. When used,
 *dump* is expected to always succeed if a mountpoint is to be
 auto-detected, however *restore* may fail (or do something wrong)
 if the assumption for restore logic is incorrect. This option is
-not compatable with *--external* *dev*.
+not compatible with *--external* *dev*.
 
 *--action-script* 'script'::
     Add an external action script to be executed at certain stages.
@@ -237,6 +242,18 @@ In other words, do not use it unless really needed.
     Tell *criu* that one end of a pair of UNIX sockets (created by
     *socketpair*(2)) with the given _id_ is OK to be disconnected.
 
+*--external* **net[**__inode__**]:**__name__::
+    Mark a network namespace as external and do not include it in the
+    checkpoint. The label 'name' can be used with *--inherit-fd* during
+    restore to specify a file descriptor to a preconfigured network
+    namespace.
+
+*--external* **pid[**__inode__**]:**__name__::
+    Mark a PID namespace as external. This can be later used to restore
+    a process into an existing PID namespace. The label 'name' can be
+    used to assign another PID namespace during restore with the help
+    of *--inherit-fd*.
+
 *--freeze-cgroup*::
    Use cgroup freezer to collect processes.
 
@@ -316,6 +333,11 @@ mount -t cgroup -o devices,freezer none devices,freezer
 *--tcp-established*::
     Checkpoint established TCP connections.
 
+*--tcp-close*::
+    Don't dump the state of, or block, established tcp connections
+    (including the connection is once established but now closed).
+    This is useful when tcp connections are not going to be restored.
+
 *--skip-in-flight*::
     This option skips in-flight TCP connections. If any TCP connections
     that are not yet completely established are found, *criu* ignores
@@ -344,6 +366,10 @@ mount -t cgroup -o devices,freezer none devices,freezer
 *--link-remap*::
     Allows to link unlinked files back, if possible (modifies filesystem
     during *restore*).
+
+*--timeout* 'number'::
+    Set a time limit in seconds for collecting tasks during the
+    dump operation. The timeout is 10 seconds by default.
 
 *--ghost-limit* 'size'::
     Set the maximum size of deleted file to be carried inside image.
@@ -389,6 +415,35 @@ By default the option is set to *fpu* and *ins*.
     option is intended for post-copy (lazy) migration and should be
     used in conjunction with *restore* with appropriate options.
 
+*--file-validation* ['mode']::
+    Set the method to be used to validate open files. Validation is done
+    to ensure that the version of the file being restored is the same
+    version when it was dumped.
++
+The 'mode' may be one of the following:
+
+    *filesize*:::
+                To explicitly use only the file size check all the time.
+                This is the fastest and least intensive check.
+
+    *buildid*:::
+                To validate ELF files with their build-ID. If the
+                build-ID cannot be obtained, 'chksm-first' method will be
+                used. This is the default if mode is unspecified.
+
+*--network-lock* ['mode']::
+    Set the method to be used for network locking/unlocking. Locking is done
+    to ensure that tcp packets are dropped between dump and restore. This is
+    done to avoid the kernel sending RST when a packet arrives destined for
+    the dumped process.
++
+The 'mode' may be one of the following:
+
+    *iptables*::: Use iptables rules to drop the packets.
+    This is the default if 'mode' is not specified.
+
+    *nftables*::: Use nftables rules to drop the packets.
+
 *restore*
 ~~~~~~~~~
 Restores previously checkpointed processes.
@@ -397,7 +452,7 @@ Restores previously checkpointed processes.
     Inherit a file descriptor. This option lets *criu* use an already opened
     file descriptor 'N' for restoring a file identified by 'resource'.
     This option can be used to restore an external resource dumped
-    with the help of *--external* *file*, *tty*, and *unix* options.
+    with the help of *--external* *file*, *tty*, *pid* and *unix* options.
 +
 The 'resource' argument can be one of the following:
 +
@@ -463,11 +518,21 @@ usually need to be escaped from shell.
     must be used to specify to which 'outer_dev' (an existing network device
     in CRIU namespace) the restored 'inner_dev' should be bound to.
 
+*-J*, *--join-ns* **NS**:{**PID**|**NS_FILE**}[,**EXTRA_OPTS**]::
+    Restore process tree inside an existing namespace. The namespace can
+    be specified in 'PID' or 'NS_FILE' path format (example:
+    *--join-ns net:12345* or *--join-ns net:/foo/bar*). Currently supported
+    values for **NS** are: *ipc*, *net*, *time*, *user*, and *uts*.
+    This option doesn't support joining a PID namespace, however, this is
+    possible using *--external* and *--inheritfd*. 'EXTRA_OPTS' is optional
+    and can be used to specify UID and GID for user namespace (e.g.,
+    *--join-ns user:PID,UID,GID*).
+
 *--manage-cgroups* ['mode']::
     Restore cgroups configuration associated with a task from the image.
     Controllers are always restored in an optimistic way -- if already present
     in system, *criu* reuses it, otherwise it will be created.
-
++
 The 'mode' may be one of the following:
 
     *none*:::   Do not restore cgroup properties but require cgroup to
@@ -512,6 +577,28 @@ The 'mode' may be one of the following:
 *--lsm-profile* __type__**:**__name__::
     Specify an LSM profile to be used during restore. The _type_ can be
     either *apparmor* or *selinux*.
+
+*--lsm-mount-context* 'context'::
+    Specify a new mount context to be used during restore.
++
+This option will only replace existing mount context information
+with the one specified with this option. Mounts without the
+'context=' option will not be changed.
++
+If a mountpoint has been checkpointed with an option like
+
+    context="system_u:object_r:container_file_t:s0:c82,c137"
++
+it is possible to change this option using
+
+    --lsm-mount-context "system_u:object_r:container_file_t:s0:c204,c495"
++
+which will result that the mountpoint will be restored
+with the new 'context='.
++
+This option is useful if using *selinux* and if the *selinux*
+labels need to be changed on restore like if a container is
+restored into an existing Pod.
 
 *--auto-dedup*::
     As soon as a page is restored it get punched out from image.
@@ -564,6 +651,22 @@ are not adequate, but this can be suppressed by using *--cpu-cap=none*.
    the process accesses them or in the background without stopping the
    restored process.
    This option requires running *lazy-pages* daemon.
+
+*--file-validation* ['mode']::
+    Set the method to be used to validate open files. Validation is done
+    to ensure that the version of the file being restored is the same
+    version when it was dumped.
++
+The 'mode' may be one of the following:
+
+    *filesize*:::
+                To explicitly use only the file size check all the time.
+                This is the fastest and least intensive check.
+
+    *buildid*:::
+                To validate ELF files with their build-ID. If the
+                build-ID cannot be obtained, 'chksm-first' method will be
+                used. This is the default if mode is unspecified.
 
 *check*
 ~~~~~~~

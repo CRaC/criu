@@ -15,8 +15,8 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Test unix stream sockets with relative name\n";
-const char *test_author	= "Cyrill Gorcunov <gorcunov@openvz.org";
+const char *test_doc = "Test unix stream sockets with relative name\n";
+const char *test_author = "Cyrill Gorcunov <gorcunov@openvz.org";
 
 #define SK_DATA "packet"
 
@@ -24,6 +24,12 @@ char *filename;
 TEST_OPTION(filename, string, "socket file name", 1);
 
 #define TEST_MODE 0640
+
+#ifdef ZDTM_UNIX_SEQPACKET
+#define SOCK_TYPE SOCK_SEQPACKET
+#else
+#define SOCK_TYPE SOCK_STREAM
+#endif
 
 int main(int argc, char *argv[])
 {
@@ -40,7 +46,7 @@ int main(int argc, char *argv[])
 
 	cwd = get_current_dir_name();
 	if (!cwd) {
-		fail("getcwd\n");
+		fail("getcwd");
 		exit(1);
 	}
 
@@ -54,36 +60,36 @@ int main(int argc, char *argv[])
 	memcpy(addr.sun_path, filename, addrlen);
 	addrlen += sizeof(addr.sun_family);
 
-	sock[0] = socket(AF_UNIX, SOCK_STREAM, 0);
-	sock[1] = socket(AF_UNIX, SOCK_STREAM, 0);
+	sock[0] = socket(AF_UNIX, SOCK_TYPE, 0);
+	sock[1] = socket(AF_UNIX, SOCK_TYPE, 0);
 	if (sock[0] < 0 || sock[1] < 0) {
-		fail("socket\n");
+		fail("socket");
 		exit(1);
 	}
 
 	if (setsockopt(sock[0], SOL_SOCKET, SO_REUSEADDR, &(int){ 1 }, sizeof(int)) < 0 ||
 	    setsockopt(sock[1], SOL_SOCKET, SO_REUSEADDR, &(int){ 1 }, sizeof(int)) < 0) {
-		fail("setsockopt\n");
+		fail("setsockopt");
 		exit(1);
 	}
 
-	ret = bind(sock[0], (struct sockaddr *) &addr, addrlen);
+	ret = bind(sock[0], (struct sockaddr *)&addr, addrlen);
 	if (ret) {
-		fail("bind\n");
+		fail("bind");
 		exit(1);
 	}
 
 	ret = listen(sock[0], 16);
 	if (ret) {
-		fail("bind\n");
+		fail("bind");
 		exit(1);
 	}
 
 	test_daemon();
 	test_waitsig();
 
-	if (connect(sock[1], (struct sockaddr *) &addr, addrlen)) {
-		fail("connect\n");
+	if (connect(sock[1], (struct sockaddr *)&addr, addrlen)) {
+		fail("connect");
 		exit(1);
 	}
 
@@ -98,7 +104,7 @@ int main(int argc, char *argv[])
 	read(ret, &buf, sizeof(buf));
 
 	if (strcmp(buf, SK_DATA)) {
-		fail("data corrupted\n");
+		fail("data corrupted");
 		exit(1);
 	}
 	test_msg("stream            : '%s'\n", buf);

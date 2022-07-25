@@ -12,8 +12,8 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check for /proc/self/ns path restore";
-const char *test_author	= "Cyrill Gorcunov <gorcunov@openvz.org>";
+const char *test_doc = "Check for /proc/self/ns path restore";
+const char *test_author = "Cyrill Gorcunov <gorcunov@openvz.org>";
 
 const char nspath[] = "/proc/self/ns/net";
 
@@ -69,7 +69,7 @@ int main(int argc, char *argv[])
 	}
 
 	if (memcmp(path_orig, path_new, sizeof(path_orig))) {
-		fail("Paths mismatch %s %s\n", path_orig, path_new);
+		fail("Paths mismatch %s %s", path_orig, path_new);
 		return -1;
 	}
 

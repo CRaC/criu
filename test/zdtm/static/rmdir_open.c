@@ -8,8 +8,8 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check that opened removed dir works";
-const char *test_author	= "Pavel Emelianov <xemul@parallels.com>";
+const char *test_doc = "Check that opened removed dir works";
+const char *test_author = "Pavel Emelianov <xemul@parallels.com>";
 
 char *dirname;
 TEST_OPTION(dirname, string, "directory name", 1);
@@ -49,17 +49,17 @@ int main(int argc, char **argv)
 	 * still points to some removed directory.
 	 */
 	if (fstat(fd, &st)) {
-		fail("Can't stat fd\n");
+		fail("Can't stat fd");
 		goto out;
 	}
 
 	if (!S_ISDIR(st.st_mode)) {
-		fail("Fd is no longer directory\n");
+		fail("Fd is no longer directory");
 		goto out;
 	}
 
 	if (st.st_nlink != 0) {
-		fail("Directory is not removed\n");
+		fail("Directory is not removed");
 		goto out;
 	}
 

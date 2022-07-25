@@ -5,13 +5,13 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Write and half way read file before migration, complete after";
-const char *test_author	= "Roman Kagan <rkagan@parallels.com>";
+const char *test_doc = "Write and half way read file before migration, complete after";
+const char *test_author = "Roman Kagan <rkagan@parallels.com>";
 
 char *filename;
 TEST_OPTION(filename, string, "file name", 1);
 
-int main(int argc, char ** argv)
+int main(int argc, char **argv)
 {
 	int fd;
 	int len;
@@ -52,13 +52,13 @@ int main(int argc, char ** argv)
 
 	/* recover reading */
 	if (read(fd, buf + len, sizeof(buf) - len) != (sizeof(buf) - len)) {
-		fail("can't read %s: %m\n", filename);
+		fail("can't read %s", filename);
 		goto out;
 	}
 
 	crc = ~0;
 	if (datachk(buf, sizeof(buf), &crc)) {
-		fail("CRC mismatch\n");
+		fail("CRC mismatch");
 		goto out;
 	}
 

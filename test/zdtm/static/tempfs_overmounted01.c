@@ -10,8 +10,8 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check how file systems are dumped if some mount points are overmounted";
-const char *test_author	= "Andrei Vagin <avagin@gmail.com>";
+const char *test_doc = "Check how file systems are dumped if some mount points are overmounted";
+const char *test_author = "Andrei Vagin <avagin@gmail.com>";
 
 char *dirname;
 TEST_OPTION(dirname, string, "directory name", 1);
@@ -34,11 +34,11 @@ int main(int argc, char **argv)
 	}
 	if (pid == 0) {
 		if (mount("zdtm", dirname, "tmpfs", 0, "") < 0) {
-			pr_err("Can't mount tmpfs");
+			pr_perror("Can't mount tmpfs");
 			return 1;
 		}
 		if (chdir(dirname)) {
-			pr_err("chdir");
+			pr_perror("chdir");
 			return 1;
 		}
 
@@ -50,8 +50,7 @@ int main(int argc, char **argv)
 		/* Create a chain when a parent mount is overmounted */
 		mkdir("a", 0700);
 		mkdir("b", 0700);
-		if (mount("zdtm1", "a", "tmpfs", 0, "") ||
-		    mount("a", "b", NULL, MS_BIND, "")) {
+		if (mount("zdtm1", "a", "tmpfs", 0, "") || mount("a", "b", NULL, MS_BIND, "")) {
 			pr_perror("Can't mount tmpfs");
 			return 1;
 		}
@@ -75,8 +74,7 @@ int main(int argc, char **argv)
 		}
 		mkdir("b/b", 0700);
 		mkdir("b/b/z", 0700);
-		if (mount("b", "b/b", NULL, MS_BIND, NULL) ||
-		    mount("b/b/b", "b/b", NULL, MS_BIND, NULL)) {
+		if (mount("b", "b/b", NULL, MS_BIND, NULL) || mount("b/b/b", "b/b", NULL, MS_BIND, NULL)) {
 			pr_perror("can't mount tmpfs");
 			return 1;
 		}
@@ -88,8 +86,7 @@ int main(int argc, char **argv)
 			pr_perror("umount");
 			return 1;
 		}
-		if (umount2("b/b", MNT_DETACH) ||
-		    umount2("b/b", MNT_DETACH)) {
+		if (umount2("b/b", MNT_DETACH) || umount2("b/b", MNT_DETACH)) {
 			pr_perror("umount");
 			return 1;
 		}

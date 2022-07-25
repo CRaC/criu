@@ -30,12 +30,12 @@
 #include "images/fsnotify.pb-c.h"
 #include "images/fh.pb-c.h"
 
-#undef	LOG_PREFIX
+#undef LOG_PREFIX
 #define LOG_PREFIX "irmap: "
 
-#define IRMAP_CACHE_BITS	5
-#define IRMAP_CACHE_SIZE	(1 << IRMAP_CACHE_BITS)
-#define IRMAP_CACHE_MASK	(IRMAP_CACHE_SIZE - 1)
+#define IRMAP_CACHE_BITS 5
+#define IRMAP_CACHE_SIZE (1 << IRMAP_CACHE_BITS)
+#define IRMAP_CACHE_MASK (IRMAP_CACHE_SIZE - 1)
 
 static inline int irmap_hashfn(unsigned int s_dev, unsigned long i_ino)
 {
@@ -55,16 +55,34 @@ struct irmap {
 static struct irmap *cache[IRMAP_CACHE_SIZE];
 
 static struct irmap hints[] = {
-	{ .path = "/etc", .nr_kids = -1, },
-	{ .path = "/var/spool", .nr_kids = -1, },
-	{ .path = "/var/log", .nr_kids = -1, },
+	{
+		.path = "/etc",
+		.nr_kids = -1,
+	},
+	{
+		.path = "/var/spool",
+		.nr_kids = -1,
+	},
+	{
+		.path = "/var/log",
+		.nr_kids = -1,
+	},
 	{ .path = "/usr/share/dbus-1/system-services", .nr_kids = -1 },
 	{ .path = "/var/lib/polkit-1/localauthority", .nr_kids = -1 },
 	{ .path = "/usr/share/polkit-1/actions", .nr_kids = -1 },
-	{ .path = "/lib/udev", .nr_kids = -1, },
-	{ .path = "/.", .nr_kids = 0, },
-	{ .path = "/no-such-path", .nr_kids = -1, },
-	{ },
+	{
+		.path = "/lib/udev",
+		.nr_kids = -1,
+	},
+	{
+		.path = "/.",
+		.nr_kids = 0,
+	},
+	{
+		.path = "/no-such-path",
+		.nr_kids = -1,
+	},
+	{},
 };
 
 /*
@@ -125,6 +143,7 @@ static int irmap_update_dir(struct irmap *t)
 	dfd = fdopendir(fd);
 	if (!dfd) {
 		pr_perror("Can't opendir %s", t->path);
+		close(fd);
 		return -1;
 	}
 
@@ -155,14 +174,12 @@ static int irmap_update_dir(struct irmap *t)
 	}
 
 	closedir(dfd);
-	close(fd);
 	t->nr_kids = nr;
 	return 0;
 
 out_err:
 	xfree(t->kids);
 	closedir(dfd);
-	close(fd);
 	return -1;
 }
 
@@ -236,14 +253,13 @@ char *irmap_lookup(unsigned int s_dev, unsigned long i_ino)
 	 * But the root service fd is already set by the
 	 * irmap_predump_prep, so we just go ahead and scan.
 	 */
-	if (!doing_predump &&
-			__mntns_get_root_fd(root_item->pid->real) < 0)
+	if (!doing_predump && __mntns_get_root_fd(root_item->pid->real) < 0)
 		goto out;
 
 	timing_start(TIME_IRMAP_RESOLVE);
 
 	hv = irmap_hashfn(s_dev, i_ino);
-	for (p = &cache[hv]; *p; ) {
+	for (p = &cache[hv]; *p;) {
 		c = *p;
 		if (!(c->dev == s_dev && c->ino == i_ino)) {
 			p = &(*p)->next;
@@ -299,8 +315,7 @@ struct irmap_predump {
 
 static struct irmap_predump *predump_queue;
 
-int irmap_queue_cache(unsigned int dev, unsigned long ino,
-		FhEntry *fh)
+int irmap_queue_cache(unsigned int dev, unsigned long ino, FhEntry *fh)
 {
 	struct irmap_predump *ip;
 
@@ -311,8 +326,7 @@ int irmap_queue_cache(unsigned int dev, unsigned long ino,
 	ip->dev = dev;
 	ip->ino = ino;
 	ip->fh = *fh;
-	ip->fh.handle = xmemdup(fh->handle,
-			FH_ENTRY_SIZES__min_entries * sizeof(uint64_t));
+	ip->fh.handle = xmemdup(fh->handle, FH_ENTRY_SIZES__min_entries * sizeof(uint64_t));
 	if (!ip->fh.handle) {
 		xfree(ip);
 		return -1;
@@ -426,12 +440,10 @@ in:
 		close_image(*img);
 		if (dir == AT_FDCWD) {
 			pr_info("Searching irmap cache in parent\n");
-			dir = openat(get_service_fd(IMG_FD_OFF),
-					CR_PARENT_LINK, O_RDONLY);
+			if (open_parent(get_service_fd(IMG_FD_OFF), &dir))
+				return -1;
 			if (dir >= 0)
 				goto in;
-			if (errno != ENOENT)
-				return -1;
 		}
 
 		pr_info("No irmap cache\n");

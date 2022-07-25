@@ -7,7 +7,7 @@
 #include "external.h"
 
 #ifndef RTM_GETNSID
-#define RTM_GETNSID		90
+#define RTM_GETNSID 90
 #endif
 
 struct cr_imgset;
@@ -44,6 +44,8 @@ extern int restore_link_parms(struct net_link *link, int nlsk);
 extern int veth_pair_add(char *in, char *out);
 extern int macvlan_ext_add(struct external *ext);
 extern int move_veth_to_bridge(void);
+
+extern int kerndat_has_newifindex(void);
 
 extern int kerndat_link_nsid(void);
 extern int net_get_nsid(int rtsk, int fd, int *nsid);

@@ -24,7 +24,7 @@
 
 #include "images/tun.pb-c.h"
 
-#undef	LOG_PREFIX
+#undef LOG_PREFIX
 #define LOG_PREFIX "tun: "
 
 #ifndef IFF_PERSIST
@@ -36,7 +36,7 @@
 #endif
 
 #ifndef TUNSETQUEUE
-#define TUNSETQUEUE  _IOW('T', 217, int)
+#define TUNSETQUEUE	 _IOW('T', 217, int)
 #define IFF_ATTACH_QUEUE 0x0200
 #define IFF_DETACH_QUEUE 0x0400
 #endif
@@ -55,7 +55,7 @@
 #define TUNGETFILTER _IOR('T', 219, struct sock_fprog)
 #endif
 
-#define TUN_DEV_GEN_PATH	"/dev/net/tun"
+#define TUN_DEV_GEN_PATH "/dev/net/tun"
 
 int check_tun_cr(int no_tun_err)
 {
@@ -139,8 +139,7 @@ static struct tun_link *find_tun_link(char *name, unsigned int ns_id)
 	struct tun_link *tl;
 
 	list_for_each_entry(tl, &tun_links, l) {
-		if (!strcmp(tl->name, name) &&
-		    tl->ns_id == ns_id)
+		if (!strcmp(tl->name, name) && tl->ns_id == ns_id)
 			return tl;
 	}
 	return NULL;
@@ -156,6 +155,7 @@ static struct tun_link *__dump_tun_link_fd(int fd, char *name, unsigned ns_id, u
 		goto err;
 	strlcpy(tl->name, name, sizeof(tl->name));
 	tl->ns_id = ns_id;
+	INIT_LIST_HEAD(&tl->l);
 
 	if (ioctl(fd, TUNGETVNETHDRSZ, &tl->dmp.vnethdr) < 0) {
 		pr_perror("Can't dump vnethdr size for %s", name);
@@ -272,7 +272,7 @@ static struct tun_link *get_tun_link_fd(char *name, unsigned ns_id, unsigned fla
 	 */
 
 	if (!(flags & IFF_PERSIST)) {
-		pr_err("No fd infor for non persistent tun device %s\n", name);
+		pr_err("No fd info for non persistent tun device %s\n", name);
 		return NULL;
 	}
 
@@ -322,7 +322,7 @@ static int dump_tunfile(int lfd, u32 id, const struct fd_parms *p)
 
 	pr_info("Dumping tun-file %d with id %#x\n", lfd, id);
 
-	tfe.id		= id;
+	tfe.id = id;
 	ret = ioctl(lfd, TUNGETIFF, &ifr);
 	if (ret < 0) {
 		if (errno != EBADFD) {
@@ -479,6 +479,14 @@ int dump_tun_link(NetDeviceEntry *nde, struct cr_imgset *fds, struct nlattr **in
 
 	tle.vnethdr = tl->dmp.vnethdr;
 	tle.sndbuf = tl->dmp.sndbuf;
+
+	/*
+	 * Function get_tun_link_fd() can return either entry
+	 * from tun_links list or a newly allocated one, need to
+	 * free it only if not in list.
+	 */
+	if (list_empty(&tl->l))
+		xfree(tl);
 
 	nde->tun = &tle;
 	return write_netdev_img(nde, fds, info);

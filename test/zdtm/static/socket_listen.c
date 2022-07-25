@@ -1,13 +1,13 @@
 #include "zdtmtst.h"
 
 #ifdef ZDTM_IPV4V6
-#define ZDTM_FAMILY AF_INET
+#define ZDTM_FAMILY	AF_INET
 #define ZDTM_SRV_FAMILY AF_INET6
 #elif defined(ZDTM_IPV6)
-#define ZDTM_FAMILY AF_INET6
+#define ZDTM_FAMILY	AF_INET6
 #define ZDTM_SRV_FAMILY AF_INET6
 #else
-#define ZDTM_FAMILY AF_INET
+#define ZDTM_FAMILY	AF_INET
 #define ZDTM_SRV_FAMILY AF_INET
 #endif
 
@@ -16,7 +16,7 @@ const char *test_author = "Stanislav Kinsbursky <skinsbursky@openvz.org>";
 
 /* Description:
  * Create two tcp socket, server send asynchronous request on
- * read data and clietn write data after migration
+ * read data and client write data after migration
  */
 
 #include <stdio.h>
@@ -31,7 +31,9 @@ static int port = 8880;
 
 #define BUF_SIZE 1024
 
-static void sig_hand(int signo) {}
+static void sig_hand(int signo)
+{
+}
 
 int main(int argc, char **argv)
 {
@@ -42,7 +44,7 @@ int main(int argc, char **argv)
 	int res;
 	uint32_t crc;
 	struct sigaction sa = {
-		.sa_handler	= sig_hand,
+		.sa_handler = sig_hand,
 		/* don't set SA_RESTART */
 	};
 
@@ -68,7 +70,7 @@ int main(int argc, char **argv)
 
 	if (pid == 0) {
 		/*
-		 * Chiled is client of TCP connection
+		 * Child is client of TCP connection.
 		 */
 		close(fd_s);
 		fd = tcp_init_client(ZDTM_FAMILY, "localhost", port);
@@ -102,7 +104,6 @@ int main(int argc, char **argv)
 		goto error;
 	}
 	close(fd);
-
 
 	if (wait(&status) < 0) {
 		pr_perror("wait failed");

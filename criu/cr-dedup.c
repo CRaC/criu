@@ -14,12 +14,12 @@ int cr_dedup(void)
 {
 	int close_ret, ret = 0;
 	unsigned long img_id;
-	DIR * dirp;
+	DIR *dirp;
 	struct dirent *ent;
 
 	dirp = opendir(CR_PARENT_LINK);
 	if (dirp == NULL) {
-		pr_perror("Can't enter previous snapshot folder, error=%d", errno);
+		pr_perror("Can't enter previous snapshot folder");
 		ret = -1;
 		goto err;
 	}
@@ -29,7 +29,7 @@ int cr_dedup(void)
 		ent = readdir(dirp);
 		if (ent == NULL) {
 			if (errno) {
-				pr_perror("Failed readdir, error=%d", errno);
+				pr_perror("Failed readdir");
 				ret = -1;
 				goto err;
 			}
@@ -71,7 +71,7 @@ static int cr_dedup_one_pagemap(unsigned long img_id, int flags)
 {
 	int ret;
 	struct page_read pr;
-	struct page_read * prp;
+	struct page_read *prp;
 
 	flags |= PR_MOD;
 	ret = open_page_read(img_id, &pr, flags);
@@ -87,11 +87,9 @@ static int cr_dedup_one_pagemap(unsigned long img_id, int flags)
 		if (ret <= 0)
 			goto exit;
 
-		pr_debug("dedup iovec base=%"PRIx64", len=%lu\n",
-			 pr.pe->vaddr, pagemap_len(pr.pe));
+		pr_debug("dedup iovec base=%" PRIx64 ", len=%lu\n", pr.pe->vaddr, pagemap_len(pr.pe));
 		if (!pagemap_in_parent(pr.pe)) {
-			ret = dedup_one_iovec(prp, pr.pe->vaddr,
-					      pagemap_len(pr.pe));
+			ret = dedup_one_iovec(prp, pr.pe->vaddr, pagemap_len(pr.pe));
 			if (ret)
 				goto exit;
 		}

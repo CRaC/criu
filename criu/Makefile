@@ -27,7 +27,7 @@ CFLAGS			+= -iquote include
 CFLAGS			+= -iquote images
 CFLAGS			+= -iquote $(ARCH_DIR)/include
 CFLAGS			+= -iquote .
-CFLAGS			+= $(shell pkg-config --cflags --static libnl-3.0)
+CFLAGS			+= $(shell $(PKG_CONFIG) --cflags --static libnl-3.0)
 CFLAGS			+= $(CONFIG-DEFINES)
 
 ifeq ($(GMON),1)
@@ -87,6 +87,27 @@ $(obj)/criu: $(PROGRAM-BUILTINS)
 	$(call msg-link, $@)
 	$(Q) $(CC) $(CFLAGS) $^ $(LIBS) $(WRAPFLAGS) $(LDFLAGS) $(GMONLDOPT) -rdynamic -o $@
 
+UNIT-BUILTINS		+= $(obj)/util.o
+UNIT-BUILTINS		+= $(obj)/config.o
+UNIT-BUILTINS		+= $(obj)/log.o
+UNIT-BUILTINS		+= $(obj)/string.o
+UNIT-BUILTINS		+= $(obj)/unittest/built-in.o
+
+$(obj)/unittest/Makefile: ;
+
+$(obj)/unittest/%: .FORCE
+
+$(obj)/unittest/built-in.o: .FORCE
+	$(Q) $(MAKE) $(call build-as,Makefile,criu/unittest) all
+
+$(obj)/unittest/unittest: $(UNIT-BUILTINS)
+	$(call msg-link, $@)
+	$(Q) $(CC) $(CFLAGS) $^ $(LIBS) $(WRAPFLAGS) $(LDFLAGS) -rdynamic -o $@
+
+unittest: $(obj)/unittest/unittest
+	$(Q) $(obj)/unittest/$@
+
+.PHONY: unittest
 
 #
 # Clean the most, except generated c files
@@ -97,6 +118,7 @@ subclean:
 	$(Q) $(MAKE) $(build)=$(ARCH_DIR) clean
 	$(Q) $(MAKE) $(call build-as,Makefile.library,$(PIE_DIR)) clean
 	$(Q) $(MAKE) $(call build-as,Makefile.crtools,criu) clean
+	$(Q) $(MAKE) $(call build-as,Makefile,criu/unittest) clean
 	$(Q) $(MAKE) $(build)=$(PIE_DIR) clean
 .PHONY: subclean
 cleanup-y      += $(obj)/criu
@@ -123,11 +145,16 @@ install: $(obj)/criu
 	$(Q) install -m 644 $(UAPI_HEADERS) $(DESTDIR)$(INCLUDEDIR)/criu/
 	$(Q) mkdir -p $(DESTDIR)$(LIBEXECDIR)/criu/scripts
 	$(Q) install -m 755 scripts/systemd-autofs-restart.sh $(DESTDIR)$(LIBEXECDIR)/criu/scripts
+ifeq ($(PYTHON),python3)
+	$(E) "  INSTALL " scripts/criu-ns
+	$(Q) install -m 755 scripts/criu-ns $(DESTDIR)$(SBINDIR)
+endif
 .PHONY: install
 
 uninstall:
 	$(E) " UNINSTALL" criu
 	$(Q) $(RM) $(addprefix $(DESTDIR)$(SBINDIR)/,criu)
+	$(Q) $(RM) $(addprefix $(DESTDIR)$(SBINDIR)/,criu-ns)
 	$(Q) $(RM) $(addprefix $(DESTDIR)$(INCLUDEDIR)/criu/,$(notdir $(UAPI_HEADERS)))
 	$(Q) $(RM) $(addprefix $(DESTDIR)$(LIBEXECDIR)/criu/scripts/,systemd-autofs-restart.sh)
 .PHONY: uninstall

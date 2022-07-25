@@ -46,26 +46,26 @@
 #include "images/fsnotify.pb-c.h"
 #include "images/mnt.pb-c.h"
 
-#undef	LOG_PREFIX
+#undef LOG_PREFIX
 #define LOG_PREFIX "fsnotify: "
 
 struct fsnotify_mark_info {
-	struct list_head		list;
+	struct list_head list;
 	union {
-		InotifyWdEntry		*iwe;
-		FanotifyMarkEntry	*fme;
+		InotifyWdEntry *iwe;
+		FanotifyMarkEntry *fme;
 	};
-	struct pprep_head		prep; /* XXX union with remap */
-	struct file_remap		*remap;
+	struct pprep_head prep; /* XXX union with remap */
+	struct file_remap *remap;
 };
 
 struct fsnotify_file_info {
 	union {
-		InotifyFileEntry	*ife;
-		FanotifyFileEntry	*ffe;
+		InotifyFileEntry *ife;
+		FanotifyFileEntry *ffe;
 	};
-	struct list_head		marks;
-	struct file_desc		d;
+	struct list_head marks;
+	struct file_desc d;
 };
 
 /* File handle */
@@ -91,12 +91,10 @@ static void decode_handle(fh_t *handle, FhEntry *img)
 {
 	memzero(handle, sizeof(*handle));
 
-	handle->type	= img->type;
-	handle->bytes	= img->bytes;
+	handle->type = img->type;
+	handle->bytes = img->bytes;
 
-	memcpy(handle->__handle, img->handle,
-			min(pb_repeated_size(img, handle),
-				sizeof(handle->__handle)));
+	memcpy(handle->__handle, img->handle, min(pb_repeated_size(img, handle), sizeof(handle->__handle)));
 }
 
 static int open_by_handle(void *arg, int fd, int pid)
@@ -104,12 +102,15 @@ static int open_by_handle(void *arg, int fd, int pid)
 	return syscall(__NR_open_by_handle_at, fd, arg, O_PATH);
 }
 
+enum { ERR_NO_MOUNT = -1, ERR_NO_PATH_IN_MOUNT = -2, ERR_GENERIC = -3 };
+
 static char *alloc_openable(unsigned int s_dev, unsigned long i_ino, FhEntry *f_handle)
 {
 	struct mount_info *m;
 	fh_t handle;
 	int fd = -1;
 	char *path;
+	char suitable_mount_found = 0;
 
 	decode_handle(&handle, f_handle);
 
@@ -131,17 +132,17 @@ static char *alloc_openable(unsigned int s_dev, unsigned long i_ino, FhEntry *f_
 		if (!mnt_is_dir(m))
 			continue;
 
-		mntfd = __open_mountpoint(m, -1);
-		pr_debug("\t\tTrying via mntid %d root %s ns_mountpoint @%s (%d)\n",
-			 m->mnt_id, m->root, m->ns_mountpoint, mntfd);
+		mntfd = __open_mountpoint(m);
+		pr_debug("\t\tTrying via mntid %d root %s ns_mountpoint @%s (%d)\n", m->mnt_id, m->root,
+			 m->ns_mountpoint, mntfd);
 		if (mntfd < 0)
 			continue;
 
-		fd = userns_call(open_by_handle, UNS_FDOUT, &handle,
-				 sizeof(handle), mntfd);
+		fd = userns_call(open_by_handle, UNS_FDOUT, &handle, sizeof(handle), mntfd);
 		close(mntfd);
 		if (fd < 0)
 			continue;
+		suitable_mount_found = 1;
 
 		if (read_fd_link(fd, buf, sizeof(buf)) < 0) {
 			close(fd);
@@ -164,18 +165,17 @@ static char *alloc_openable(unsigned int s_dev, unsigned long i_ino, FhEntry *f_
 			if (fstat(openable_fd, &st)) {
 				pr_perror("Can't stat on %s", __path);
 				close(openable_fd);
-				return ERR_PTR(-errno);
+				goto err;
 			}
 			close(openable_fd);
 
-			pr_debug("\t\t\topenable (inode %s) as %s\n",
-				 st.st_ino == i_ino ?
-				 "match" : "don't match", __path);
+			pr_debug("\t\t\topenable (inode %s) as %s\n", st.st_ino == i_ino ? "match" : "don't match",
+				 __path);
 
 			if (st.st_ino == i_ino) {
 				path = xstrdup(buf);
 				if (path == NULL)
-					return ERR_PTR(-ENOMEM);
+					return ERR_PTR(ERR_GENERIC);
 				if (root_ns_mask & CLONE_NEWNS) {
 					f_handle->has_mnt_id = true;
 					f_handle->mnt_id = m->mnt_id;
@@ -186,13 +186,13 @@ static char *alloc_openable(unsigned int s_dev, unsigned long i_ino, FhEntry *f_
 			pr_debug("\t\t\tnot openable as %s (%m)\n", __path);
 	}
 
-	return ERR_PTR(-ENOENT);
 err:
-	return ERR_PTR(-1);
+	if (suitable_mount_found)
+		return ERR_PTR(ERR_NO_PATH_IN_MOUNT);
+	return ERR_PTR(ERR_NO_MOUNT);
 }
 
-static int open_handle(unsigned int s_dev, unsigned long i_ino,
-		FhEntry *f_handle)
+static int open_handle(unsigned int s_dev, unsigned long i_ino, FhEntry *f_handle)
 {
 	struct mount_info *m;
 	int mntfd, fd = -1;
@@ -200,16 +200,15 @@ static int open_handle(unsigned int s_dev, unsigned long i_ino,
 
 	decode_handle(&handle, f_handle);
 
-	pr_debug("Opening fhandle %x:%llx...\n",
-			s_dev, (unsigned long long)handle.__handle[0]);
+	pr_debug("Opening fhandle %x:%llx...\n", s_dev, (unsigned long long)handle.__handle[0]);
 
 	for (m = mntinfo; m; m = m->next) {
 		if (m->s_dev != s_dev || !mnt_is_dir(m))
 			continue;
 
-		mntfd = __open_mountpoint(m, -1);
+		mntfd = __open_mountpoint(m);
 		if (mntfd < 0) {
-			pr_err("Can't open mount for s_dev %x, continue\n", s_dev);
+			pr_warn("Can't open mount for s_dev %x, continue\n", s_dev);
 			continue;
 		}
 
@@ -224,67 +223,61 @@ out:
 	return fd;
 }
 
-int check_open_handle(unsigned int s_dev, unsigned long i_ino,
-		FhEntry *f_handle)
+int check_open_handle(unsigned int s_dev, unsigned long i_ino, FhEntry *f_handle)
 {
 	char *path, *irmap_path;
-	int fd = -1;
+	struct mount_info *mi;
 
-	if (fault_injected(FI_CHECK_OPEN_HANDLE)) {
-		fd = -1;
+	if (fault_injected(FI_CHECK_OPEN_HANDLE))
 		goto fault;
-	}
 
-	fd = open_handle(s_dev, i_ino, f_handle);
-fault:
-	if (fd >= 0) {
-		struct mount_info *mi;
+	/*
+	 * Always try to fetch watchee path first. There are several reasons:
+	 *
+	 *  - tmpfs/devtmps do not save inode numbers between mounts,
+	 *    so it is critical to have the complete path under our
+	 *    hands for restore purpose;
+	 *
+	 *  - in case of migration the inodes might be changed as well
+	 *    so the only portable solution is to carry the whole path
+	 *    to the watchee inside image.
+	 */
+	path = alloc_openable(s_dev, i_ino, f_handle);
 
+	if (!IS_ERR_OR_NULL(path)) {
 		pr_debug("\tHandle 0x%x:0x%lx is openable\n", s_dev, i_ino);
-
-		mi = lookup_mnt_sdev(s_dev);
-		if (mi == NULL) {
-			pr_err("Unable to lookup a mount by dev 0x%x\n", s_dev);
-			goto err;
-		}
-
-		/*
-		 * Always try to fetch watchee path first. There are several reasons:
-		 *
-		 *  - tmpfs/devtmps do not save inode numbers between mounts,
-		 *    so it is critical to have the complete path under our
-		 *    hands for restore purpose;
-		 *
-		 *  - in case of migration the inodes might be changed as well
-		 *    so the only portable solution is to carry the whole path
-		 *    to the watchee inside image.
-		 */
-		path = alloc_openable(s_dev, i_ino, f_handle);
-		if (!IS_ERR_OR_NULL(path))
-			goto out;
-		else if (IS_ERR(path) && PTR_ERR(path) == -ENOMEM)
-			goto err;
-
-		if ((mi->fstype->code == FSTYPE__TMPFS) ||
-		    (mi->fstype->code == FSTYPE__DEVTMPFS)) {
-			pr_err("Can't find suitable path for handle (dev %#x ino %#lx): %d\n",
-			       s_dev, i_ino, (int)PTR_ERR(path));
-			goto err;
-		}
-
-		if (!opts.force_irmap)
-			/*
-			 * If we're not forced to do irmap, then
-			 * say we have no path for watch. Otherwise
-			 * do irmap scan even if the handle is
-			 * working.
-			 *
-			 * FIXME -- no need to open-by-handle if
-			 * we are in force-irmap and not on tempfs
-			 */
-			goto out_nopath;
+		goto out;
+	} else if (IS_ERR(path) && PTR_ERR(path) == ERR_NO_MOUNT) {
+		goto fault;
+	} else if (IS_ERR(path) && PTR_ERR(path) == ERR_GENERIC) {
+		goto err;
 	}
 
+	mi = lookup_mnt_sdev(s_dev);
+	if (mi == NULL) {
+		pr_err("Unable to lookup a mount by dev 0x%x\n", s_dev);
+		goto err;
+	}
+
+	if ((mi->fstype->code == FSTYPE__TMPFS) || (mi->fstype->code == FSTYPE__DEVTMPFS)) {
+		pr_err("Can't find suitable path for handle (dev %#x ino %#lx): %d\n", s_dev, i_ino,
+		       (int)PTR_ERR(path));
+		goto err;
+	}
+
+	if (!opts.force_irmap)
+		/*
+		 * If we're not forced to do irmap, then
+		 * say we have no path for watch. Otherwise
+		 * do irmap scan even if the handle is
+		 * working.
+		 *
+		 * FIXME -- no need to open-by-handle if
+		 * we are in force-irmap and not on tempfs
+		 */
+		goto out_nopath;
+
+fault:
 	pr_warn("\tHandle 0x%x:0x%lx cannot be opened\n", s_dev, i_ino);
 	irmap_path = irmap_lookup(s_dev, i_ino);
 	if (!irmap_path) {
@@ -298,20 +291,16 @@ out:
 	pr_debug("\tDumping %s as path for handle\n", path);
 	f_handle->path = path;
 out_nopath:
-	close_safe(&fd);
 	return 0;
 err:
-	close_safe(&fd);
 	return -1;
 }
 
 static int check_one_wd(InotifyWdEntry *we)
 {
-	pr_info("wd: wd %#08x s_dev %#08x i_ino %#16"PRIx64" mask %#08x\n",
-			we->wd, we->s_dev, we->i_ino, we->mask);
-	pr_info("\t[fhandle] bytes %#08x type %#08x __handle %#016"PRIx64":%#016"PRIx64"\n",
-			we->f_handle->bytes, we->f_handle->type,
-			we->f_handle->handle[0], we->f_handle->handle[1]);
+	pr_info("wd: wd %#08x s_dev %#08x i_ino %#16" PRIx64 " mask %#08x\n", we->wd, we->s_dev, we->i_ino, we->mask);
+	pr_info("\t[fhandle] bytes %#08x type %#08x __handle %#016" PRIx64 ":%#016" PRIx64 "\n", we->f_handle->bytes,
+		we->f_handle->type, we->f_handle->handle[0], we->f_handle->handle[1]);
 
 	if (we->mask & KERNEL_FS_EVENT_ON_CHILD)
 		pr_warn_once("\t\tDetected FS_EVENT_ON_CHILD bit "
@@ -384,23 +373,21 @@ static int pre_dump_one_inotify(int pid, int lfd)
 }
 
 const struct fdtype_ops inotify_dump_ops = {
-	.type		= FD_TYPES__INOTIFY,
-	.dump		= dump_one_inotify,
-	.pre_dump	= pre_dump_one_inotify,
+	.type = FD_TYPES__INOTIFY,
+	.dump = dump_one_inotify,
+	.pre_dump = pre_dump_one_inotify,
 };
 
 static int check_one_mark(FanotifyMarkEntry *fme)
 {
 	if (fme->type == MARK_TYPE__INODE) {
-
 		BUG_ON(!fme->ie);
 
-		pr_info("mark: s_dev %#08x i_ino %#016"PRIx64" mask %#08x\n",
-			fme->s_dev, fme->ie->i_ino, fme->mask);
+		pr_info("mark: s_dev %#08x i_ino %#016" PRIx64 " mask %#08x\n", fme->s_dev, fme->ie->i_ino, fme->mask);
 
-		pr_info("\t[fhandle] bytes %#08x type %#08x __handle %#016"PRIx64":%#016"PRIx64"\n",
-			fme->ie->f_handle->bytes, fme->ie->f_handle->type,
-			fme->ie->f_handle->handle[0], fme->ie->f_handle->handle[1]);
+		pr_info("\t[fhandle] bytes %#08x type %#08x __handle %#016" PRIx64 ":%#016" PRIx64 "\n",
+			fme->ie->f_handle->bytes, fme->ie->f_handle->type, fme->ie->f_handle->handle[0],
+			fme->ie->f_handle->handle[1]);
 
 		if (check_open_handle(fme->s_dev, fme->ie->i_ino, fme->ie->f_handle))
 			return -1;
@@ -417,12 +404,10 @@ static int check_one_mark(FanotifyMarkEntry *fme)
 			return -1;
 		}
 		if (!(root_ns_mask & CLONE_NEWNS))
-			fme->me->path = m->mountpoint + 1;
+			fme->me->path = m->ns_mountpoint + 1;
 		fme->s_dev = m->s_dev;
 
-		pr_info("mark: s_dev %#08x mnt_id  %#08x mask %#08x\n",
-			fme->s_dev, fme->me->mnt_id, fme->mask);
-
+		pr_info("mark: s_dev %#08x mnt_id  %#08x mask %#08x\n", fme->s_dev, fme->me->mnt_id, fme->mask);
 	}
 
 	return 0;
@@ -477,9 +462,7 @@ static int pre_dump_one_fanotify(int pid, int lfd)
 	for (i = 0; i < fe.n_mark; i++) {
 		FanotifyMarkEntry *me = fe.mark[i];
 
-		if (me->type == MARK_TYPE__INODE &&
-				irmap_queue_cache(me->s_dev, me->ie->i_ino,
-					me->ie->f_handle))
+		if (me->type == MARK_TYPE__INODE && irmap_queue_cache(me->s_dev, me->ie->i_ino, me->ie->f_handle))
 			return -1;
 
 		xfree(me);
@@ -489,13 +472,12 @@ static int pre_dump_one_fanotify(int pid, int lfd)
 }
 
 const struct fdtype_ops fanotify_dump_ops = {
-	.type		= FD_TYPES__FANOTIFY,
-	.dump		= dump_one_fanotify,
-	.pre_dump	= pre_dump_one_fanotify,
+	.type = FD_TYPES__FANOTIFY,
+	.dump = dump_one_fanotify,
+	.pre_dump = pre_dump_one_fanotify,
 };
 
-static char *get_mark_path(const char *who, struct file_remap *remap,
-			   FhEntry *f_handle, unsigned long i_ino,
+static char *get_mark_path(const char *who, struct file_remap *remap, FhEntry *f_handle, unsigned long i_ino,
 			   unsigned int s_dev, char *buf, int *target)
 {
 	char *path = NULL;
@@ -505,11 +487,10 @@ static char *get_mark_path(const char *who, struct file_remap *remap,
 
 		mntns_root = mntns_get_root_by_mnt_id(remap->rmnt_id);
 
-		pr_debug("\t\tRestore %s watch for %#08x:%#016lx (via %s)\n",
-			 who, s_dev, i_ino, remap->rpath);
+		pr_debug("\t\tRestore %s watch for %#08x:%#016lx (via %s)\n", who, s_dev, i_ino, remap->rpath);
 		*target = openat(mntns_root, remap->rpath, O_PATH);
 	} else if (f_handle->path) {
-		int  mntns_root;
+		int mntns_root;
 		char *path = ".";
 		uint32_t mnt_id = f_handle->has_mnt_id ? f_handle->mnt_id : -1;
 
@@ -533,7 +514,7 @@ static char *get_mark_path(const char *who, struct file_remap *remap,
 	/*
 	 * fanotify/inotify open syscalls want path to attach
 	 * watch to. But the only thing we have is an FD obtained
-	 * via fhandle. Fortunatelly, when trying to attach the
+	 * via fhandle. Fortunately, when trying to attach the
 	 * /proc/pid/fd/ link, we will watch the inode the link
 	 * points to, i.e. -- just what we want.
 	 */
@@ -547,8 +528,7 @@ static char *get_mark_path(const char *who, struct file_remap *remap,
 		if (read_fd_link(*target, link, sizeof(link)) < 0)
 			link[0] = '\0';
 
-		pr_debug("\t\tRestore %s watch for %#08x:%#016lx (via %s -> %s)\n",
-				who, s_dev, i_ino, path, link);
+		pr_debug("\t\tRestore %s watch for %#08x:%#016lx (via %s -> %s)\n", who, s_dev, i_ino, path, link);
 	}
 err:
 	return path;
@@ -561,15 +541,13 @@ static int restore_one_inotify(int inotify_fd, struct fsnotify_mark_info *info)
 	char buf[PSFDS], *path;
 	uint32_t mask;
 
-	path = get_mark_path("inotify", info->remap, iwe->f_handle,
-			     iwe->i_ino, iwe->s_dev, buf, &target);
+	path = get_mark_path("inotify", info->remap, iwe->f_handle, iwe->i_ino, iwe->s_dev, buf, &target);
 	if (!path)
 		goto err;
 
 	mask = iwe->mask & IN_ALL_EVENTS;
 	if (iwe->mask & ~IN_ALL_EVENTS) {
-		pr_info("\t\tfilter event mask %#x -> %#x\n",
-			iwe->mask, mask);
+		pr_info("\t\tfilter event mask %#x -> %#x\n", iwe->mask, mask);
 	}
 
 	if (kdat.has_inotify_setnextwd) {
@@ -640,9 +618,8 @@ static int restore_one_fanotify(int fd, struct fsnotify_mark_info *mark)
 		snprintf(buf, sizeof(buf), "/proc/self/fd/%d", target);
 		path = buf;
 	} else if (fme->type == MARK_TYPE__INODE) {
-		path = get_mark_path("fanotify", mark->remap,
-				     fme->ie->f_handle, fme->ie->i_ino,
-				     fme->s_dev, buf, &target);
+		path = get_mark_path("fanotify", mark->remap, fme->ie->f_handle, fme->ie->i_ino, fme->s_dev, buf,
+				     &target);
 		if (!path)
 			goto err;
 	} else {
@@ -655,18 +632,16 @@ static int restore_one_fanotify(int fd, struct fsnotify_mark_info *mark)
 	if (mark->fme->mask) {
 		ret = fanotify_mark(fd, flags, fme->mask, AT_FDCWD, path);
 		if (ret) {
-			pr_err("Adding fanotify mask 0x%x on 0x%x/%s failed (%d)\n",
-			       fme->mask, fme->id, path, ret);
+			pr_err("Adding fanotify mask 0x%x on 0x%x/%s failed (%d)\n", fme->mask, fme->id, path, ret);
 			goto err;
 		}
 	}
 
 	if (fme->ignored_mask) {
-		ret = fanotify_mark(fd, flags | FAN_MARK_IGNORED_MASK,
-				    fme->ignored_mask, AT_FDCWD, path);
+		ret = fanotify_mark(fd, flags | FAN_MARK_IGNORED_MASK, fme->ignored_mask, AT_FDCWD, path);
 		if (ret) {
-			pr_err("Adding fanotify ignored-mask 0x%x on 0x%x/%s failed (%d)\n",
-			       fme->ignored_mask, fme->id, path, ret);
+			pr_err("Adding fanotify ignored-mask 0x%x on 0x%x/%s failed (%d)\n", fme->ignored_mask, fme->id,
+			       path, ret);
 			goto err;
 		}
 	}
@@ -788,8 +763,7 @@ static int __collect_inotify_mark(struct fsnotify_file_info *p, struct fsnotify_
 	return 0;
 }
 
-static int __collect_fanotify_mark(struct fsnotify_file_info *p,
-				struct fsnotify_mark_info *mark)
+static int __collect_fanotify_mark(struct fsnotify_file_info *p, struct fsnotify_mark_info *mark)
 {
 	list_add(&mark->list, &p->marks);
 	if (mark->fme->type == MARK_TYPE__INODE) {
@@ -827,10 +801,10 @@ static int collect_one_inotify(void *o, ProtobufCMessage *msg, struct cr_img *im
 }
 
 struct collect_image_info inotify_cinfo = {
-	.fd_type	= CR_FD_INOTIFY_FILE,
-	.pb_type	= PB_INOTIFY_FILE,
-	.priv_size	= sizeof(struct fsnotify_file_info),
-	.collect	= collect_one_inotify,
+	.fd_type = CR_FD_INOTIFY_FILE,
+	.pb_type = PB_INOTIFY_FILE,
+	.priv_size = sizeof(struct fsnotify_file_info),
+	.collect = collect_one_inotify,
 };
 
 static int collect_one_fanotify(void *o, ProtobufCMessage *msg, struct cr_img *img)
@@ -861,10 +835,10 @@ static int collect_one_fanotify(void *o, ProtobufCMessage *msg, struct cr_img *i
 }
 
 struct collect_image_info fanotify_cinfo = {
-	.fd_type	= CR_FD_FANOTIFY_FILE,
-	.pb_type	= PB_FANOTIFY_FILE,
-	.priv_size	= sizeof(struct fsnotify_file_info),
-	.collect	= collect_one_fanotify,
+	.fd_type = CR_FD_FANOTIFY_FILE,
+	.pb_type = PB_FANOTIFY_FILE,
+	.priv_size = sizeof(struct fsnotify_file_info),
+	.collect = collect_one_fanotify,
 };
 
 static int collect_one_inotify_mark(void *o, ProtobufCMessage *msg, struct cr_img *i)
@@ -899,10 +873,10 @@ static int collect_one_inotify_mark(void *o, ProtobufCMessage *msg, struct cr_im
 }
 
 struct collect_image_info inotify_mark_cinfo = {
-	.fd_type	= CR_FD_INOTIFY_WD,
-	.pb_type	= PB_INOTIFY_WD,
-	.priv_size	= sizeof(struct fsnotify_mark_info),
-	.collect	= collect_one_inotify_mark,
+	.fd_type = CR_FD_INOTIFY_WD,
+	.pb_type = PB_INOTIFY_WD,
+	.priv_size = sizeof(struct fsnotify_mark_info),
+	.collect = collect_one_inotify_mark,
 };
 
 static int collect_one_fanotify_mark(void *o, ProtobufCMessage *msg, struct cr_img *i)
@@ -927,8 +901,8 @@ static int collect_one_fanotify_mark(void *o, ProtobufCMessage *msg, struct cr_i
 }
 
 struct collect_image_info fanotify_mark_cinfo = {
-	.fd_type	= CR_FD_FANOTIFY_MARK,
-	.pb_type	= PB_FANOTIFY_MARK,
-	.priv_size	= sizeof(struct fsnotify_mark_info),
-	.collect	= collect_one_fanotify_mark,
+	.fd_type = CR_FD_FANOTIFY_MARK,
+	.pb_type = PB_FANOTIFY_MARK,
+	.priv_size = sizeof(struct fsnotify_mark_info),
+	.collect = collect_one_fanotify_mark,
 };

@@ -10,10 +10,10 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check sched policy to be preserved";
-const char *test_author	= "Pavel Emelyanov <xemul@parallels.com>";
+const char *test_doc = "Check sched policy to be preserved";
+const char *test_author = "Pavel Emelyanov <xemul@parallels.com>";
 
-static const int parm = 3;
+static const int param = 3;
 
 static int do_nothing(void)
 {
@@ -23,7 +23,7 @@ static int do_nothing(void)
 	return -1;
 }
 
-int main(int argc, char ** argv)
+int main(int argc, char **argv)
 {
 	int pid, ret, err = 0;
 	struct sched_param p;
@@ -50,7 +50,7 @@ int main(int argc, char ** argv)
 		}
 	}
 
-	p.sched_priority = parm;
+	p.sched_priority = param;
 	if (sched_setscheduler(pid, SCHED_RR, &p)) {
 		pr_perror("Can't set policy");
 		kill(pid, SIGKILL);
@@ -67,7 +67,7 @@ int main(int argc, char ** argv)
 	}
 
 	ret = sched_getparam(pid, &p);
-	if (ret < 0 || p.sched_priority != parm) {
+	if (ret < 0 || p.sched_priority != param) {
 		fail("Broken prio");
 		err++;
 	}
@@ -82,7 +82,6 @@ int main(int argc, char ** argv)
 			fprintf(file, "%d\n", old_rt_runtime_us);
 			fclose(file);
 		}
-
 	}
 	return err;
 }

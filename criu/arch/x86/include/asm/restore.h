@@ -5,6 +5,7 @@
 
 #include "images/core.pb-c.h"
 
+/* clang-format off */
 #define JUMP_TO_RESTORER_BLOB(new_sp, restore_task_exec_start,		\
 			      task_args)				\
 	asm volatile(							\
@@ -18,6 +19,7 @@
 		       "g"(restore_task_exec_start),			\
 		       "g"(task_args)					\
 		     : "rdi", "rsi", "rbx", "rax", "memory")
+/* clang-format on */
 
 static inline void core_get_tls(CoreEntry *pcore, tls_t *ptls)
 {
@@ -47,11 +49,10 @@ static inline void core_get_tls(CoreEntry *pcore, tls_t *ptls)
 		COPY_TLS(read_exec_only);
 		COPY_TLS(limit_in_pages);
 		COPY_TLS(seg_not_present);
-		COPY_TLS(useable);
+		COPY_TLS(usable);
 #undef COPY_TLS
 	}
 }
-
 
 int restore_fpu(struct rt_sigframe *sigframe, CoreEntry *core);
 

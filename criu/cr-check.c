@@ -45,11 +45,15 @@
 #include "tun.h"
 #include "namespaces.h"
 #include "pstree.h"
+#include "lsm.h"
+#include "apparmor.h"
 #include "cr_options.h"
 #include "libnetlink.h"
 #include "net.h"
 #include "restorer.h"
 #include "uffd.h"
+
+#include "images/inventory.pb-c.h"
 
 static char *feature_name(int (*func)(void));
 
@@ -63,9 +67,8 @@ static int check_tty(void)
 
 	if (ARRAY_SIZE(t.c_cc) < TERMIOS_NCC) {
 		pr_err("struct termios has %d @c_cc while "
-			"at least %d expected.\n",
-			(int)ARRAY_SIZE(t.c_cc),
-			TERMIOS_NCC);
+		       "at least %d expected.\n",
+		       (int)ARRAY_SIZE(t.c_cc), TERMIOS_NCC);
 		goto out;
 	}
 
@@ -97,6 +100,14 @@ out:
 	close_safe(&master);
 	close_safe(&slave);
 	return ret;
+}
+
+static int check_apparmor_stacking(void)
+{
+	if (!check_aa_ns_dumping())
+		return -1;
+
+	return 0;
 }
 
 static int check_map_files(void)
@@ -190,7 +201,7 @@ static int check_prctl_cat1(void)
 
 	ret = prctl(PR_GET_TID_ADDRESS, (unsigned long)&tid_addr, 0, 0, 0);
 	if (ret < 0) {
-		pr_msg("prctl: PR_GET_TID_ADDRESS is not supported: %m");
+		pr_perror("prctl: PR_GET_TID_ADDRESS is not supported");
 		return -1;
 	}
 
@@ -206,19 +217,19 @@ static int check_prctl_cat1(void)
 			if (errno == EPERM)
 				pr_msg("prctl: One needs CAP_SYS_RESOURCE capability to perform testing\n");
 			else
-				pr_msg("prctl: PR_SET_MM_BRK is not supported: %m\n");
+				pr_perror("prctl: PR_SET_MM_BRK is not supported");
 			return -1;
 		}
 
 		ret = prctl(PR_SET_MM, PR_SET_MM_EXE_FILE, -1, 0, 0);
 		if (ret < 0 && errno != EBADF) {
-			pr_msg("prctl: PR_SET_MM_EXE_FILE is not supported: %m\n");
+			pr_perror("prctl: PR_SET_MM_EXE_FILE is not supported");
 			return -1;
 		}
 
 		ret = prctl(PR_SET_MM, PR_SET_MM_AUXV, (long)&user_auxv, sizeof(user_auxv), 0);
 		if (ret < 0) {
-			pr_msg("prctl: PR_SET_MM_AUXV is not supported: %m\n");
+			pr_perror("prctl: PR_SET_MM_AUXV is not supported");
 			return -1;
 		}
 	}
@@ -293,8 +304,7 @@ static int check_fdinfo_eventfd(void)
 	}
 
 	if (fe.counter != cnt) {
-		pr_err("Counter mismatch (or not met) %d want %d\n",
-				(int)fe.counter, cnt);
+		pr_err("Counter mismatch (or not met) %d want %d\n", (int)fe.counter, cnt);
 		return -1;
 	}
 
@@ -468,7 +478,7 @@ err:
 }
 
 #ifndef SO_GET_FILTER
-#define SO_GET_FILTER		SO_ATTACH_FILTER
+#define SO_GET_FILTER SO_ATTACH_FILTER
 #endif
 
 static int check_so_gets(void)
@@ -527,61 +537,6 @@ static int check_sigqueuinfo(void)
 	return 0;
 }
 
-static pid_t fork_and_ptrace_attach(int (*child_setup)(void))
-{
-	pid_t pid;
-	int sk_pair[2], sk;
-	char c = 0;
-
-	if (socketpair(PF_LOCAL, SOCK_SEQPACKET, 0, sk_pair)) {
-		pr_perror("socketpair");
-		return -1;
-	}
-
-	pid = fork();
-	if (pid < 0) {
-		pr_perror("fork");
-		return -1;
-	} else if (pid == 0) {
-		sk = sk_pair[1];
-		close(sk_pair[0]);
-
-		if (child_setup && child_setup() != 0)
-			exit(1);
-
-		if (write(sk, &c, 1) != 1) {
-			pr_perror("write");
-			exit(1);
-		}
-
-		while (1)
-			sleep(1000);
-		exit(1);
-	}
-
-	sk = sk_pair[0];
-	close(sk_pair[1]);
-
-	if (read(sk, &c, 1) != 1) {
-		close(sk);
-		kill(pid, SIGKILL);
-		pr_perror("read");
-		return -1;
-	}
-
-	close(sk);
-
-	if (ptrace(PTRACE_ATTACH, pid, NULL, NULL) == -1) {
-		pr_perror("Unable to ptrace the child");
-		kill(pid, SIGKILL);
-		return -1;
-	}
-
-	waitpid(pid, NULL, 0);
-
-	return pid;
-}
-
 static int check_ptrace_peeksiginfo(void)
 {
 	struct ptrace_peeksiginfo_args arg;
@@ -608,13 +563,14 @@ static int check_ptrace_peeksiginfo(void)
 	}
 
 	kill(pid, SIGKILL);
+	waitpid(pid, NULL, 0);
 	return ret;
 }
 
 struct special_mapping {
-	const char	*name;
-	void		*addr;
-	size_t		size;
+	const char *name;
+	void *addr;
+	size_t size;
 };
 
 static int parse_special_maps(struct special_mapping *vmas, size_t nr)
@@ -632,8 +588,7 @@ static int parse_special_maps(struct special_mapping *vmas, size_t nr)
 		int r, tail;
 		size_t i;
 
-		r = sscanf(buf, "%lx-%lx %*s %*s %*s %*s %n\n",
-				&start, &end, &tail);
+		r = sscanf(buf, "%lx-%lx %*s %*s %*s %*s %n\n", &start, &end, &tail);
 		if (r != 2) {
 			fclose(maps);
 			pr_err("Bad maps format %d.%d (%s)\n", r, tail, buf + tail);
@@ -674,8 +629,7 @@ static void dummy_sighandler(int sig)
  * And we definitely mremap() support by the fact that those special_mappings
  * are subjects for ASLR. (See #288 as a reference)
  */
-static void check_special_mapping_mremap_child(struct special_mapping *vmas,
-					       size_t nr)
+static void check_special_mapping_mremap_child(struct special_mapping *vmas, size_t nr)
 {
 	size_t i, parking_size = 0;
 	void *parking_lot;
@@ -691,8 +645,7 @@ static void check_special_mapping_mremap_child(struct special_mapping *vmas,
 		exit(1);
 	}
 
-	parking_lot = mmap(NULL, parking_size, PROT_NONE,
-			   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	parking_lot = mmap(NULL, parking_size, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (parking_lot == MAP_FAILED) {
 		pr_perror("mmap(%zu) failed", parking_size);
 		exit(1);
@@ -704,10 +657,8 @@ static void check_special_mapping_mremap_child(struct special_mapping *vmas,
 		if (vmas[i].addr == MAP_FAILED)
 			continue;
 
-		ret = syscall(__NR_mremap, (unsigned long)vmas[i].addr,
-			      vmas[i].size, vmas[i].size,
-			      MREMAP_FIXED | MREMAP_MAYMOVE,
-			      (unsigned long)parking_lot);
+		ret = syscall(__NR_mremap, (unsigned long)vmas[i].addr, vmas[i].size, vmas[i].size,
+			      MREMAP_FIXED | MREMAP_MAYMOVE, (unsigned long)parking_lot);
 		if (ret != (unsigned long)parking_lot)
 			syscall(__NR_exit, 1);
 		parking_lot += vmas[i].size;
@@ -763,6 +714,7 @@ static int check_special_mapping_mremap(void)
 		/* Probably, we're interrupted with a signal - cleanup */
 		pr_err("Failed to wait for a child %d\n", errno);
 		kill(child, SIGKILL);
+		waitpid(child, NULL, 0);
 		return -1;
 	}
 
@@ -801,25 +753,26 @@ static int check_ptrace_suspend_seccomp(void)
 	}
 
 	kill(pid, SIGKILL);
+	waitpid(pid, NULL, 0);
 	return ret;
 }
 
 static int setup_seccomp_filter(void)
 {
 	struct sock_filter filter[] = {
-		BPF_STMT(BPF_LD+BPF_W+BPF_ABS, offsetof(struct seccomp_data, nr)),
+		BPF_STMT(BPF_LD + BPF_W + BPF_ABS, offsetof(struct seccomp_data, nr)),
 		/* Allow all syscalls except ptrace */
-		BPF_JUMP(BPF_JMP+BPF_JEQ+BPF_K, __NR_ptrace, 0, 1),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_KILL),
-		BPF_STMT(BPF_RET+BPF_K, SECCOMP_RET_ALLOW),
+		BPF_JUMP(BPF_JMP + BPF_JEQ + BPF_K, __NR_ptrace, 0, 1),
+		BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_KILL),
+		BPF_STMT(BPF_RET + BPF_K, SECCOMP_RET_ALLOW),
 	};
 
 	struct sock_fprog bpf_prog = {
-		.len = (unsigned short)(sizeof(filter)/sizeof(filter[0])),
+		.len = (unsigned short)(sizeof(filter) / sizeof(filter[0])),
 		.filter = filter,
 	};
 
-	if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, (long) &bpf_prog, 0, 0) < 0)
+	if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, (long)&bpf_prog, 0, 0) < 0)
 		return -1;
 
 	return 0;
@@ -841,7 +794,17 @@ static int check_ptrace_dump_seccomp_filters(void)
 	}
 
 	kill(pid, SIGKILL);
+	waitpid(pid, NULL, 0);
 	return ret;
+}
+
+static int check_ptrace_get_rseq_conf(void)
+{
+	if (!kdat.has_ptrace_get_rseq_conf) {
+		pr_warn("ptrace(PTRACE_GET_RSEQ_CONFIGURATION) isn't supported. C/R of processes which are using rseq() won't work.\n");
+		return -1;
+	}
+	return 0;
 }
 
 static int check_mem_dirty_track(void)
@@ -908,11 +871,11 @@ static int check_aio_remap(void)
 	int r;
 
 	if (syscall(SYS_io_setup, 16, &ctx) < 0) {
-		pr_err("No AIO syscall: %m\n");
+		pr_perror("No AIO syscall");
 		return -1;
 	}
 
-	len = get_ring_len((unsigned long) ctx);
+	len = get_ring_len((unsigned long)ctx);
 	if (!len)
 		return -1;
 
@@ -930,7 +893,7 @@ static int check_aio_remap(void)
 	ctx = (aio_context_t)naddr;
 	r = syscall(SYS_io_getevents, ctx, 0, 1, NULL, NULL);
 	if (r < 0) {
-		pr_err("AIO remap doesn't work properly: %m\n");
+		pr_perror("AIO remap doesn't work properly");
 		return -1;
 	}
 
@@ -956,7 +919,8 @@ struct clone_arg {
 	char stack_ptr[0];
 };
 
-static int clone_cb(void *_arg) {
+static int clone_cb(void *_arg)
+{
 	exit(0);
 }
 
@@ -1016,8 +980,7 @@ static int check_autofs(void)
 
 	ret = -1;
 
-	options = xsprintf("fd=%d,pgrp=%d,minproto=5,maxproto=5,direct",
-				pfd[1], getpgrp());
+	options = xsprintf("fd=%d,pgrp=%d,minproto=5,maxproto=5,direct", pfd[1], getpgrp());
 	if (!options) {
 		pr_err("failed to allocate autofs options\n");
 		goto close_pipe;
@@ -1129,7 +1092,7 @@ static int kerndat_tcp_repair_window(void)
 			pr_perror("Unable to set TCP_REPAIR_WINDOW");
 			goto err;
 		}
-now:
+	now:
 		val = 0;
 	} else
 		val = 1;
@@ -1199,6 +1162,44 @@ static int check_compat_cr(void)
 	pr_warn("CRIU built without CONFIG_COMPAT - can't C/R compatible tasks\n");
 #endif
 	return -1;
+}
+
+static int check_nftables_cr(void)
+{
+#if defined(CONFIG_HAS_NFTABLES_LIB_API_0) || defined(CONFIG_HAS_NFTABLES_LIB_API_1)
+	return 0;
+#else
+	pr_warn("CRIU was built without nftables support - nftables rules will "
+		"not be preserved during C/R\n");
+	return -1;
+#endif
+}
+
+static int check_ipt_legacy(void)
+{
+	char *ipt_legacy_bin;
+	char *ip6t_legacy_bin;
+
+	ipt_legacy_bin = get_legacy_iptables_bin(false);
+	if (!ipt_legacy_bin) {
+		pr_warn("Couldn't find iptables version which is using iptables legacy API\n");
+		return -1;
+	}
+
+	pr_info("iptables cmd: %s\n", ipt_legacy_bin);
+
+	if (!kdat.ipv6)
+		return 0;
+
+	ip6t_legacy_bin = get_legacy_iptables_bin(true);
+	if (!ip6t_legacy_bin) {
+		pr_warn("Couldn't find ip6tables version which is using iptables legacy API\n");
+		return -1;
+	}
+
+	pr_info("ip6tables cmd: %s\n", ip6t_legacy_bin);
+
+	return 0;
 }
 
 static int check_uffd(void)
@@ -1276,11 +1277,89 @@ static int check_time_namespace(void)
 	return 0;
 }
 
+static int check_newifindex(void)
+{
+	if (!kdat.has_newifindex) {
+		pr_err("IFLA_NEW_IFINDEX isn't supported\n");
+		return -1;
+	}
+
+	return 0;
+}
+
 static int check_net_diag_raw(void)
 {
 	check_sock_diag();
-	return (socket_test_collect_bit(AF_INET, IPPROTO_RAW) &&
-		socket_test_collect_bit(AF_INET6, IPPROTO_RAW)) ? 0 : -1;
+	return (socket_test_collect_bit(AF_INET, IPPROTO_RAW) && socket_test_collect_bit(AF_INET6, IPPROTO_RAW)) ? 0 :
+														   -1;
+}
+
+static int check_pidfd_store(void)
+{
+	if (!kdat.has_pidfd_open) {
+		pr_warn("Pidfd store requires pidfd_open syscall which is not supported\n");
+		return -1;
+	}
+
+	if (!kdat.has_pidfd_getfd) {
+		pr_warn("Pidfd store requires pidfd_getfd syscall which is not supported\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int check_ns_pid(void)
+{
+	if (kerndat_has_nspid() < 0)
+		return -1;
+
+	if (!kdat.has_nspid)
+		return -1;
+
+	return 0;
+}
+
+static int check_memfd_hugetlb(void)
+{
+	if (!kdat.has_memfd_hugetlb)
+		return -1;
+
+	return 0;
+}
+
+static int check_network_lock_nftables(void)
+{
+	if (!kdat.has_nftables_concat) {
+		pr_warn("Nftables based locking requires libnftables and set concatenations support\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int check_sockopt_buf_lock(void)
+{
+	if (!kdat.has_sockopt_buf_lock)
+		return -1;
+
+	return 0;
+}
+
+static int check_move_mount_set_group(void)
+{
+	if (!kdat.has_move_mount_set_group)
+		return -1;
+
+	return 0;
+}
+
+static int check_openat2(void)
+{
+	if (!kdat.has_openat2)
+		return -1;
+
+	return 0;
 }
 
 static int (*chk_feature)(void);
@@ -1297,17 +1376,19 @@ static int (*chk_feature)(void);
  * We fail if any feature in category 1 is missing but tolerate failures
  * in the other categories.  Currently, there is nothing in category 3.
  */
-#define CHECK_GOOD	"Looks good."
-#define CHECK_BAD	"Does not look good."
-#define CHECK_MAYBE	"Looks good but some kernel features are missing\n" \
-			"which, depending on your process tree, may cause\n" \
-			"dump or restore failure."
-#define CHECK_CAT1(fn)	do { \
-				if ((ret = fn) != 0) { \
-					print_on_level(DEFAULT_LOGLEVEL, "%s\n", CHECK_BAD); \
-					return ret; \
-				} \
-			} while (0)
+#define CHECK_GOOD "Looks good."
+#define CHECK_BAD  "Does not look good."
+#define CHECK_MAYBE                                          \
+	"Looks good but some kernel features are missing\n"  \
+	"which, depending on your process tree, may cause\n" \
+	"dump or restore failure."
+#define CHECK_CAT1(fn)                              \
+	do {                                        \
+		if ((ret = fn) != 0) {              \
+			pr_warn("%s\n", CHECK_BAD); \
+			return ret;                 \
+		}                                   \
+	} while (0)
 int cr_check(void)
 {
 	struct ns_id *ns;
@@ -1336,8 +1417,7 @@ int cr_check(void)
 	if (chk_feature) {
 		if (chk_feature())
 			return -1;
-		print_on_level(DEFAULT_LOGLEVEL, "%s is supported\n",
-			feature_name(chk_feature));
+		pr_msg("%s is supported\n", feature_name(chk_feature));
 		return 0;
 	}
 
@@ -1395,6 +1475,16 @@ int cr_check(void)
 		ret |= check_net_diag_raw();
 		ret |= check_clone3_set_tid();
 		ret |= check_time_namespace();
+		ret |= check_newifindex();
+		ret |= check_pidfd_store();
+		ret |= check_ns_pid();
+		ret |= check_apparmor_stacking();
+		ret |= check_network_lock_nftables();
+		ret |= check_sockopt_buf_lock();
+		ret |= check_memfd_hugetlb();
+		ret |= check_move_mount_set_group();
+		ret |= check_openat2();
+		ret |= check_ptrace_get_rseq_conf();
 	}
 
 	/*
@@ -1405,7 +1495,7 @@ int cr_check(void)
 		ret |= check_compat_cr();
 	}
 
-	print_on_level(DEFAULT_LOGLEVEL, "%s\n", ret ? CHECK_MAYBE : CHECK_GOOD);
+	pr_msg("%s\n", ret ? CHECK_MAYBE : CHECK_GOOD);
 	return ret;
 }
 #undef CHECK_GOOD
@@ -1490,16 +1580,28 @@ static struct feature_list feature_list[] = {
 	{ "compat_cr", check_compat_cr },
 	{ "uffd", check_uffd },
 	{ "uffd-noncoop", check_uffd_noncoop },
-	{ "can_map_vdso", check_can_map_vdso},
+	{ "can_map_vdso", check_can_map_vdso },
 	{ "sk_ns", check_sk_netns },
 	{ "sk_unix_file", check_sk_unix_file },
 	{ "net_diag_raw", check_net_diag_raw },
 	{ "nsid", check_nsid },
-	{ "link_nsid", check_link_nsid},
-	{ "kcmp_epoll", check_kcmp_epoll},
-	{ "timens", check_time_namespace},
-	{ "external_net_ns", check_external_net_ns},
-	{ "clone3_set_tid", check_clone3_set_tid},
+	{ "link_nsid", check_link_nsid },
+	{ "kcmp_epoll", check_kcmp_epoll },
+	{ "timens", check_time_namespace },
+	{ "external_net_ns", check_external_net_ns },
+	{ "clone3_set_tid", check_clone3_set_tid },
+	{ "newifindex", check_newifindex },
+	{ "nftables", check_nftables_cr },
+	{ "has_ipt_legacy", check_ipt_legacy },
+	{ "pidfd_store", check_pidfd_store },
+	{ "ns_pid", check_ns_pid },
+	{ "apparmor_stacking", check_apparmor_stacking },
+	{ "network_lock_nftables", check_network_lock_nftables },
+	{ "sockopt_buf_lock", check_sockopt_buf_lock },
+	{ "memfd_hugetlb", check_memfd_hugetlb },
+	{ "move_mount_set_group", check_move_mount_set_group },
+	{ "openat2", check_openat2 },
+	{ "get_rseq_conf", check_ptrace_get_rseq_conf },
 	{ NULL, NULL },
 };
 
@@ -1517,10 +1619,10 @@ void pr_check_features(const char *offset, const char *sep, int width)
 			pr_msg("\n%s", offset);
 			pos = offset_len;
 		}
-		pr_msg("%s", fl->name);
+		pr_msg("%s", fl->name); // no \n
 		pos += len;
-		if ((fl + 1)->name) { // not the last item
-			pr_msg("%s", sep);
+		if ((fl + 1)->name) {	   // not the last item
+			pr_msg("%s", sep); // no \n
 			pos += sep_len;
 		}
 	}

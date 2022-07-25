@@ -42,40 +42,38 @@
 #include "util.h"
 #include "namespaces.h"
 
-#undef  LOG_PREFIX
+#undef LOG_PREFIX
 #define LOG_PREFIX "uffd: "
 
-#define lp_debug(lpi, fmt, arg...) pr_debug("%d-%d: " fmt, lpi->pid, lpi->lpfd.fd, ##arg)
-#define lp_info(lpi, fmt, arg...) pr_info("%d-%d: " fmt, lpi->pid, lpi->lpfd.fd, ##arg)
-#define lp_warn(lpi, fmt, arg...) pr_warn("%d-%d: " fmt, lpi->pid, lpi->lpfd.fd, ##arg)
-#define lp_err(lpi, fmt, arg...) pr_err("%d-%d: " fmt, lpi->pid, lpi->lpfd.fd, ##arg)
+#define lp_debug(lpi, fmt, arg...)  pr_debug("%d-%d: " fmt, lpi->pid, lpi->lpfd.fd, ##arg)
+#define lp_info(lpi, fmt, arg...)   pr_info("%d-%d: " fmt, lpi->pid, lpi->lpfd.fd, ##arg)
+#define lp_warn(lpi, fmt, arg...)   pr_warn("%d-%d: " fmt, lpi->pid, lpi->lpfd.fd, ##arg)
+#define lp_err(lpi, fmt, arg...)    pr_err("%d-%d: " fmt, lpi->pid, lpi->lpfd.fd, ##arg)
 #define lp_perror(lpi, fmt, arg...) pr_perror("%d-%d: " fmt, lpi->pid, lpi->lpfd.fd, ##arg)
 
-#define NEED_UFFD_API_FEATURES (UFFD_FEATURE_EVENT_FORK |	    \
-				UFFD_FEATURE_EVENT_REMAP |	    \
-				UFFD_FEATURE_EVENT_UNMAP |	    \
-				UFFD_FEATURE_EVENT_REMOVE)
+#define NEED_UFFD_API_FEATURES \
+	(UFFD_FEATURE_EVENT_FORK | UFFD_FEATURE_EVENT_REMAP | UFFD_FEATURE_EVENT_UNMAP | UFFD_FEATURE_EVENT_REMOVE)
 
-#define LAZY_PAGES_SOCK_NAME	"lazy-pages.socket"
+#define LAZY_PAGES_SOCK_NAME "lazy-pages.socket"
 
-#define LAZY_PAGES_RESTORE_FINISHED	0x52535446	/* ReSTore Finished */
+#define LAZY_PAGES_RESTORE_FINISHED 0x52535446 /* ReSTore Finished */
 
 /*
- * Backround transfer parameters.
+ * Background transfer parameters.
  * The default xfer length is arbitrary set to 64Kbytes
  * The limit of 4Mbytes matches the maximal chunk size we can have in
  * a pipe in the page-server
  */
 #define DEFAULT_XFER_LEN (64 << 10)
-#define MAX_XFER_LEN (4 << 20)
+#define MAX_XFER_LEN	 (4 << 20)
 
 static mutex_t *lazy_sock_mutex;
 
 struct lazy_iov {
 	struct list_head l;
-	unsigned long start;	/* run-time start address, tracks remaps */
-	unsigned long end;	/* run-time end address, tracks remaps */
-	unsigned long img_start;	/* start address at the dump time */
+	unsigned long start;	 /* run-time start address, tracks remaps */
+	unsigned long end;	 /* run-time end address, tracks remaps */
+	unsigned long img_start; /* start address at the dump time */
 };
 
 struct lazy_pages_info {
@@ -90,7 +88,7 @@ struct lazy_pages_info {
 
 	struct page_read pr;
 
-	unsigned long xfer_len;	/* in pages */
+	unsigned long xfer_len; /* in pages */
 	unsigned long total_pages;
 	unsigned long copied_pages;
 
@@ -177,7 +175,6 @@ static void lpi_fini(struct lazy_pages_info *lpi)
 	xfree(lpi);
 }
 
-
 static int prepare_sock_addr(struct sockaddr_un *saddr)
 {
 	int len;
@@ -185,8 +182,7 @@ static int prepare_sock_addr(struct sockaddr_un *saddr)
 	memset(saddr, 0, sizeof(struct sockaddr_un));
 
 	saddr->sun_family = AF_UNIX;
-	len = snprintf(saddr->sun_path, sizeof(saddr->sun_path),
-		       "%s", LAZY_PAGES_SOCK_NAME);
+	len = snprintf(saddr->sun_path, sizeof(saddr->sun_path), "%s", LAZY_PAGES_SOCK_NAME);
 	if (len >= sizeof(saddr->sun_path)) {
 		pr_err("Wrong UNIX socket name: %s\n", LAZY_PAGES_SOCK_NAME);
 		return -1;
@@ -262,31 +258,31 @@ static int uffd_api_ioctl(void *arg, int fd, pid_t pid)
 	return ioctl(fd, UFFDIO_API, uffdio_api);
 }
 
-int uffd_open(int flags, unsigned long *features)
+int uffd_open(int flags, unsigned long *features, int *err)
 {
 	struct uffdio_api uffdio_api = { 0 };
 	int uffd;
 
 	uffd = syscall(SYS_userfaultfd, flags);
 	if (uffd == -1) {
-		pr_pwarn("Lazy pages are not available");
-		return -errno;
+		pr_info("Lazy pages are not available: %s\n", strerror(errno));
+		if (err)
+			*err = errno;
+		return -1;
 	}
 
 	uffdio_api.api = UFFD_API;
 	if (features)
 		uffdio_api.features = *features;
 
-	if (userns_call(uffd_api_ioctl, 0, &uffdio_api, sizeof(uffdio_api),
-			uffd)) {
+	if (userns_call(uffd_api_ioctl, 0, &uffdio_api, sizeof(uffdio_api), uffd)) {
 		pr_perror("Failed to get uffd API");
-		goto err;
+		goto close;
 	}
 
 	if (uffdio_api.api != UFFD_API) {
-		pr_err("Incompatible uffd API: expected %Lu, got %Lu\n",
-		       UFFD_API, uffdio_api.api);
-		goto err;
+		pr_err("Incompatible uffd API: expected %llu, got %llu\n", UFFD_API, uffdio_api.api);
+		goto close;
 	}
 
 	if (features)
@@ -294,7 +290,7 @@ int uffd_open(int flags, unsigned long *features)
 
 	return uffd;
 
-err:
+close:
 	close(uffd);
 	return -1;
 }
@@ -313,7 +309,7 @@ int setup_uffd(int pid, struct task_restore_args *task_args)
 	 * Open userfaulfd FD which is passed to the restorer blob and
 	 * to a second process handling the userfaultfd page faults.
 	 */
-	task_args->uffd = uffd_open(O_CLOEXEC | O_NONBLOCK, &features);
+	task_args->uffd = uffd_open(O_CLOEXEC | O_NONBLOCK, &features, NULL);
 	if (task_args->uffd < 0) {
 		pr_perror("Unable to open an userfaultfd descriptor");
 		return -1;
@@ -349,7 +345,7 @@ int prepare_lazy_pages_socket(void)
 		return -1;
 
 	len = offsetof(struct sockaddr_un, sun_path) + strlen(sun.sun_path);
-	if (connect(fd, (struct sockaddr *) &sun, len) < 0) {
+	if (connect(fd, (struct sockaddr *)&sun, len) < 0) {
 		pr_perror("connect to %s failed", sun.sun_path);
 		goto out;
 	}
@@ -378,7 +374,7 @@ static int server_listen(struct sockaddr_un *saddr)
 
 	len = offsetof(struct sockaddr_un, sun_path) + strlen(saddr->sun_path);
 
-	if (bind(fd, (struct sockaddr *) saddr, len) < 0) {
+	if (bind(fd, (struct sockaddr *)saddr, len) < 0) {
 		goto out;
 	}
 
@@ -412,8 +408,7 @@ static MmEntry *init_mm_entry(struct lazy_pages_info *lpi)
 	return mm;
 }
 
-static struct lazy_iov *find_iov(struct lazy_pages_info *lpi,
-				 unsigned long addr)
+static struct lazy_iov *find_iov(struct lazy_pages_info *lpi, unsigned long addr)
 {
 	struct lazy_iov *iov;
 
@@ -455,8 +450,7 @@ static void iov_list_insert(struct lazy_iov *new, struct list_head *dst)
 			list_move_tail(&new->l, &iov->l);
 			break;
 		}
-		if (list_is_last(&iov->l, dst) &&
-		    new->start > iov->start) {
+		if (list_is_last(&iov->l, dst) && new->start > iov->start) {
 			list_move(&new->l, &iov->l);
 			break;
 		}
@@ -489,7 +483,6 @@ static int __copy_iov_list(struct list_head *src, struct list_head *dst)
 
 		list_add_tail(&new->l, dst);
 	}
-
 
 	return 0;
 }
@@ -592,10 +585,7 @@ static int drop_iovs(struct lazy_pages_info *lpi, unsigned long addr, int len)
 	return 0;
 }
 
-
-static struct lazy_iov *extract_range(struct lazy_iov *iov,
-				      unsigned long start,
-				      unsigned long end)
+static struct lazy_iov *extract_range(struct lazy_iov *iov, unsigned long start, unsigned long end)
 {
 	/* move the IOV tail into a new IOV */
 	if (end < iov->end)
@@ -612,8 +602,7 @@ static struct lazy_iov *extract_range(struct lazy_iov *iov,
 	return list_entry(iov->l.next, struct lazy_iov, l);
 }
 
-static int __remap_iovs(struct list_head *iovs,	unsigned long from,
-			unsigned long to, unsigned long len)
+static int __remap_iovs(struct list_head *iovs, unsigned long from, unsigned long to, unsigned long len)
 {
 	LIST_HEAD(remaps);
 
@@ -658,8 +647,7 @@ static int __remap_iovs(struct list_head *iovs,	unsigned long from,
 	return 0;
 }
 
-static int remap_iovs(struct lazy_pages_info *lpi, unsigned long from,
-		      unsigned long to, unsigned long len)
+static int remap_iovs(struct lazy_pages_info *lpi, unsigned long from, unsigned long to, unsigned long len)
 {
 	if (__remap_iovs(&lpi->iovs, from, to, len))
 		return -1;
@@ -834,8 +822,7 @@ static bool uffd_recoverable_error(int mcopy_rc)
 	return false;
 }
 
-static int uffd_check_op_error(struct lazy_pages_info *lpi, const char *op,
-			       int *nr_pages, long mcopy_rc)
+static int uffd_check_op_error(struct lazy_pages_info *lpi, const char *op, int *nr_pages, long mcopy_rc)
 {
 	if (errno == ENOSPC || errno == ESRCH) {
 		handle_exit(lpi);
@@ -944,8 +931,7 @@ static int uffd_zero(struct lazy_pages_info *lpi, __u64 address, int nr_pages)
 
 	lp_debug(lpi, "zero page at 0x%llx\n", address);
 	if (ioctl(lpi->lpfd.fd, UFFDIO_ZEROPAGE, &uffdio_zeropage) &&
-	    uffd_check_op_error(lpi, "zero", &nr_pages,
-				uffdio_zeropage.zeropage))
+	    uffd_check_op_error(lpi, "zero", &nr_pages, uffdio_zeropage.zeropage))
 		return -1;
 
 	return 0;
@@ -1052,17 +1038,14 @@ static int handle_remove(struct lazy_pages_info *lpi, struct uffd_msg *msg)
 	unreg.start = msg->arg.remove.start;
 	unreg.len = msg->arg.remove.end - msg->arg.remove.start;
 
-	lp_debug(lpi, "%s: %llx(%llx)\n",
-		 msg->event == UFFD_EVENT_REMOVE ? "REMOVE" : "UNMAP",
-		 unreg.start, unreg.len);
+	lp_debug(lpi, "%s: %llx(%llx)\n", msg->event == UFFD_EVENT_REMOVE ? "REMOVE" : "UNMAP", unreg.start, unreg.len);
 
 	/*
 	 * The REMOVE event does not change the VMA, so we need to
 	 * make sure that we won't handle #PFs in the removed
 	 * range. With UNMAP, there's no VMA to worry about
 	 */
-	if (msg->event == UFFD_EVENT_REMOVE &&
-	    ioctl(lpi->lpfd.fd, UFFDIO_UNREGISTER, &unreg)) {
+	if (msg->event == UFFD_EVENT_REMOVE && ioctl(lpi->lpfd.fd, UFFDIO_UNREGISTER, &unreg)) {
 		/*
 		 * The kernel returns -ENOMEM when unregister is
 		 * called after the process has gone
@@ -1072,8 +1055,7 @@ static int handle_remove(struct lazy_pages_info *lpi, struct uffd_msg *msg)
 			return 0;
 		}
 
-		pr_perror("Failed to unregister (%llx - %llx)", unreg.start,
-			  unreg.start + unreg.len);
+		pr_perror("Failed to unregister (%llx - %llx)", unreg.start, unreg.start + unreg.len);
 		return -1;
 	}
 
@@ -1086,7 +1068,7 @@ static int handle_remap(struct lazy_pages_info *lpi, struct uffd_msg *msg)
 	unsigned long to = msg->arg.remap.to;
 	unsigned long len = msg->arg.remap.len;
 
-	lp_debug(lpi, "REMAP: %lx -> %lx (%ld)\n", from , to, len);
+	lp_debug(lpi, "REMAP: %lx -> %lx (%ld)\n", from, to, len);
 
 	return remap_iovs(lpi, from, to, len);
 }
@@ -1131,6 +1113,7 @@ out:
 static int complete_forks(int epollfd, struct epoll_event **events, int *nr_fds)
 {
 	struct lazy_pages_info *lpi, *n;
+	struct epoll_event *tmp;
 
 	if (list_empty(&pending_lpis))
 		return 1;
@@ -1138,9 +1121,10 @@ static int complete_forks(int epollfd, struct epoll_event **events, int *nr_fds)
 	list_for_each_entry(lpi, &pending_lpis, l)
 		(*nr_fds)++;
 
-	*events = xrealloc(*events, sizeof(struct epoll_event) * (*nr_fds));
-	if (!*events)
+	tmp = xrealloc(*events, sizeof(struct epoll_event) * (*nr_fds));
+	if (!tmp)
 		return -1;
+	*events = tmp;
 
 	list_for_each_entry_safe(lpi, n, &pending_lpis, l) {
 		if (epoll_add_rfd(epollfd, &lpi->lpfd))
@@ -1207,17 +1191,20 @@ static int handle_uffd_event(struct epoll_rfd *lpfd)
 	lpi = container_of(lpfd, struct lazy_pages_info, lpfd);
 
 	ret = read(lpfd->fd, &msg, sizeof(msg));
-	if (!ret)
-		return 1;
-
-	if (ret != sizeof(msg)) {
+	if (ret < 0) {
 		/* we've already handled the page fault for another thread */
 		if (errno == EAGAIN)
 			return 0;
-		if (ret < 0)
-			lp_perror(lpi, "Can't read uffd message");
-		else
-			lp_err(lpi, "Can't read uffd message: short read");
+		if (errno == EBADF && lpi->exited) {
+			lp_debug(lpi, "excess message in queue: %d", msg.event);
+			return 0;
+		}
+		lp_perror(lpi, "Can't read uffd message");
+		return -1;
+	} else if (ret == 0) {
+		return 1;
+	} else if (ret != sizeof(msg)) {
+		lp_err(lpi, "Can't read uffd message: short read");
 		return -1;
 	}
 
@@ -1241,8 +1228,7 @@ static int handle_uffd_event(struct epoll_rfd *lpfd)
 
 static void lazy_pages_summary(struct lazy_pages_info *lpi)
 {
-	lp_debug(lpi, "UFFD transferred pages: (%ld/%ld)\n",
-		 lpi->copied_pages, lpi->total_pages);
+	lp_debug(lpi, "UFFD transferred pages: (%ld/%ld)\n", lpi->copied_pages, lpi->total_pages);
 
 #if 0
 	if ((lpi->copied_pages != lpi->total_pages) && (lpi->total_pages > 0)) {
@@ -1254,18 +1240,18 @@ static void lazy_pages_summary(struct lazy_pages_info *lpi)
 #endif
 }
 
-static int handle_requests(int epollfd, struct epoll_event *events, int nr_fds)
+static int handle_requests(int epollfd, struct epoll_event **events, int nr_fds)
 {
 	struct lazy_pages_info *lpi, *n;
 	int poll_timeout = -1;
 	int ret;
 
 	for (;;) {
-		ret = epoll_run_rfds(epollfd, events, nr_fds, poll_timeout);
+		ret = epoll_run_rfds(epollfd, *events, nr_fds, poll_timeout);
 		if (ret < 0)
 			goto out;
 		if (ret > 0) {
-			ret = complete_forks(epollfd, &events, &nr_fds);
+			ret = complete_forks(epollfd, events, &nr_fds);
 			if (ret < 0)
 				goto out;
 			if (restore_finished)
@@ -1298,7 +1284,6 @@ static int handle_requests(int epollfd, struct epoll_event *events, int nr_fds)
 
 out:
 	return ret;
-
 }
 
 int lazy_pages_finish_restore(void)
@@ -1388,7 +1373,7 @@ static int prepare_uffds(int listen, int epollfd)
 
 	/* accept new client request */
 	len = sizeof(struct sockaddr_un);
-	if ((client = accept(listen, (struct sockaddr *) &saddr, &len)) < 0) {
+	if ((client = accept(listen, (struct sockaddr *)&saddr, &len)) < 0) {
 		pr_perror("server_accept error");
 		close(listen);
 		return -1;
@@ -1421,7 +1406,7 @@ close_uffd:
 
 int cr_lazy_pages(bool daemon)
 {
-	struct epoll_event *events;
+	struct epoll_event *events = NULL;
 	int nr_fds;
 	int lazy_sk;
 	int ret;
@@ -1456,7 +1441,7 @@ int cr_lazy_pages(bool daemon)
 		}
 	}
 
-	if (close_status_fd())
+	if (status_ready())
 		return -1;
 
 	/*
@@ -1469,17 +1454,22 @@ int cr_lazy_pages(bool daemon)
 	if (epollfd < 0)
 		return -1;
 
-	if (prepare_uffds(lazy_sk, epollfd))
+	if (prepare_uffds(lazy_sk, epollfd)) {
+		xfree(events);
 		return -1;
-
-	if (opts.use_page_server) {
-		if (connect_to_page_server_to_recv(epollfd))
-			return -1;
 	}
 
-	ret = handle_requests(epollfd, events, nr_fds);
+	if (opts.use_page_server) {
+		if (connect_to_page_server_to_recv(epollfd)) {
+			xfree(events);
+			return -1;
+		}
+	}
 
-	tls_terminate_session();
+	ret = handle_requests(epollfd, &events, nr_fds);
 
+	disconnect_from_page_server();
+
+	xfree(events);
 	return ret;
 }

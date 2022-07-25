@@ -6,15 +6,15 @@
 #include <sched.h>
 #include <sys/wait.h>
 #include <limits.h>
+#include <errno.h>
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check ghost file is restored on readonly fs if it was ghost-remaped on writable bind";
-const char *test_author	= "Pavel Tikhomirov <ptikhomirov@virtuozzo.com>";
+const char *test_doc = "Check ghost file is restored on readonly fs if it was ghost-remaped on writable bind";
+const char *test_author = "Pavel Tikhomirov <ptikhomirov@virtuozzo.com>";
 
 char *dirname;
 TEST_OPTION(dirname, string, "directory name", 1);
-
 
 int main(int argc, char **argv)
 {
@@ -71,7 +71,7 @@ int main(int argc, char **argv)
 			return 1;
 		}
 
-		if (mount(NULL, dirname, NULL, MS_RDONLY|MS_REMOUNT|MS_BIND, NULL)) {
+		if (mount(NULL, dirname, NULL, MS_RDONLY | MS_REMOUNT | MS_BIND, NULL)) {
 			pr_perror("remount");
 			return 1;
 		}
@@ -87,6 +87,13 @@ int main(int argc, char **argv)
 
 		if (close(fd)) {
 			pr_perror("close");
+			return 1;
+		}
+
+		fd = open(ghost_path, O_CREAT | O_WRONLY, 0600);
+		if (fd >= 0 || errno != EROFS) {
+			pr_perror("open for write on rofs -> %d", fd);
+			close(fd);
 			return 1;
 		}
 

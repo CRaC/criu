@@ -22,16 +22,20 @@
 #include <stdbool.h>
 
 #include "version.h"
+#include "rpc.pb-c.h"
 
 #ifdef __GNUG__
-	extern "C" {
+extern "C" {
 #endif
 
-enum criu_service_comm {
-	CRIU_COMM_SK,
-	CRIU_COMM_FD,
-	CRIU_COMM_BIN
-};
+#define CRIU_LOG_UNSET (-1)
+#define CRIU_LOG_MSG   (0) /* Print message regardless of log level */
+#define CRIU_LOG_ERROR (1) /* Errors only */
+#define CRIU_LOG_WARN  (2) /* Warnings */
+#define CRIU_LOG_INFO  (3) /* Informative */
+#define CRIU_LOG_DEBUG (4) /* Debug only */
+
+enum criu_service_comm { CRIU_COMM_SK, CRIU_COMM_FD, CRIU_COMM_BIN };
 
 enum criu_cg_mode {
 	CRIU_CG_MODE_IGNORE,
@@ -43,10 +47,12 @@ enum criu_cg_mode {
 	CRIU_CG_MODE_DEFAULT,
 };
 
-enum criu_pre_dump_mode {
-	CRIU_PRE_DUMP_SPLICE =	1,
-	CRIU_PRE_DUMP_READ =	2
+enum criu_network_lock_method {
+	CRIU_NETWORK_LOCK_IPTABLES = 1,
+	CRIU_NETWORK_LOCK_NFTABLES = 2,
 };
+
+enum criu_pre_dump_mode { CRIU_PRE_DUMP_SPLICE = 1, CRIU_PRE_DUMP_READ = 2 };
 
 int criu_set_service_address(const char *path);
 void criu_set_service_fd(int fd);
@@ -72,6 +78,7 @@ void criu_set_tcp_close(bool tcp_close);
 void criu_set_weak_sysctls(bool val);
 void criu_set_evasive_devices(bool evasive_devices);
 void criu_set_shell_job(bool shell_job);
+void criu_set_orphan_pts_master(bool orphan_pts_master);
 void criu_set_file_locks(bool file_locks);
 void criu_set_track_mem(bool track_mem);
 void criu_set_auto_dedup(bool auto_dedup);
@@ -85,6 +92,7 @@ void criu_set_manage_cgroups(bool manage);
 void criu_set_manage_cgroups_mode(enum criu_cg_mode mode);
 int criu_set_freeze_cgroup(const char *name);
 int criu_set_lsm_profile(const char *name);
+int criu_set_lsm_mount_context(const char *name);
 void criu_set_timeout(unsigned int timeout);
 void criu_set_auto_ext_mnt(bool val);
 void criu_set_ext_sharing(bool val);
@@ -101,6 +109,10 @@ int criu_add_inherit_fd(int fd, const char *key);
 int criu_add_external(const char *key);
 int criu_set_page_server_address_port(const char *address, int port);
 int criu_set_pre_dump_mode(enum criu_pre_dump_mode mode);
+void criu_set_pidfd_store_sk(int sk);
+int criu_set_network_lock(enum criu_network_lock_method method);
+int criu_join_ns_add(const char *ns, const char *ns_file, const char *extra_opt);
+void criu_set_mntns_compat_mode(bool val);
 
 /*
  * The criu_notify_arg_t na argument is an opaque
@@ -110,11 +122,22 @@ int criu_set_pre_dump_mode(enum criu_pre_dump_mode mode);
  * some non-existing one is reported.
  */
 
-typedef struct _CriuNotify *criu_notify_arg_t;
+typedef CriuNotify *criu_notify_arg_t;
 void criu_set_notify_cb(int (*cb)(char *action, criu_notify_arg_t na));
 
 /* Get pid of root task. 0 if not available */
 int criu_notify_pid(criu_notify_arg_t na);
+
+/*
+ * If CRIU sends and FD in the case of 'orphan-pts-master',
+ * this FD can be retrieved with criu_get_orphan_pts_master_fd().
+ *
+ * If no FD has been received this will return -1.
+ *
+ * To make sure the FD returned is valid this function has to be
+ * called after the callback with the 'action' 'orphan-pts-master'.
+ */
+int criu_get_orphan_pts_master_fd(void);
 
 /* Here is a table of return values and errno's of functions
  * from the list down below.
@@ -139,6 +162,7 @@ int criu_notify_pid(criu_notify_arg_t na);
  */
 int criu_check(void);
 int criu_dump(void);
+int criu_pre_dump(void);
 int criu_restore(void);
 int criu_restore_child(void);
 
@@ -156,6 +180,35 @@ int criu_restore_child(void);
  */
 typedef void *criu_predump_info;
 int criu_dump_iters(int (*more)(criu_predump_info pi));
+
+/*
+ * Get the version of the actual binary used for RPC.
+ *
+ * As this library is just forwarding all tasks to an
+ * independent (of this library) CRIU binary, the actual
+ * version of the CRIU binary can be different then the
+ * hardcoded values in the library (version.h).
+ * To be able to easily check the version of the CRIU binary
+ * the function criu_get_version() returns the version
+ * in the following format:
+ *
+ * (major * 10000) + (minor * 100) + sublevel
+ *
+ * If the CRIU binary has been built from a git checkout
+ * minor will increased by one.
+ */
+int criu_get_version(void);
+
+/*
+ * Check if the version of the CRIU binary is at least
+ * 'minimum'. Version has to be in the same format as
+ * described for criu_get_version().
+ *
+ * Returns 1 if CRIU is at least 'minimum'.
+ * Returns 0 if CRIU is too old.
+ * Returns < 0 if there was an error.
+ */
+int criu_check_version(int minimum);
 
 /*
  * Same as the list above, but lets you have your very own options
@@ -185,6 +238,7 @@ void criu_local_set_tcp_close(criu_opts *opts, bool tcp_close);
 void criu_local_set_weak_sysctls(criu_opts *opts, bool val);
 void criu_local_set_evasive_devices(criu_opts *opts, bool evasive_devices);
 void criu_local_set_shell_job(criu_opts *opts, bool shell_job);
+void criu_local_set_orphan_pts_master(criu_opts *opts, bool orphan_pts_master);
 void criu_local_set_file_locks(criu_opts *opts, bool file_locks);
 void criu_local_set_track_mem(criu_opts *opts, bool track_mem);
 void criu_local_set_auto_dedup(criu_opts *opts, bool auto_dedup);
@@ -198,6 +252,7 @@ void criu_local_set_manage_cgroups(criu_opts *opts, bool manage);
 void criu_local_set_manage_cgroups_mode(criu_opts *opts, enum criu_cg_mode mode);
 int criu_local_set_freeze_cgroup(criu_opts *opts, const char *name);
 int criu_local_set_lsm_profile(criu_opts *opts, const char *name);
+int criu_local_set_lsm_mount_context(criu_opts *opts, const char *name);
 void criu_local_set_timeout(criu_opts *opts, unsigned int timeout);
 void criu_local_set_auto_ext_mnt(criu_opts *opts, bool val);
 void criu_local_set_ext_sharing(criu_opts *opts, bool val);
@@ -218,14 +273,51 @@ int criu_local_add_inherit_fd(criu_opts *opts, int fd, const char *key);
 int criu_local_add_external(criu_opts *opts, const char *key);
 int criu_local_set_page_server_address_port(criu_opts *opts, const char *address, int port);
 int criu_local_set_pre_dump_mode(criu_opts *opts, enum criu_pre_dump_mode mode);
+void criu_local_set_pidfd_store_sk(criu_opts *opts, int sk);
+int criu_local_set_network_lock(criu_opts *opts, enum criu_network_lock_method method);
+int criu_local_join_ns_add(criu_opts *opts, const char *ns, const char *ns_file, const char *extra_opt);
+void criu_local_set_mntns_compat_mode(criu_opts *opts, bool val);
 
 void criu_local_set_notify_cb(criu_opts *opts, int (*cb)(char *action, criu_notify_arg_t na));
 
 int criu_local_check(criu_opts *opts);
 int criu_local_dump(criu_opts *opts);
+int criu_local_pre_dump(criu_opts *opts);
 int criu_local_restore(criu_opts *opts);
 int criu_local_restore_child(criu_opts *opts);
 int criu_local_dump_iters(criu_opts *opts, int (*more)(criu_predump_info pi));
+
+int criu_local_get_version(criu_opts *opts);
+int criu_local_check_version(criu_opts *opts, int minimum);
+
+/*
+ * Feature checking allows the user to check if CRIU supports
+ * certain features. There are CRIU features which do not depend
+ * on the version of CRIU but on kernel features or architecture.
+ *
+ * One example is memory tracking. Memory tracking can be disabled
+ * in the kernel or there are architectures which do not support
+ * it (aarch64 for example). By using the feature check a libcriu
+ * user can easily query CRIU if a certain feature is available.
+ *
+ * The features which should be checked can be marked in the
+ * structure 'struct criu_feature_check'. Each structure member
+ * that is set to true will result in CRIU checking for the
+ * availability of that feature in the current combination of
+ * CRIU/kernel/architecture.
+ *
+ * Available features will be set to true when the function
+ * returns successfully. Missing features will be set to false.
+ */
+
+struct criu_feature_check {
+	bool mem_track;
+	bool lazy_pages;
+	bool pidfd_store;
+};
+
+int criu_feature_check(struct criu_feature_check *features, size_t size);
+int criu_local_feature_check(criu_opts *opts, struct criu_feature_check *features, size_t size);
 
 #ifdef __GNUG__
 }

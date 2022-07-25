@@ -1,6 +1,7 @@
 proto-obj-y	+= stats.o
 proto-obj-y	+= core.o
 proto-obj-y	+= core-x86.o
+proto-obj-y	+= core-mips.o
 proto-obj-y	+= core-arm.o
 proto-obj-y	+= core-aarch64.o
 proto-obj-y	+= core-ppc64.o
@@ -54,6 +55,7 @@ proto-obj-y	+= rpc.o
 proto-obj-y	+= ext-file.o
 proto-obj-y	+= cgroup.o
 proto-obj-y	+= userns.o
+proto-obj-y	+= pidns.o
 proto-obj-y	+= google/protobuf/descriptor.o # To make protoc-c happy and compile opts.proto
 proto-obj-y	+= opts.o
 proto-obj-y	+= seccomp.o
@@ -65,6 +67,11 @@ proto-obj-y	+= macvlan.o
 proto-obj-y	+= sit.o
 proto-obj-y	+= memfd.o
 proto-obj-y	+= timens.o
+proto-obj-y	+= img-streamer.o
+proto-obj-y	+= bpfmap-file.o
+proto-obj-y	+= bpfmap-data.o
+proto-obj-y	+= apparmor.o
+proto-obj-y	+= rseq.o
 
 CFLAGS		+= -iquote $(obj)/
 

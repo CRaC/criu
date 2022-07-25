@@ -16,14 +16,14 @@
 #include "xmalloc.h"
 #include "page.h"
 
-#undef	LOG_PREFIX
+#undef LOG_PREFIX
 #define LOG_PREFIX "bfd: "
 
 /*
  * Kernel doesn't produce more than one page of
  * date per one read call on proc files.
  */
-#define BUFSIZE	(PAGE_SIZE)
+#define BUFSIZE (PAGE_SIZE)
 
 struct bfd_buf {
 	char *mem;
@@ -32,7 +32,7 @@ struct bfd_buf {
 
 static LIST_HEAD(bufs);
 
-#define BUFBATCH	(16)
+#define BUFBATCH (16)
 
 static int buf_get(struct xbuf *xb)
 {
@@ -42,8 +42,7 @@ static int buf_get(struct xbuf *xb)
 		void *mem;
 		int i;
 
-		mem = mmap(NULL, BUFBATCH * BUFSIZE, PROT_READ | PROT_WRITE,
-				MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
+		mem = mmap(NULL, BUFBATCH * BUFSIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
 		if (mem == MAP_FAILED) {
 			pr_perror("No buf");
 			return -1;
@@ -145,7 +144,7 @@ static int brefill(struct bfd *f)
 	memmove(b->mem, b->data, b->sz);
 	b->data = b->mem;
 
-	ret = read(f->fd, b->mem + b->sz, BUFSIZE - b->sz);
+	ret = read_all(f->fd, b->mem + b->sz, BUFSIZE - b->sz);
 	if (ret < 0) {
 		pr_perror("Error reading file");
 		return -1;
@@ -198,8 +197,7 @@ again:
 
 		if (b->sz == BUFSIZE) {
 			pr_err("The bfd buffer is too small\n");
-			ERR_PTR(-EIO);
-			return NULL;
+			return ERR_PTR(-EIO);
 		}
 		/*
 		 * Last bytes may lack the \n at the
@@ -242,7 +240,7 @@ static int bflush(struct bfd *bfd)
 	if (!b->sz)
 		return 0;
 
-	ret = write(bfd->fd, b->data, b->sz);
+	ret = write_all(bfd->fd, b->data, b->sz);
 	if (ret != b->sz)
 		return -1;
 
@@ -262,7 +260,7 @@ static int __bwrite(struct bfd *bfd, const void *buf, int size)
 	}
 
 	if (size > BUFSIZE)
-		return write(bfd->fd, buf, size);
+		return write_all(bfd->fd, buf, size);
 
 	memcpy(b->data + b->sz, buf, size);
 	b->sz += size;
@@ -272,7 +270,7 @@ static int __bwrite(struct bfd *bfd, const void *buf, int size)
 int bwrite(struct bfd *bfd, const void *buf, int size)
 {
 	if (!bfd_buffered(bfd))
-		return write(bfd->fd, buf, size);
+		return write_all(bfd->fd, buf, size);
 
 	return __bwrite(bfd, buf, size);
 }
@@ -281,8 +279,13 @@ int bwritev(struct bfd *bfd, const struct iovec *iov, int cnt)
 {
 	int i, written = 0;
 
-	if (!bfd_buffered(bfd))
+	if (!bfd_buffered(bfd)) {
+		/*
+		 * FIXME writev() should be called again if writev() writes
+		 * less bytes than requested.
+		 */
 		return writev(bfd->fd, iov, cnt);
+	}
 
 	for (i = 0; i < cnt; i++) {
 		int ret;
@@ -305,7 +308,7 @@ int bread(struct bfd *bfd, void *buf, int size)
 	int more = 1, filled = 0;
 
 	if (!bfd_buffered(bfd))
-		return read(bfd->fd, buf, size);
+		return read_all(bfd->fd, buf, size);
 
 	while (more > 0) {
 		int chunk;

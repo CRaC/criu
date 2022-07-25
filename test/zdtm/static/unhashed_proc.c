@@ -9,10 +9,10 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Chdir into unhashed proc entry";
-const char *test_author	= "Konstantin Khlebnikov <khlebnikov@openvz.org>";
+const char *test_doc = "Chdir into unhashed proc entry";
+const char *test_author = "Konstantin Khlebnikov <khlebnikov@openvz.org>";
 
-int main(int argc, char ** argv)
+int main(int argc, char **argv)
 {
 	int pid, len;
 	char cwd1[PATH_MAX], cwd2[PATH_MAX];
@@ -58,16 +58,16 @@ int main(int argc, char ** argv)
 	test_waitsig();
 
 	if (getcwd(cwd2, sizeof(cwd2))) {
-		fail("successful getcwd: %s\n", cwd2);
+		fail("successful getcwd: %s", cwd2);
 		exit(1);
 	} else if (errno != ENOENT) {
-		fail("wrong errno: %m\n");
+		fail("wrong errno");
 		exit(1);
 	}
 
-	len = readlink("/proc/self/cwd", cwd2, sizeof(cwd2)-1);
+	len = readlink("/proc/self/cwd", cwd2, sizeof(cwd2) - 1);
 	if (len < 0) {
-		fail("can't read cwd symlink %m\n");
+		fail("can't read cwd symlink");
 		exit(1);
 	}
 	cwd2[len] = 0;

@@ -18,33 +18,34 @@
 #include "file-ids.h"
 #include "namespaces.h"
 #include "shmem.h"
+#include "hugetlb.h"
 
 #include "protobuf.h"
 #include "images/memfd.pb-c.h"
 
-#define MEMFD_PREFIX "/memfd:"
-#define MEMFD_PREFIX_LEN (sizeof(MEMFD_PREFIX)-1)
+#define MEMFD_PREFIX	 "/memfd:"
+#define MEMFD_PREFIX_LEN (sizeof(MEMFD_PREFIX) - 1)
 
-#define F_SEAL_SEAL	0x0001	/* prevent further seals from being set */
-#define F_SEAL_SHRINK	0x0002	/* prevent file from shrinking */
-#define F_SEAL_GROW	0x0004	/* prevent file from growing */
-#define F_SEAL_WRITE	0x0008	/* prevent writes */
+#define F_SEAL_SEAL   0x0001 /* prevent further seals from being set */
+#define F_SEAL_SHRINK 0x0002 /* prevent file from shrinking */
+#define F_SEAL_GROW   0x0004 /* prevent file from growing */
+#define F_SEAL_WRITE  0x0008 /* prevent writes */
 /* Linux 5.1+ */
-#define F_SEAL_FUTURE_WRITE	0x0010  /* prevent future writes while mapped */
+#define F_SEAL_FUTURE_WRITE 0x0010 /* prevent future writes while mapped */
 
 struct memfd_dump_inode {
-	struct list_head	list;
-	u32			id;
-	u32			dev;
-	u32			ino;
+	struct list_head list;
+	u32 id;
+	u32 dev;
+	u32 ino;
 };
 
 struct memfd_restore_inode {
-	struct list_head	list;
-	mutex_t			lock;
-	int			fdstore_id;
-	unsigned int		pending_seals;
-	MemfdInodeEntry		*mie;
+	struct list_head list;
+	mutex_t lock;
+	int fdstore_id;
+	unsigned int pending_seals;
+	MemfdInodeEntry *mie;
 };
 
 static LIST_HEAD(memfd_inodes);
@@ -57,31 +58,25 @@ static u32 memfd_inode_ids = 1;
 
 int is_memfd(dev_t dev)
 {
-	/*
-	 * TODO When MAP_HUGETLB is used, the file device is not shmem_dev,
-	 * Note that other parts of CRIU have similar issues, see
-	 * is_anon_shmem_map().
-	 */
 	return dev == kdat.shmem_dev;
 }
 
-static int dump_memfd_inode(int fd, struct memfd_dump_inode *inode,
-			    const char *name, const struct stat *st)
+static int dump_memfd_inode(int fd, struct memfd_dump_inode *inode, const char *name, const struct stat *st)
 {
 	MemfdInodeEntry mie = MEMFD_INODE_ENTRY__INIT;
-	int ret = -1;
+	int ret = -1, flag;
 	u32 shmid;
 
-	 /*
-	  * shmids are chosen as the inode number of the corresponding mmaped
+	/*
+	  * shmids are chosen as the inode number of the corresponding mmapped
 	  * file. See handle_vma() in proc_parse.c.
 	  * It works for memfd too, because we share the same device as the
 	  * shmem device.
 	  */
 	shmid = inode->ino;
 
-	pr_info("Dumping memfd:%s contents (id %#x, shmid: %#x, size: %"PRIu64")\n",
-		name, inode->id, shmid, st->st_size);
+	pr_info("Dumping memfd:%s contents (id %#x, shmid: %#x, size: %" PRIu64 ")\n", name, inode->id, shmid,
+		st->st_size);
 
 	if (dump_one_memfd_shmem(fd, shmid, st->st_size) < 0)
 		goto out;
@@ -92,6 +87,10 @@ static int dump_memfd_inode(int fd, struct memfd_dump_inode *inode,
 	mie.name = (char *)name;
 	mie.size = st->st_size;
 	mie.shmid = shmid;
+	if (is_hugetlb_dev(inode->dev, &flag)) {
+		mie.has_hugetlb_flag = true;
+		mie.hugetlb_flag = flag | MFD_HUGETLB;
+	}
 
 	mie.seals = fcntl(fd, F_GET_SEALS);
 	if (mie.seals == -1)
@@ -106,8 +105,7 @@ out:
 	return ret;
 }
 
-static struct memfd_dump_inode *
-dump_unique_memfd_inode(int lfd, const char *name, const struct stat *st)
+static struct memfd_dump_inode *dump_unique_memfd_inode(int lfd, const char *name, const struct stat *st)
 {
 	struct memfd_dump_inode *inode;
 	int fd;
@@ -157,7 +155,7 @@ static int dump_one_memfd(int lfd, u32 id, const struct fd_parms *p)
 	} else
 		link = p->link;
 
-	strip_deleted(link);
+	link_strip_deleted(link);
 	/* link->name is always started with "." which has to be skipped.  */
 	if (strncmp(link->name + 1, MEMFD_PREFIX, MEMFD_PREFIX_LEN) == 0)
 		name = &link->name[1 + MEMFD_PREFIX_LEN];
@@ -189,19 +187,18 @@ int dump_one_memfd_cond(int lfd, u32 *id, struct fd_parms *parms)
 }
 
 const struct fdtype_ops memfd_dump_ops = {
-	.type		= FD_TYPES__MEMFD,
-	.dump		= dump_one_memfd,
+	.type = FD_TYPES__MEMFD,
+	.dump = dump_one_memfd,
 };
-
 
 /*
  * Restore only
  */
 
 struct memfd_info {
-	MemfdFileEntry			*mfe;
-	struct file_desc		d;
-	struct memfd_restore_inode	*inode;
+	MemfdFileEntry *mfe;
+	struct file_desc d;
+	struct memfd_restore_inode *inode;
 };
 
 static struct memfd_restore_inode *memfd_alloc_inode(int id)
@@ -261,6 +258,9 @@ static int memfd_open_inode_nocache(struct memfd_restore_inode *inode)
 		flags = MFD_ALLOW_SEALING;
 	}
 
+	if (mie->has_hugetlb_flag)
+		flags |= mie->hugetlb_flag;
+
 	fd = memfd_create(mie->name, flags);
 	if (fd < 0) {
 		pr_perror("Can't create memfd:%s", mie->name);
@@ -271,8 +271,7 @@ static int memfd_open_inode_nocache(struct memfd_restore_inode *inode)
 		goto out;
 
 	if (fchown(fd, mie->uid, mie->gid)) {
-		pr_perror("Can't change uid %d gid %d of memfd:%s",
-			  (int)mie->uid, (int)mie->gid, mie->name);
+		pr_perror("Can't change uid %d gid %d of memfd:%s", (int)mie->uid, (int)mie->gid, mie->name);
 		goto out;
 	}
 
@@ -332,7 +331,7 @@ int memfd_open(struct file_desc *d, u32 *fdflags)
 	 * O_LARGEFILE file flag with regular open(). It doesn't seem that
 	 * important though.
 	 */
-	_fd = __open_proc(getpid(), 0, flags, "fd/%d", fd);
+	_fd = __open_proc(PROC_SELF, 0, flags, "fd/%d", fd);
 	if (_fd < 0) {
 		pr_perror("Can't reopen memfd id=%d", mfe->id);
 		goto err;

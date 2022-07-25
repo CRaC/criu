@@ -1,9 +1,11 @@
+# FIXME: Replace with eclipse-temurin once Alpine support has been added.
+# https://github.com/adoptium/containers/pull/60
 FROM adoptopenjdk/openjdk8-openj9:alpine
+ARG CC=gcc
 
 RUN apk update && apk add \
 	bash \
 	build-base \
-	ccache \
 	coreutils \
 	git \
 	gnutls-dev \
@@ -24,7 +26,7 @@ RUN apk update && apk add \
 COPY . /criu
 WORKDIR /criu
 
-RUN make
+RUN make mrproper && make -j $(nproc) CC="$CC"
 
-ENTRYPOINT mvn -f test/javaTests/pom.xml test
+ENTRYPOINT mvn -q -f test/javaTests/pom.xml test
 

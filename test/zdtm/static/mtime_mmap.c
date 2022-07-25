@@ -11,13 +11,13 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc = "file mmaped for write and being written should change mtime\n"
-			"and be migrated with correct new data";
+const char *test_doc = "file mmapped for write and being written should change mtime\n"
+		       "and be migrated with correct new data";
 
 char *filename;
 TEST_OPTION(filename, string, "file name", 1);
 
-#define FILE_SIZE       (16 * 1024)
+#define FILE_SIZE (16 * 1024)
 
 int main(int argc, char **argv)
 {
@@ -27,8 +27,8 @@ int main(int argc, char **argv)
 	int i;
 	char *ptr;
 	struct stat fst;
-	time_t	mtime_old, mtime_new;
-	time_t	ctime_old, ctime_new;
+	time_t mtime_old, mtime_new;
+	time_t ctime_old, ctime_new;
 
 	test_init(argc, argv);
 
@@ -51,10 +51,9 @@ int main(int argc, char **argv)
 		goto failed;
 	}
 
-	ptr = (char *)mmap(NULL, count, PROT_READ | PROT_WRITE,
-			MAP_SHARED, fd, 0);
+	ptr = (char *)mmap(NULL, count, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (ptr == MAP_FAILED) {
-		pr_perror("mmap() Failed, errno=%d : %s", errno, strerror(errno));
+		pr_perror("mmap() failed");
 		goto failed;
 	}
 
@@ -66,29 +65,26 @@ int main(int argc, char **argv)
 		ptr[i]++;
 
 	if (munmap(ptr, count)) {
-		pr_perror("munmap Failed, errno=%d : %s", errno, strerror(errno));
+		pr_perror("munmap failed");
 		goto failed;
 	}
 
 	if (fstat(fd, &fst) < 0) {
-		pr_perror("can't get %s file info", filename);
+		pr_perror("fstat(%s) failed", filename);
 		goto failed;
 	}
-
 
 	mtime_new = fst.st_mtime;
 	/* time of last modification */
 	if (mtime_new <= mtime_old) {
-		fail("mtime %ld wasn't updated on mmapped %s file",
-			mtime_new, filename);
+		fail("mtime %ld wasn't updated on mmapped %s file", mtime_new, filename);
 		goto failed;
 	}
 
 	ctime_new = fst.st_ctime;
 	/* time of last status change */
 	if (ctime_new <= ctime_old) {
-		fail("time of last status change of %s file wasn't changed\n",
-			filename);
+		fail("time of last status change of %s file wasn't changed", filename);
 		goto failed;
 	}
 

@@ -12,11 +12,14 @@
 #include "xmalloc.h"
 #include "rst-malloc.h"
 #include "log.h"
+#include "util.h"
 
+/* clang-format off */
 static struct fdstore_desc {
 	int next_id;
 	mutex_t lock; /* to protect a peek offset */
 } *desc;
+/* clang-format on */
 
 int fdstore_init(void)
 {
@@ -52,7 +55,8 @@ int fdstore_init(void)
 	}
 
 	addr.sun_family = AF_UNIX;
-	addrlen = snprintf(addr.sun_path, sizeof(addr.sun_path), "X/criu-fdstore-%"PRIx64, st.st_ino);
+	addrlen = snprintf(addr.sun_path, sizeof(addr.sun_path), "X/criu-fdstore-%" PRIx64 "-%" PRIx64, st.st_ino,
+			   criu_run_id);
 	addrlen += sizeof(addr.sun_family);
 
 	addr.sun_path[0] = 0;
@@ -64,12 +68,12 @@ int fdstore_init(void)
 	 * a queue and remember its sequence number. Then we can set SO_PEEK_OFF
 	 * to get a file descriptor without dequeuing it.
 	 */
-	if (bind(sk, (struct sockaddr *) &addr, addrlen)) {
+	if (bind(sk, (struct sockaddr *)&addr, addrlen)) {
 		pr_perror("Unable to bind a socket");
 		close(sk);
 		return -1;
 	}
-	if (connect(sk, (struct sockaddr *) &addr, addrlen)) {
+	if (connect(sk, (struct sockaddr *)&addr, addrlen)) {
 		pr_perror("Unable to connect a socket");
 		close(sk);
 		return -1;
@@ -91,7 +95,7 @@ int fdstore_add(int fd)
 
 	ret = send_fd(sk, NULL, 0, fd);
 	if (ret) {
-		pr_perror("Can't send fd %d into store\n", fd);
+		pr_perror("Can't send fd %d into store", fd);
 		mutex_unlock(&desc->lock);
 		return -1;
 	}
@@ -105,8 +109,13 @@ int fdstore_add(int fd)
 
 int fdstore_get(int id)
 {
-	int sk = get_service_fd(FDSTORE_SK_OFF);
-	int fd;
+	int sk, fd;
+
+	sk = get_service_fd(FDSTORE_SK_OFF);
+	if (sk < 0) {
+		pr_err("Cannot get FDSTORE_SK_OFF fd\n");
+		return -1;
+	}
 
 	mutex_lock(&desc->lock);
 	if (setsockopt(sk, SOL_SOCKET, SO_PEEK_OFF, &id, sizeof(id))) {

@@ -21,9 +21,9 @@
 
 DECLARE_KCMP_TREE(fd_tree, KCMP_FILE);
 
-#define FDID_BITS	5
-#define FDID_SIZE	(1 << FDID_BITS)
-#define FDID_MASK	(FDID_SIZE - 1)
+#define FDID_BITS 5
+#define FDID_SIZE (1 << FDID_BITS)
+#define FDID_MASK (FDID_SIZE - 1)
 
 static inline int fdid_hashfn(unsigned int s_dev, unsigned long i_ino)
 {
@@ -63,11 +63,8 @@ static struct fd_id *fd_id_cache_lookup(struct fd_parms *p)
 	struct stat *st = &p->stat;
 	struct fd_id *fi;
 
-	for (fi = fd_id_cache[fdid_hashfn(st->st_dev, st->st_ino)];
-			fi; fi = fi->n)
-		if (fi->dev == st->st_dev &&
-		    fi->ino == st->st_ino &&
-		    fi->mnt_id == p->mnt_id)
+	for (fi = fd_id_cache[fdid_hashfn(st->st_dev, st->st_ino)]; fi; fi = fi->n)
+		if (fi->dev == st->st_dev && fi->ino == st->st_ino && fi->mnt_id == p->mnt_id)
 			return fi;
 
 	return NULL;
@@ -80,8 +77,14 @@ int fd_id_generate_special(struct fd_parms *p, u32 *id)
 
 		fi = fd_id_cache_lookup(p);
 		if (fi) {
-			*id = fi->id;
-			return 0;
+			if (p->stat.st_mode & (S_IFCHR | S_IFBLK)) {
+				/* Don't cache the id for mapped devices */
+				*id = fd_tree.subid++;
+				return 1;
+			} else {
+				*id = fi->id;
+				return 0;
+			}
 		}
 	}
 

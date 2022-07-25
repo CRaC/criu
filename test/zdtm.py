@@ -1,6 +1,10 @@
 #!/usr/bin/env python
-# vim: noet ts=8 sw=8 sts=8
-from __future__ import absolute_import, division, print_function, unicode_literals
+from __future__ import (
+    absolute_import,
+    division,
+    print_function,
+    unicode_literals
+)
 
 import argparse
 import atexit
@@ -15,6 +19,7 @@ import random
 import re
 import shutil
 import signal
+import socket
 import stat
 import string
 import struct
@@ -22,22 +27,23 @@ import subprocess
 import sys
 import tempfile
 import time
-from builtins import (input, int, open, range, str, zip)
-
-import pycriu as crpc
+import uuid
+from builtins import input, int, open, range, str, zip
 
 import yaml
 
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
+import pycriu as crpc
+from zdtm.criu_config import criu_config
+
+# File to store content of streamed images
+STREAMED_IMG_FILE_NAME = "img.criu"
 
 prev_line = None
+uuid = uuid.uuid4()
 
 
 def alarm(*args):
     print("==== ALARM ====")
-
-
-signal.signal(signal.SIGALRM, alarm)
 
 
 def traceit(f, e, a):
@@ -199,6 +205,8 @@ class ns_flavor:
 
     def __copy_libs(self, binary):
         ldd = subprocess.Popen(["ldd", binary], stdout=subprocess.PIPE)
+        stdout, _ = ldd.communicate()
+
         xl = re.compile(
             r'^(linux-gate.so|linux-vdso(64)?.so|not a dynamic|.*\s*ldd\s)')
 
@@ -213,10 +221,8 @@ class ns_flavor:
                     map(
                         lambda x: str(x).strip(),
                         filter(lambda x: str(x).startswith('\t'),
-                               ldd.stdout.read().decode(
+                               stdout.decode(
                                    'ascii').splitlines())))))
-
-        ldd.wait()
 
         for lib in libs:
             if not os.access(lib, os.F_OK):
@@ -328,8 +334,7 @@ def decode_flav(i):
 
 def tail(path):
     p = subprocess.Popen(['tail', '-n1', path], stdout=subprocess.PIPE)
-    out = p.stdout.readline()
-    p.wait()
+    out, _ = p.communicate()
     return out.decode()
 
 
@@ -558,7 +563,7 @@ class zdtm_test:
             opts += ["--root", self.__flavor.root]
         if test_flag(self.__desc, 'crlib'):
             opts += [
-                "-L",
+                "--libdir",
                 os.path.dirname(os.path.realpath(self.__name)) + '/lib'
             ]
         return opts
@@ -587,11 +592,12 @@ class zdtm_test:
             os.unlink(self.__pidfile())
 
     def print_output(self):
-        if os.access(self.__name + '.out', os.R_OK):
-            print("Test output: " + "=" * 32)
-            with open(self.__name + '.out') as output:
-                print(output.read())
-            print(" <<< " + "=" * 32)
+        for postfix in ['.out', '.out.inprogress']:
+            if os.access(self.__name + postfix, os.R_OK):
+                print("Test output: " + "=" * 32)
+                with open(self.__name + postfix) as output:
+                    print(output.read())
+                print(" <<< " + "=" * 32)
 
     def static(self):
         return self.__name.split('/')[1] == 'static'
@@ -605,18 +611,20 @@ class zdtm_test:
     @staticmethod
     def available():
         if not os.access("umount2", os.X_OK):
-            subprocess.check_call(["make", "umount2"])
+            subprocess.check_call(
+                ["make", "umount2"], env=dict(os.environ, MAKEFLAGS=""))
         if not os.access("zdtm_ct", os.X_OK):
-            subprocess.check_call(["make", "zdtm_ct"])
+            subprocess.check_call(
+                ["make", "zdtm_ct"], env=dict(os.environ, MAKEFLAGS=""))
         if not os.access("zdtm/lib/libzdtmtst.a", os.F_OK):
             subprocess.check_call(["make", "-C", "zdtm/"])
         subprocess.check_call(
-            ["flock", "zdtm_mount_cgroups.lock", "./zdtm_mount_cgroups"])
+            ["flock", "zdtm_mount_cgroups.lock", "./zdtm_mount_cgroups", str(uuid)])
 
     @staticmethod
     def cleanup():
         subprocess.check_call(
-            ["flock", "zdtm_mount_cgroups.lock", "./zdtm_umount_cgroups"])
+            ["flock", "zdtm_mount_cgroups.lock", "./zdtm_umount_cgroups", str(uuid)])
 
 
 def load_module_from_file(name, path):
@@ -798,7 +806,7 @@ class groups_test(zdtm_test):
         if flavor.ns:
             self.__real_name = name
             with open(name) as fd:
-                self.__subs = map(lambda x: x.strip(), fd.readlines())
+                self.__subs = list(map(lambda x: x.strip(), fd.readlines()))
             print("Subs:\n%s" % '\n'.join(self.__subs))
         else:
             self.__real_name = ''
@@ -816,8 +824,8 @@ class groups_test(zdtm_test):
         subprocess.check_call(s_args + [tname + '.cleanout'])
         s = subprocess.Popen(s_args + ['--dry-run', tname + '.pid'],
                              stdout=subprocess.PIPE)
-        cmd = s.stdout.readlines().pop().strip()
-        s.wait()
+        out, _ = s.communicate()
+        cmd = out.decode().splitlines()[-1].strip()
 
         return 'cd /' + tdir + ' && ' + cmd
 
@@ -888,18 +896,20 @@ class criu_rpc_process:
 
 
 class criu_rpc:
+    pidfd_store_socket = None
+
     @staticmethod
     def __set_opts(criu, args, ctx):
         while len(args) != 0:
             arg = args.pop(0)
-            if "-v4" == arg:
+            if "--verbosity=4" == arg:
                 criu.opts.log_level = 4
-            elif "-o" == arg:
+            elif "--log-file" == arg:
                 criu.opts.log_file = args.pop(0)
-            elif "-D" == arg:
+            elif "--images-dir" == arg:
                 criu.opts.images_dir_fd = os.open(args.pop(0), os.O_DIRECTORY)
                 ctx['imgd'] = criu.opts.images_dir_fd
-            elif "-t" == arg:
+            elif "--tree" == arg:
                 criu.opts.pid = int(args.pop(0))
             elif "--pidfile" == arg:
                 ctx['pidf'] = args.pop(0)
@@ -941,6 +951,12 @@ class criu_rpc:
                 fd, key = key.split(":", 1)
                 inhfd.fd = int(fd[3:-1])
                 inhfd.key = key
+            elif "--pidfd-store" == arg:
+                if criu_rpc.pidfd_store_socket is None:
+                    criu_rpc.pidfd_store_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                criu.opts.pidfd_store_sk = criu_rpc.pidfd_store_socket.fileno()
+            elif "--mntns-compat-mode" == arg:
+                criu.opts.mntns_compat_mode = True
             else:
                 raise test_fail_exc('RPC for %s(%s) required' % (arg, args.pop(0)))
 
@@ -959,7 +975,7 @@ class criu_rpc:
         if preexec:
             raise test_fail_exc('RPC and PREEXEC not supported')
 
-        ctx = {}  # Object used to keep info untill action is done
+        ctx = {}  # Object used to keep info until action is done
         criu = crpc.criu()
         criu.use_binary(criu_bin)
         criu_rpc.__set_opts(criu, args, ctx)
@@ -1024,37 +1040,51 @@ class criu:
         self.__mdedup = bool(opts['noauto_dedup'])
         self.__user = bool(opts['user'])
         self.__leave_stopped = bool(opts['stop'])
-        self.__criu = (opts['rpc'] and criu_rpc or criu_cli)
+        self.__stream = bool(opts['stream'])
         self.__show_stats = bool(opts['show_stats'])
         self.__lazy_pages_p = None
         self.__page_server_p = None
         self.__dump_process = None
+        self.__img_streamer_process = None
         self.__tls = self.__tls_options() if opts['tls'] else []
         self.__criu_bin = opts['criu_bin']
         self.__crit_bin = opts['crit_bin']
         self.__pre_dump_mode = opts['pre_dump_mode']
+        self.__mntns_compat_mode = bool(opts['mntns_compat_mode'])
+
+        if opts['rpc']:
+            self.__criu = criu_rpc
+        elif opts['criu_config']:
+            self.__criu = criu_config
+        else:
+            self.__criu = criu_cli
 
     def fini(self):
         if self.__lazy_migrate:
             ret = self.__dump_process.wait()
         if self.__lazy_pages_p:
             ret = self.__lazy_pages_p.wait()
-            grep_errors(os.path.join(self.__ddir(), "lazy-pages.log"))
+            grep_errors(os.path.join(self.__ddir(), "lazy-pages.log"), err=ret)
             self.__lazy_pages_p = None
             if ret:
                 raise test_fail_exc("criu lazy-pages exited with %s" % ret)
         if self.__page_server_p:
             ret = self.__page_server_p.wait()
-            grep_errors(os.path.join(self.__ddir(), "page-server.log"))
+            grep_errors(os.path.join(self.__ddir(), "page-server.log"), err=ret)
             self.__page_server_p = None
             if ret:
                 raise test_fail_exc("criu page-server exited with %s" % ret)
         if self.__dump_process:
             ret = self.__dump_process.wait()
-            grep_errors(os.path.join(self.__ddir(), "dump.log"))
+            grep_errors(os.path.join(self.__ddir(), "dump.log"), err=ret)
             self.__dump_process = None
             if ret:
                 raise test_fail_exc("criu dump exited with %s" % ret)
+        if self.__img_streamer_process:
+            ret = self.wait_for_criu_image_streamer()
+            if ret:
+                raise test_fail_exc("criu-image-streamer exited with %s" % ret)
+
         return
 
     def logs(self):
@@ -1100,7 +1130,8 @@ class criu:
         if not log:
             log = action + ".log"
 
-        s_args = ["-o", log, "-D", self.__ddir(), "-v4"] + opts
+        s_args = ["--log-file", log, "--images-dir", self.__ddir(),
+                  "--verbosity=4"] + opts
 
         with open(os.path.join(self.__ddir(), action + '.cropt'), 'w') as f:
             f.write(' '.join(s_args) + '\n')
@@ -1208,10 +1239,20 @@ class criu:
             stats_written = int(stent['shpages_written']) + int(
                 stent['pages_written'])
 
+        if self.__stream:
+            self.spawn_criu_image_streamer("extract")
+            ret = self.wait_for_criu_image_streamer()
+            if ret:
+                raise test_fail_exc("criu-image-streamer (extract) exited with %s" % ret)
+
         real_written = 0
         for f in os.listdir(self.__ddir()):
             if f.startswith('pages-'):
                 real_written += os.path.getsize(os.path.join(self.__ddir(), f))
+
+        if self.__stream:
+            # make sure the extracted image is not usable.
+            os.unlink(os.path.join(self.__ddir(), "inventory.img"))
 
         r_pages = real_written / mmap.PAGESIZE
         r_off = real_written % mmap.PAGESIZE
@@ -1220,12 +1261,75 @@ class criu:
                   (stats_written, r_pages, r_off))
             raise test_fail_exc("page counts mismatch")
 
+    # action can be "capture", "extract", or "serve"
+    def spawn_criu_image_streamer(self, action):
+        print("Run criu-image-streamer in {} mode".format(action))
+
+        progress_r, progress_w = os.pipe()
+        # We fcntl() on both file descriptors due to some potential differences
+        # with python2 and python3.
+        fcntl.fcntl(progress_r, fcntl.F_SETFD, fcntl.FD_CLOEXEC)
+        fcntl.fcntl(progress_w, fcntl.F_SETFD, 0)
+
+        # We use cat because the streamer requires to work with pipes.
+        if action == 'capture':
+            cmd = ["criu-image-streamer",
+                   "--images-dir '{images_dir}'",
+                   "--progress-fd {progress_fd}",
+                   action,
+                   "| cat > {img_file}"]
+        else:
+            cmd = ["cat {img_file} |",
+                   "criu-image-streamer",
+                   "--images-dir '{images_dir}'",
+                   "--progress-fd {progress_fd}",
+                   action]
+
+        log = open(os.path.join(self.__ddir(), "img-streamer.log"), "w")
+
+        # * As we are using a shell pipe command, we want to use pipefail.
+        # Otherwise, failures stay unnoticed. For this, we use bash as sh
+        # doesn't support that feature.
+        # * We use close_fds=False because we want the child to inherit the progress pipe
+        p = subprocess.Popen(["bash", "-c", "set -o pipefail; " + " ".join(cmd).format(
+            progress_fd=progress_w,
+            images_dir=self.__ddir(),
+            img_file=os.path.join(self.__ddir(), STREAMED_IMG_FILE_NAME)
+        )], stderr=log, close_fds=False)
+
+        log.close()
+
+        os.close(progress_w)
+        progress = os.fdopen(progress_r, "r")
+
+        if action == 'serve' or action == 'extract':
+            # Consume image statistics
+            progress.readline()
+
+        if action == 'capture' or action == 'serve':
+            # The streamer socket is ready for consumption once we receive the
+            # socket-init message.
+            if progress.readline().strip() != "socket-init":
+                p.kill()
+                raise test_fail_exc(
+                    "criu-image-streamer is not starting (exit_code=%d)" % p.wait())
+
+        progress.close()
+
+        self.__img_streamer_process = p
+
+    def wait_for_criu_image_streamer(self):
+        ret = self.__img_streamer_process.wait()
+        grep_errors(os.path.join(self.__ddir(), "img-streamer.log"))
+        self.__img_streamer_process = None
+        return ret
+
     def dump(self, action, opts=[]):
         self.__iter += 1
         os.mkdir(self.__ddir())
         os.chmod(self.__ddir(), 0o777)
 
-        a_opts = ["-t", self.__test.getpid()]
+        a_opts = ["--tree", self.__test.getpid()]
         if self.__prev_dump_iter:
             a_opts += [
                 "--prev-images-dir",
@@ -1248,6 +1352,10 @@ class criu:
             ] + self.__tls
 
         a_opts += self.__test.getdopts()
+
+        if self.__stream:
+            self.spawn_criu_image_streamer("capture")
+            a_opts += ["--stream"]
 
         if self.__dedup:
             a_opts += ["--auto-dedup"]
@@ -1273,6 +1381,11 @@ class criu:
         self.__dump_process = self.__criu_act(action,
                                               opts=a_opts + opts,
                                               nowait=nowait)
+        if self.__stream:
+            ret = self.wait_for_criu_image_streamer()
+            if ret:
+                raise test_fail_exc("criu-image-streamer (capture) exited with %d" % ret)
+
         if self.__mdedup and self.__iter > 1:
             self.__criu_act("dedup", opts=[])
 
@@ -1285,7 +1398,7 @@ class criu:
 
         if self.__page_server_p:
             ret = self.__page_server_p.wait()
-            grep_errors(os.path.join(self.__ddir(), "page-server.log"))
+            grep_errors(os.path.join(self.__ddir(), "page-server.log"), err=ret)
             self.__page_server_p = None
             if ret:
                 raise test_fail_exc("criu page-server exited with %d" % ret)
@@ -1302,6 +1415,10 @@ class criu:
         if self.__empty_ns:
             r_opts += ['--empty-ns', 'net']
             r_opts += ['--action-script', os.getcwd() + '/empty-netns-prep.sh']
+
+        if self.__stream:
+            self.spawn_criu_image_streamer("serve")
+            r_opts += ["--stream"]
 
         if self.__dedup:
             r_opts += ["--auto-dedup"]
@@ -1332,10 +1449,18 @@ class criu:
                                                   nowait=True)
             r_opts += ["--lazy-pages"]
 
+        if self.__mntns_compat_mode:
+            r_opts = ['--mntns-compat-mode'] + r_opts
+
         if self.__leave_stopped:
             r_opts += ['--leave-stopped']
 
         self.__criu_act("restore", opts=r_opts + ["--restore-detached"])
+        if self.__stream:
+            ret = self.wait_for_criu_image_streamer()
+            if ret:
+                raise test_fail_exc("criu-image-streamer (serve) exited with %d" % ret)
+
         self.show_stats("restore")
 
         if self.__leave_stopped:
@@ -1344,8 +1469,16 @@ class criu:
 
     @staticmethod
     def check(feature):
+        if feature == 'stream':
+            try:
+                p = subprocess.Popen(["criu-image-streamer", "--version"])
+                return p.wait() == 0
+            except Exception:
+                return False
+
         return criu_cli.run(
-            "check", ["--no-default-config", "-v0", "--feature", feature],
+            "check",
+            ["--no-default-config", "--verbosity=0", "--feature", feature],
             opts['criu_bin']) == 0
 
     @staticmethod
@@ -1359,19 +1492,23 @@ class criu:
             self.__lazy_pages_p.terminate()
             print("criu lazy-pages exited with %s" %
                   self.__lazy_pages_p.wait())
-            grep_errors(os.path.join(self.__ddir(), "lazy-pages.log"))
+            grep_errors(os.path.join(self.__ddir(), "lazy-pages.log"), err=True)
             self.__lazy_pages_p = None
         if self.__page_server_p:
             self.__page_server_p.terminate()
             print("criu page-server exited with %s" %
                   self.__page_server_p.wait())
-            grep_errors(os.path.join(self.__ddir(), "page-server.log"))
+            grep_errors(os.path.join(self.__ddir(), "page-server.log"), err=True)
             self.__page_server_p = None
         if self.__dump_process:
             self.__dump_process.terminate()
             print("criu dump exited with %s" % self.__dump_process.wait())
-            grep_errors(os.path.join(self.__ddir(), "dump.log"))
+            grep_errors(os.path.join(self.__ddir(), "dump.log"), err=True)
             self.__dump_process = None
+        if self.__img_streamer_process:
+            self.__img_streamer_process.terminate()
+            ret = self.wait_for_criu_image_streamer()
+            print("criu-image-streamer exited with %s" % ret)
 
 
 def try_run_hook(test, args):
@@ -1400,7 +1537,7 @@ def init_sbs():
 
 def sbs(what):
     if do_sbs:
-        input("Pause at %s. Press Enter to continue." % what)
+        input("Pause %s. Press Enter to continue." % what)
 
 
 #
@@ -1419,17 +1556,19 @@ def cr(cr_api, test, opts):
 
     iters = iter_parm(opts['iters'], 1)
     for i in iters[0]:
-        pres = iter_parm(opts['pre'], 0)
-        for p in pres[0]:
+        pre = iter_parm(opts['pre'], 0)
+        for p in pre[0]:
             if opts['snaps']:
+                sbs('before snap %d' % p)
                 cr_api.dump("dump", opts=["--leave-running", "--track-mem"])
             else:
+                sbs('before pre-dump %d' % p)
                 cr_api.dump("pre-dump")
                 try_run_hook(test, ["--post-pre-dump"])
                 test.pre_dump_notify()
-            time.sleep(pres[1])
+            time.sleep(pre[1])
 
-        sbs('pre-dump')
+        sbs('before dump')
 
         os.environ["ZDTM_TEST_PID"] = str(test.getpid())
         if opts['norst']:
@@ -1442,13 +1581,13 @@ def cr(cr_api, test, opts):
                 test.gone()
             else:
                 test.unlink_pidfile()
-            sbs('pre-restore')
+            sbs('before restore')
             try_run_hook(test, ["--pre-restore"])
             cr_api.restore()
             os.environ["ZDTM_TEST_PID"] = str(test.getpid())
             os.environ["ZDTM_IMG_DIR"] = cr_api.logs()
             try_run_hook(test, ["--post-restore"])
-            sbs('post-restore')
+            sbs('after restore')
 
         time.sleep(iters[1])
 
@@ -1579,6 +1718,37 @@ class noop_freezer:
         return []
 
 
+class cg_freezer2:
+    def __init__(self, path, state):
+        self.__path = '/sys/fs/cgroup/' + path
+        self.__state = state
+        self.kernel = True
+
+    def attach(self):
+        if not os.access(self.__path, os.F_OK):
+            os.makedirs(self.__path)
+        with open(self.__path + '/cgroup.procs', 'w') as f:
+            f.write('0')
+
+    def __set_state(self, state):
+        with open(self.__path + '/cgroup.freeze', 'w') as f:
+            f.write(state)
+
+    def freeze(self):
+        if self.__state.startswith('f'):
+            self.__set_state('1')
+
+    def thaw(self):
+        if self.__state.startswith('f'):
+            self.__set_state('0')
+
+    def getdopts(self):
+        return ['--freeze-cgroup', self.__path, '--manage-cgroups']
+
+    def getropts(self):
+        return ['--manage-cgroups']
+
+
 class cg_freezer:
     def __init__(self, path, state):
         self.__path = '/sys/fs/cgroup/freezer/' + path
@@ -1615,7 +1785,11 @@ def get_freezer(desc):
         return noop_freezer()
 
     fd = desc.split(':')
-    fr = cg_freezer(path=fd[0], state=fd[1])
+
+    if os.access("/sys/fs/cgroup/user.slice/cgroup.procs", os .F_OK):
+        fr = cg_freezer2(path=fd[0], state=fd[1])
+    else:
+        fr = cg_freezer(path=fd[0], state=fd[1])
     return fr
 
 
@@ -1781,7 +1955,7 @@ class Launcher:
 
         if opts['report'] and (opts['keep_going'] or self.__total == 1):
             global TestSuite, TestCase
-            from junit_xml import TestSuite, TestCase
+            from junit_xml import TestCase, TestSuite
             now = datetime.datetime.now()
             att = 0
             reportname = os.path.join(report_dir, "criu-testreport.tap")
@@ -1809,7 +1983,7 @@ class Launcher:
             self.__taint = taintfd.read()
         if int(self.__taint, 0) != 0:
             print("The kernel is tainted: %r" % self.__taint)
-            if not opts["ignore_taint"]:
+            if not opts["ignore_taint"] and os.getenv("ZDTM_IGNORE_TAINT") != '1':
                 raise Exception("The kernel is tainted: %r" % self.__taint)
 
     def __show_progress(self, msg):
@@ -1842,7 +2016,22 @@ class Launcher:
             raise Exception("The kernel is tainted: %r (%r)" %
                             (taint, self.__taint))
 
-        if test_flag(desc, 'excl'):
+        '''
+        The option --link-remap allows criu to hardlink open files back to the
+        file-system on dump (should be removed on restore) and we have a sanity
+        check in check_visible_state that they were actually removed at least
+        from the root test directory after restore.
+
+        As zdtm runs all tests from the same cwd (e.g.: test/zdtm/static) in
+        parallel, hardlinks from one test can mess up with sanity checks of
+        another test or even one test can by mistake use hardlinks created by
+        another test which is even worse.
+
+        So let's make all tests using --link-remap option non parallel.
+        '''
+        link_remap_excl = '--link-remap' in desc.get('opts', '').split() + desc.get('dopts', '').split() + desc.get('ropts', '').split()
+
+        if test_flag(desc, 'excl') or link_remap_excl:
             self.wait_all()
 
         self.__nr += 1
@@ -1850,10 +2039,10 @@ class Launcher:
 
         nd = ('nocr', 'norst', 'pre', 'iters', 'page_server', 'sibling',
               'stop', 'empty_ns', 'fault', 'keep_img', 'report', 'snaps',
-              'sat', 'script', 'rpc', 'lazy_pages', 'join_ns', 'dedup', 'sbs',
-              'freezecg', 'user', 'dry_run', 'noauto_dedup',
-              'remote_lazy_pages', 'show_stats', 'lazy_migrate',
-              'tls', 'criu_bin', 'crit_bin', 'pre_dump_mode')
+              'sat', 'script', 'rpc', 'criu_config', 'lazy_pages', 'join_ns',
+              'dedup', 'sbs', 'freezecg', 'user', 'dry_run', 'noauto_dedup',
+              'remote_lazy_pages', 'show_stats', 'lazy_migrate', 'stream',
+              'tls', 'criu_bin', 'crit_bin', 'pre_dump_mode', 'mntns_compat_mode')
         arg = repr((name, desc, flavor, {d: self.__opts[d] for d in nd}))
 
         if self.__use_log:
@@ -1875,7 +2064,10 @@ class Launcher:
             "start": time.time()
         }
 
-        if test_flag(desc, 'excl'):
+        if log:
+            log.close()
+
+        if test_flag(desc, 'excl') or link_remap_excl:
             self.wait()
 
     def __wait_one(self, flags):
@@ -1898,6 +2090,9 @@ class Launcher:
         self.__runtest += 1
         if pid != 0:
             sub = self.__subs.pop(pid)
+            # The following wait() is not useful for our domain logic.
+            # It's useful for taming warnings in subprocess.Popen.__del__()
+            sub['sub'].wait()
             tc = None
             if self.__junit_test_cases is not None:
                 tc = TestCase(sub['name'],
@@ -1998,9 +2193,9 @@ def all_tests(opts):
                 continue
             files.append(fp)
     excl = list(map(lambda x: os.path.join(desc['dir'], x), desc['exclude']))
-    tlist = filter(
+    tlist = list(filter(
         lambda x: not x.endswith('.checkskip') and not x.endswith('.hook') and
-        x not in excl, map(lambda x: x.strip(), files))
+        x not in excl, map(lambda x: x.strip(), files)))
     return tlist
 
 
@@ -2042,16 +2237,16 @@ def print_error(line):
     return False
 
 
-def grep_errors(fname):
+def grep_errors(fname, err=False):
     first = True
     print_next = False
     before = []
     with open(fname, errors='replace') as fd:
-        for l in fd:
-            before.append(l)
+        for line in fd:
+            before.append(line)
             if len(before) > 5:
                 before.pop(0)
-            if "Error" in l or "Warn" in l:
+            if "Error" in line or "Warn" in line:
                 if first:
                     print_fname(fname, 'log')
                     print_sep("grep Error", "-", 60)
@@ -2061,8 +2256,19 @@ def grep_errors(fname):
                 before = []
             else:
                 if print_next:
-                    print_next = print_error(l)
+                    print_next = print_error(line)
                     before = []
+
+    # If process failed but there are no errors in log,
+    # let's just print the log tail, probably it would
+    # be helpful.
+    if err and first:
+        print_fname(fname, 'log')
+        print_sep("grep Error (no)", "-", 60)
+        first = False
+        for i in before:
+            print_next = print_error(i)
+
     if not first:
         print_sep("ERROR OVER", "-", 60)
 
@@ -2137,6 +2343,15 @@ def run_tests(opts):
             print(
                 "[WARNING] Non-cooperative UFFD is missing, some tests might spuriously fail"
             )
+
+    if opts['stream']:
+        streamer_dir = os.path.realpath(opts['criu_image_streamer_dir'])
+        os.environ['PATH'] = "{}:{}".format(streamer_dir, os.environ['PATH'])
+        if not criu.check('stream'):
+            raise RuntimeError((
+                "Streaming tests need the criu-image-streamer binary to be accessible in the {} directory. " +
+                "Specify --criu-image-streamer-dir or modify PATH to provide an alternate location")
+                .format(streamer_dir))
 
     launcher = Launcher(opts, len(torun))
     try:
@@ -2313,19 +2528,19 @@ class group:
         self.__dump_meta(fname, '.hook')
 
 
-def group_tests(opts):
+def group_tests(cli_opts):
     excl = None
     groups = []
     pend_groups = []
-    maxs = int(opts['max_size'])
+    maxs = int(cli_opts['max_size'])
 
     if not os.access("groups", os.F_OK):
         os.mkdir("groups")
 
-    tlist = all_tests(opts)
+    tlist = all_tests(cli_opts)
     random.shuffle(tlist)
-    if opts['exclude']:
-        excl = re.compile(".*(" + "|".join(opts['exclude']) + ")")
+    if cli_opts['exclude']:
+        excl = re.compile(".*(" + "|".join(cli_opts['exclude']) + ")")
         print("Compiled exclusion list")
 
     for t in tlist:
@@ -2347,7 +2562,7 @@ def group_tests(opts):
     groups += pend_groups
 
     nr = 0
-    suf = opts['name'] or 'group'
+    suf = cli_opts['name'] or 'group'
 
     for g in groups:
         if maxs > 1 and g.size() == 1:  # Not much point in group test for this
@@ -2368,176 +2583,219 @@ def clean_stuff(opts):
             f.clean()
 
 
-#
-# main() starts here
-#
+def set_nr_hugepages(nr):
+    try:
+        orig_hugepages = 0
+        with open("/proc/sys/vm/nr_hugepages", "r") as f:
+            orig_hugepages = int(f.read())
+        with open("/proc/sys/vm/nr_hugepages", "w") as f:
+            f.write("{}\n".format(nr))
+        return orig_hugepages
+    except OSError as err:
+        if err.errno != errno.EOPNOTSUPP:
+            raise
 
-if 'CR_CT_TEST_INFO' in os.environ:
-    # Fork here, since we're new pidns init and are supposed to
-    # collect this namespace's zombies
-    status = 0
-    pid = os.fork()
-    if pid == 0:
-        tinfo = eval(os.environ['CR_CT_TEST_INFO'])
-        do_run_test(tinfo[0], tinfo[1], tinfo[2], tinfo[3])
-    else:
-        while True:
-            wpid, status = os.wait()
-            if wpid == pid:
-                if os.WIFEXITED(status):
-                    status = os.WEXITSTATUS(status)
-                else:
-                    status = 1
-                break
+    return 0
 
-    sys.exit(status)
 
-p = argparse.ArgumentParser("CRIU test suite")
-p.add_argument("--debug",
-               help="Print what's being executed",
-               action='store_true')
-p.add_argument("--set", help="Which set of tests to use", default='zdtm')
+def get_cli_args():
+    """
+    Parse command-line arguments
+    """
+    p = argparse.ArgumentParser("CRIU test suite")
+    p.add_argument("--debug",
+                   help="Print what's being executed",
+                   action='store_true')
+    p.add_argument("--set", help="Which set of tests to use", default='zdtm')
 
-sp = p.add_subparsers(help="Use --help for list of actions")
+    sp = p.add_subparsers(help="Use --help for list of actions")
 
-rp = sp.add_parser("run", help="Run test(s)")
-rp.set_defaults(action=run_tests)
-rp.add_argument("-a", "--all", action='store_true')
-rp.add_argument("-t", "--test", help="Test name", action='append')
-rp.add_argument("-T", "--tests", help="Regexp")
-rp.add_argument("-F", "--from", help="From file")
-rp.add_argument("-f", "--flavor", help="Flavor to run")
-rp.add_argument("-x",
-                "--exclude",
-                help="Exclude tests from --all run",
-                action='append')
+    rp = sp.add_parser("run", help="Run test(s)")
+    rp.set_defaults(action=run_tests)
+    rp.add_argument("-a", "--all", action='store_true')
+    rp.add_argument("-t", "--test", help="Test name", action='append')
+    rp.add_argument("-T", "--tests", help="Regexp")
+    rp.add_argument("-F", "--from", help="From file")
+    rp.add_argument("-f", "--flavor", help="Flavor to run")
+    rp.add_argument("-x",
+                    "--exclude",
+                    help="Exclude tests from --all run",
+                    action='append')
 
-rp.add_argument("--sibling",
-                help="Restore tests as siblings",
-                action='store_true')
-rp.add_argument("--join-ns",
-                help="Restore tests and join existing namespace",
-                action='store_true')
-rp.add_argument("--empty-ns",
-                help="Restore tests in empty net namespace",
-                action='store_true')
-rp.add_argument("--pre", help="Do some pre-dumps before dump (n[:pause])")
-rp.add_argument("--snaps",
-                help="Instead of pre-dumps do full dumps",
-                action='store_true')
-rp.add_argument("--dedup",
-                help="Auto-deduplicate images on iterations",
-                action='store_true')
-rp.add_argument("--noauto-dedup",
-                help="Manual deduplicate images on iterations",
-                action='store_true')
-rp.add_argument("--nocr",
-                help="Do not CR anything, just check test works",
-                action='store_true')
-rp.add_argument("--norst",
-                help="Don't restore tasks, leave them running after dump",
-                action='store_true')
-rp.add_argument("--stop",
-                help="Check that --leave-stopped option stops ps tree.",
-                action='store_true')
-rp.add_argument("--iters",
-                help="Do CR cycle several times before check (n[:pause])")
-rp.add_argument("--fault", help="Test fault injection")
-rp.add_argument(
-    "--sat",
-    help="Generate criu strace-s for sat tool (restore is fake, images are kept)",
-    action='store_true')
-rp.add_argument(
-    "--sbs",
-    help="Do step-by-step execution, asking user for keypress to continue",
-    action='store_true')
-rp.add_argument("--freezecg", help="Use freeze cgroup (path:state)")
-rp.add_argument("--user", help="Run CRIU as regular user", action='store_true')
-rp.add_argument("--rpc",
-                help="Run CRIU via RPC rather than CLI",
-                action='store_true')
+    rp.add_argument("--sibling",
+                    help="Restore tests as siblings",
+                    action='store_true')
+    rp.add_argument("--join-ns",
+                    help="Restore tests and join existing namespace",
+                    action='store_true')
+    rp.add_argument("--empty-ns",
+                    help="Restore tests in empty net namespace",
+                    action='store_true')
+    rp.add_argument("--pre", help="Do some pre-dumps before dump (n[:pause])")
+    rp.add_argument("--snaps",
+                    help="Instead of pre-dumps do full dumps",
+                    action='store_true')
+    rp.add_argument("--dedup",
+                    help="Auto-deduplicate images on iterations",
+                    action='store_true')
+    rp.add_argument("--noauto-dedup",
+                    help="Manual deduplicate images on iterations",
+                    action='store_true')
+    rp.add_argument("--nocr",
+                    help="Do not CR anything, just check test works",
+                    action='store_true')
+    rp.add_argument("--norst",
+                    help="Don't restore tasks, leave them running after dump",
+                    action='store_true')
+    rp.add_argument("--stop",
+                    help="Check that --leave-stopped option stops ps tree.",
+                    action='store_true')
+    rp.add_argument("--iters",
+                    help="Do CR cycle several times before check (n[:pause])")
+    rp.add_argument("--fault", help="Test fault injection")
+    rp.add_argument(
+        "--sat",
+        help="Generate criu strace-s for sat tool (restore is fake, images are kept)",
+        action='store_true')
+    rp.add_argument(
+        "--sbs",
+        help="Do step-by-step execution, asking user for keypress to continue",
+        action='store_true')
+    rp.add_argument("--freezecg", help="Use freeze cgroup (path:state)")
+    rp.add_argument("--user", help="Run CRIU as regular user",
+                    action='store_true')
+    rp.add_argument("--rpc",
+                    help="Run CRIU via RPC rather than CLI",
+                    action='store_true')
 
-rp.add_argument("--page-server",
-                help="Use page server dump",
-                action='store_true')
-rp.add_argument("--remote",
-                help="Use remote option for diskless C/R",
-                action='store_true')
-rp.add_argument("-p", "--parallel", help="Run test in parallel")
-rp.add_argument("--dry-run",
-                help="Don't run tests, just pretend to",
-                action='store_true')
-rp.add_argument("--script", help="Add script to get notified by criu")
-rp.add_argument("-k",
-                "--keep-img",
-                help="Whether or not to keep images after test",
-                choices=['always', 'never', 'failed'],
-                default='failed')
-rp.add_argument("--report", help="Generate summary report in directory")
-rp.add_argument("--keep-going",
-                help="Keep running tests in spite of failures",
-                action='store_true')
-rp.add_argument("--ignore-taint",
-                help="Don't care about a non-zero kernel taint flag",
-                action='store_true')
-rp.add_argument("--lazy-pages",
-                help="restore pages on demand",
-                action='store_true')
-rp.add_argument("--lazy-migrate",
-                help="restore pages on demand",
-                action='store_true')
-rp.add_argument("--remote-lazy-pages",
-                help="simulate lazy migration",
-                action='store_true')
-rp.add_argument("--tls", help="use TLS for migration", action='store_true')
-rp.add_argument("--title", help="A test suite title", default="criu")
-rp.add_argument("--show-stats",
-                help="Show criu statistics",
-                action='store_true')
-rp.add_argument("--criu-bin",
-                help="Path to criu binary",
-                default='../criu/criu')
-rp.add_argument("--crit-bin",
-                help="Path to crit binary",
-                default='../crit/crit')
-rp.add_argument("--pre-dump-mode",
-                help="Use splice or read mode of pre-dumping",
-                choices=['splice', 'read'],
-                default='splice')
+    rp.add_argument("--criu-config",
+                    help="Use config file to set CRIU options",
+                    action='store_true')
+    rp.add_argument("--page-server",
+                    help="Use page server dump",
+                    action='store_true')
+    rp.add_argument("--stream",
+                    help="Use criu-image-streamer",
+                    action='store_true')
+    rp.add_argument("-p", "--parallel", help="Run test in parallel")
+    rp.add_argument("--dry-run",
+                    help="Don't run tests, just pretend to",
+                    action='store_true')
+    rp.add_argument("--script", help="Add script to get notified by criu")
+    rp.add_argument("-k",
+                    "--keep-img",
+                    help="Whether or not to keep images after test",
+                    choices=['always', 'never', 'failed'],
+                    default='failed')
+    rp.add_argument("--report", help="Generate summary report in directory")
+    rp.add_argument("--keep-going",
+                    help="Keep running tests in spite of failures",
+                    action='store_true')
+    rp.add_argument("--ignore-taint",
+                    help="Don't care about a non-zero kernel taint flag",
+                    action='store_true')
+    rp.add_argument("--lazy-pages",
+                    help="restore pages on demand",
+                    action='store_true')
+    rp.add_argument("--lazy-migrate",
+                    help="restore pages on demand",
+                    action='store_true')
+    rp.add_argument("--remote-lazy-pages",
+                    help="simulate lazy migration",
+                    action='store_true')
+    rp.add_argument("--tls", help="use TLS for migration", action='store_true')
+    rp.add_argument("--title", help="A test suite title", default="criu")
+    rp.add_argument("--show-stats",
+                    help="Show criu statistics",
+                    action='store_true')
+    rp.add_argument("--criu-bin",
+                    help="Path to criu binary",
+                    default='../criu/criu')
+    rp.add_argument("--crit-bin",
+                    help="Path to crit binary",
+                    default='../crit/crit')
+    rp.add_argument("--criu-image-streamer-dir",
+                    help="Directory where the criu-image-streamer binary is located",
+                    default="../../criu-image-streamer")
+    rp.add_argument("--pre-dump-mode",
+                    help="Use splice or read mode of pre-dumping",
+                    choices=['splice', 'read'],
+                    default='splice')
+    rp.add_argument("--mntns-compat-mode",
+                    help="Use old compat mounts restore engine",
+                    action='store_true')
 
-lp = sp.add_parser("list", help="List tests")
-lp.set_defaults(action=list_tests)
-lp.add_argument('-i',
-                '--info',
-                help="Show more info about tests",
-                action='store_true')
+    lp = sp.add_parser("list", help="List tests")
+    lp.set_defaults(action=list_tests)
+    lp.add_argument('-i',
+                    '--info',
+                    help="Show more info about tests",
+                    action='store_true')
 
-gp = sp.add_parser("group", help="Generate groups")
-gp.set_defaults(action=group_tests)
-gp.add_argument("-m", "--max-size", help="Maximum number of tests in group")
-gp.add_argument("-n", "--name", help="Common name for group tests")
-gp.add_argument("-x",
-                "--exclude",
-                help="Exclude tests from --all run",
-                action='append')
+    gp = sp.add_parser("group", help="Generate groups")
+    gp.set_defaults(action=group_tests)
+    gp.add_argument("-m", "--max-size",
+                    help="Maximum number of tests in group")
+    gp.add_argument("-n", "--name", help="Common name for group tests")
+    gp.add_argument("-x",
+                    "--exclude",
+                    help="Exclude tests from --all run",
+                    action='append')
 
-cp = sp.add_parser("clean", help="Clean something")
-cp.set_defaults(action=clean_stuff)
-cp.add_argument("what", choices=['nsroot'])
+    cp = sp.add_parser("clean", help="Clean something")
+    cp.set_defaults(action=clean_stuff)
+    cp.add_argument("what", choices=['nsroot'])
 
-opts = vars(p.parse_args())
-if opts.get('sat', False):
-    opts['keep_img'] = 'always'
+    return vars(p.parse_args())
 
-if opts['debug']:
-    sys.settrace(traceit)
 
-if opts['action'] == 'run':
-    criu.available()
-for tst in test_classes.values():
-    tst.available()
+def waitpid_and_rip_zombies(pid):
+    """
+    Collect this namespace's zombies
+    """
+    while True:
+        wpid, status = os.wait()
+        if wpid == pid:
+            if os.WIFEXITED(status):
+                return os.WEXITSTATUS(status)
+            return 1
 
-opts['action'](opts)
 
-for tst in test_classes.values():
-    tst.cleanup()
+def fork_zdtm():
+    """
+    Fork here, since we're new pidns init and are supposed to
+    collect this namespace's zombies
+    """
+    if 'CR_CT_TEST_INFO' in os.environ:
+        status = 0
+        pid = os.fork()
+        if pid == 0:
+            tinfo = eval(os.environ['CR_CT_TEST_INFO'])
+            do_run_test(tinfo[0], tinfo[1], tinfo[2], tinfo[3])
+        else:
+            status = waitpid_and_rip_zombies(pid)
+        sys.exit(status)
+
+
+if __name__ == '__main__':
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    signal.signal(signal.SIGALRM, alarm)
+    fork_zdtm()
+    opts = get_cli_args()
+    if opts.get('sat', False):
+        opts['keep_img'] = 'always'
+
+    if opts['debug']:
+        sys.settrace(traceit)
+
+    if opts['action'] == 'run':
+        criu.available()
+    for tst in test_classes.values():
+        tst.available()
+
+    orig_hugepages = set_nr_hugepages(20)
+    opts['action'](opts)
+    set_nr_hugepages(orig_hugepages)
+
+    for tst in test_classes.values():
+        tst.cleanup()

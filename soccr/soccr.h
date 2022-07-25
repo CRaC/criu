@@ -1,9 +1,9 @@
 #ifndef __LIBSOCCR_H__
 #define __LIBSOCCR_H__
-#include <netinet/in.h>		/* sockaddr_in, sockaddr_in6 */
-#include <netinet/tcp.h>	/* TCP_REPAIR_WINDOW, TCP_TIMESTAMP */
-#include <stdint.h>		/* uint32_t */
-#include <sys/socket.h>		/* sockaddr */
+#include <netinet/in.h>	 /* sockaddr_in, sockaddr_in6 */
+#include <netinet/tcp.h> /* TCP_REPAIR_WINDOW, TCP_TIMESTAMP */
+#include <stdint.h>	 /* uint32_t */
+#include <sys/socket.h>	 /* sockaddr */
 
 #include "common/config.h"
 
@@ -12,12 +12,12 @@
 
 #ifndef CONFIG_HAS_TCP_REPAIR_WINDOW
 struct tcp_repair_window {
-	uint32_t   snd_wl1;
-	uint32_t   snd_wnd;
-	uint32_t   max_window;
+	uint32_t snd_wl1;
+	uint32_t snd_wnd;
+	uint32_t max_window;
 
-	uint32_t   rcv_wnd;
-	uint32_t   rcv_wup;
+	uint32_t rcv_wnd;
+	uint32_t rcv_wup;
 };
 #endif
 
@@ -30,8 +30,8 @@ struct tcp_repair_window {
  * our own.
  */
 struct tcp_repair_opt {
-	uint32_t	opt_code;
-	uint32_t	opt_val;
+	uint32_t opt_code;
+	uint32_t opt_val;
 };
 
 enum {
@@ -43,17 +43,17 @@ enum {
 #endif
 
 #ifndef TCP_TIMESTAMP
-#define TCP_TIMESTAMP	24
+#define TCP_TIMESTAMP 24
 #endif
 
 #ifndef TCP_REPAIR_WINDOW
-#define TCP_REPAIR_WINDOW       29
+#define TCP_REPAIR_WINDOW 29
 #endif
 
 void libsoccr_set_log(unsigned int level, void (*fn)(unsigned int level, const char *fmt, ...));
 
-#define SOCCR_LOG_ERR	1
-#define SOCCR_LOG_DBG	2
+#define SOCCR_LOG_ERR 1
+#define SOCCR_LOG_DBG 2
 
 /*
  * An opaque handler for C/R-ing a TCP socket.
@@ -71,24 +71,24 @@ union libsoccr_addr {
  * socket and given back into the library in two steps (see below).
  */
 struct libsoccr_sk_data {
-	uint32_t	state;
-	uint32_t	inq_len;
-	uint32_t	inq_seq;
-	uint32_t	outq_len;
-	uint32_t	outq_seq;
-	uint32_t	unsq_len;
-	uint32_t	opt_mask;
-	uint32_t	mss_clamp;
-	uint32_t	snd_wscale;
-	uint32_t	rcv_wscale;
-	uint32_t	timestamp;
+	uint32_t state;
+	uint32_t inq_len;
+	uint32_t inq_seq;
+	uint32_t outq_len;
+	uint32_t outq_seq;
+	uint32_t unsq_len;
+	uint32_t opt_mask;
+	uint32_t mss_clamp;
+	uint32_t snd_wscale;
+	uint32_t rcv_wscale;
+	uint32_t timestamp;
 
-	uint32_t	flags; /* SOCCR_FLAGS_... below */
-	uint32_t	snd_wl1;
-	uint32_t	snd_wnd;
-	uint32_t	max_window;
-	uint32_t	rcv_wnd;
-	uint32_t	rcv_wup;
+	uint32_t flags; /* SOCCR_FLAGS_... below */
+	uint32_t snd_wl1;
+	uint32_t snd_wnd;
+	uint32_t max_window;
+	uint32_t rcv_wnd;
+	uint32_t rcv_wup;
 };
 
 /*
@@ -96,7 +96,7 @@ struct libsoccr_sk_data {
  * from the kernel and is required for restore. Not present data
  * is zeroified by the library.
  *
- * Ideally the caller should carry the whole _data structure between 
+ * Ideally the caller should carry the whole _data structure between
  * calls, but for optimization purposes it may analyze the flags
  * field and drop the unneeded bits.
  */
@@ -105,7 +105,7 @@ struct libsoccr_sk_data {
  * Window parameters. Mark snd_wl1, snd_wnd, max_window, rcv_wnd
  * and rcv_wup fields.
  */
-#define SOCCR_FLAGS_WINDOW	0x1
+#define SOCCR_FLAGS_WINDOW 0x1
 
 /*
  * These two calls pause and resume the socket for and after C/R
@@ -136,7 +136,7 @@ void libsoccr_release(struct libsoccr_sk *sk);
  * the former will free() one, when given to the library, the latter
  * is to free() it.
  */
-#define SOCCR_MEM_EXCL		0x1
+#define SOCCR_MEM_EXCL 0x1
 
 /*
  * CHECKPOINTING calls
@@ -171,8 +171,8 @@ int libsoccr_save(struct libsoccr_sk *sk, struct libsoccr_sk_data *data, unsigne
  * Get a pointer on the contents of queues. The amount of bytes is
  * determined from the filled libsoccr_sk_data by queue_id.
  *
- * For TCP_RECV_QUEUE the lenght is .inq_len
- * For TCP_SEND_QUEUE the lenght is .outq_len
+ * For TCP_RECV_QUEUE the length is .inq_len
+ * For TCP_SEND_QUEUE the length is .outq_len
  *
  * For any other queues returns NULL.
  *
@@ -213,14 +213,14 @@ union libsoccr_addr *libsoccr_get_addr(struct libsoccr_sk *sk, int self, unsigne
 
 /*
  * Set a pointer on the send/recv queue data.
- * If flags have SOCCR_MEM_EXCL, the buffer is stolen by the library and is 
+ * If flags have SOCCR_MEM_EXCL, the buffer is stolen by the library and is
  * free()-ed after libsoccr_resume().
  */
 int libsoccr_set_queue_bytes(struct libsoccr_sk *sk, int queue_id, char *bytes, unsigned flags);
 
 /*
  * Set a pointer on the libsoccr_addr for src/dst.
- * If flags have SOCCR_MEM_EXCL, the buffer is stolen by the library and is 
+ * If flags have SOCCR_MEM_EXCL, the buffer is stolen by the library and is
  * fre()-ed after libsoccr_resume().
  */
 int libsoccr_set_addr(struct libsoccr_sk *sk, int self, union libsoccr_addr *, unsigned flags);

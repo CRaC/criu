@@ -1,2 +1,1 @@
-from coredump import *
-import elf
+from .coredump import coredump_generator

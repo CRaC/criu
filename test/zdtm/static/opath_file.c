@@ -5,13 +5,13 @@
 
 #include "zdtmtst.h"
 
-#define TEST_FILE "test_file"
-#define BUF_SIZE 4096
-#define fdinfo_field(str, field)        !strncmp(str, field":", sizeof(field))
-#define pr_debug(format, arg...) test_msg("DBG: %s:%d: " format, __FILE__, __LINE__, ## arg)
+#define TEST_FILE		 "test_file"
+#define BUF_SIZE		 4096
+#define fdinfo_field(str, field) !strncmp(str, field ":", sizeof(field))
+#define pr_debug(format, arg...) test_msg("DBG: %s:%d: " format, __FILE__, __LINE__, ##arg)
 
-const char *test_doc	= "Check open file with O_PATH preserved";
-const char *test_author	= "Pavel Tikhomirov <ptikhomirov@virtuozzo.com>";
+const char *test_doc = "Check open file with O_PATH preserved";
+const char *test_author = "Pavel Tikhomirov <ptikhomirov@virtuozzo.com>";
 
 char *dirname;
 TEST_OPTION(dirname, string, "directory name", 1);
@@ -37,7 +37,7 @@ static int parse_self_fdinfo(int fd, struct fdinfo *fi)
 	while (fgets(line, sizeof(line), file)) {
 		if (fdinfo_field(line, "flags")) {
 			if (sscanf(line, "%*s %llo", &val) != 1) {
-				pr_err("failed to read flags: %s", line);
+				pr_err("failed to read flags: %s\n", line);
 				goto fail;
 			}
 			pr_debug("Open flags = %llu\n", val);

@@ -1,17 +1,8 @@
 language: c
 os: linux
 dist: bionic
-cache: ccache
 services:
   - docker
-env:
-  - TR_ARCH=local
-  - TR_ARCH=local       CLANG=1
-  - TR_ARCH=local       COMPAT_TEST=y
-  - TR_ARCH=local       CLANG=1 COMPAT_TEST=y
-  - TR_ARCH=x86_64
-  - TR_ARCH=x86_64      CLANG=1
-  - TR_ARCH=openj9-test
 jobs:
   include:
     - os: linux
@@ -27,80 +18,18 @@ jobs:
       env: TR_ARCH=local
       dist: bionic
     - os: linux
-      arch: arm64
-      env: TR_ARCH=local
+      arch: arm64-graviton2
+      env: TR_ARCH=local RUN_TESTS=1
+      dist: focal
+      group: edge
+      virt: vm
+    - os: linux
+      arch: arm64-graviton2
+      env: TR_ARCH=local CLANG=1 RUN_TESTS=1
+      group: edge
+      virt: vm
       dist: bionic
-    - os: linux
-      arch: arm64
-      env: TR_ARCH=local CLANG=1
-      dist: bionic
-    - os: linux
-      arch: arm64
-      # This runs on aarch64 with 'setarch linux32'
-      env: TR_ARCH=armv7hf
-      dist: bionic
-    - os: linux
-      arch: arm64
-      # This runs on aarch64 with 'setarch linux32'
-      env: TR_ARCH=armv7hf     CLANG=1
-      dist: bionic
-    - os: linux
-      arch: arm64
-      env: TR_ARCH=fedora-rawhide
-      dist: bionic
-    - os: linux
-      arch: amd64
-      env: TR_ARCH=fedora-rawhide
-      dist: xenial # test hangs on bionic
-    - os: linux
-      arch: amd64
-      env: TR_ARCH=podman-test
-      dist: bionic
-    - os: linux
-      arch: amd64
-      env: TR_ARCH=docker-test
-      dist: bionic
-    - os: linux
-      arch: amd64
-      env: TR_ARCH=docker-test DIST=xenial
-      # On xenial it should be possible to test overlayfs;
-      # broken on the latest bionic kernel
-      dist: xenial
-    - os: linux
-      arch: amd64
-      env: TR_ARCH=alpine      CLANG=1
-      dist: xenial # test hangs on bionic
-    - os: linux
-      arch: amd64
-      env: TR_ARCH=alpine
-      dist: xenial # test hangs on bionic
-    - os: linux
-      arch: amd64
-      env: TR_ARCH=centos
-      dist: xenial # test hangs on bionic
-    - os: linux
-      arch: amd64
-      env: TR_ARCH=fedora-asan
-      dist: xenial # test hangs on bionic
-    - os: linux
-      arch: amd64
-      env: TR_ARCH=armv7-cross
-      dist: bionic
-    - os: linux
-      arch: amd64
-      env: TR_ARCH=aarch64-cross
-      dist: bionic
-    - os: linux
-      arch: amd64
-      env: TR_ARCH=ppc64-cross
-      dist: bionic
-  allow_failures:
-    - env: TR_ARCH=docker-test
-    - env: TR_ARCH=docker-test DIST=xenial
-    - env: TR_ARCH=fedora-rawhide
-    - env: TR_ARCH=local       GCOV=1
 script:
-  - sudo make CCACHE=1 -C scripts/travis $TR_ARCH
+  - sudo make -C scripts/ci $TR_ARCH
 after_success:
-  - ccache -s
-  - make -C scripts/travis after_success
+  - make -C scripts/ci after_success

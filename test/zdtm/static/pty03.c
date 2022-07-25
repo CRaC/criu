@@ -10,8 +10,8 @@
 #include <signal.h>
 #include <sys/ioctl.h>
 
-const char *test_doc	= "Check a non-opened control terminal";
-const char *test_author	= "Andrey Vagin <avagin@openvz.org>";
+const char *test_doc = "Check a non-opened control terminal";
+const char *test_author = "Andrey Vagin <avagin@openvz.org>";
 
 static const char teststr[] = "ping\n";
 
@@ -40,7 +40,7 @@ int main(int argc, char *argv[])
 	}
 
 	if (ioctl(slave, TIOCSCTTY, 1)) {
-		pr_perror("Can't set a controll terminal");
+		pr_perror("Can't set a control terminal");
 		return 1;
 	}
 
@@ -51,7 +51,7 @@ int main(int argc, char *argv[])
 
 	slave = open("/dev/tty", O_RDWR);
 	if (slave == -1) {
-		pr_perror("Can't open the controll terminal");
+		pr_perror("Can't open the control terminal");
 		return -1;
 	}
 

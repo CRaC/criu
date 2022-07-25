@@ -13,7 +13,7 @@ SECTIONS
 		*(.compel.init)
 	}
 
-	.data : {
+	.data : ALIGN(0x1000) {
 		*(.data*)
 		*(.bss*)
 	}
@@ -34,8 +34,4 @@ SECTIONS
 		*(.group*)
 		*(.eh_frame*)
 	}
-
-/* Parasite args should have 4 bytes align, as we have futex inside. */
-. = ALIGN(4);
-__export_parasite_args = .;
 }

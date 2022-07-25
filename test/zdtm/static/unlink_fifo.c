@@ -7,9 +7,9 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check that we can migrate with a named pipe "
-			"open and then unlinked";
-const char *test_author	= "Roman Kagan <rkagan@parallels.com>";
+const char *test_doc = "Check that we can migrate with a named pipe "
+		       "open and then unlinked";
+const char *test_author = "Roman Kagan <rkagan@parallels.com>";
 
 char *filename;
 TEST_OPTION(filename, string, "file name", 1);
@@ -41,7 +41,7 @@ int main(int argc, char **argv)
 	test_waitsig();
 
 	if (close(fd) < 0) {
-		fail("can't close %s: %m", filename);
+		fail("can't close %s", filename);
 		return 1;
 	}
 

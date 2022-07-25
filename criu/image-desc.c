@@ -11,17 +11,17 @@
  * for more details.
  */
 
-#define FD_ENTRY(_name, _fmt)			\
-	[CR_FD_##_name] = {			\
-		.fmt	= _fmt ".img",		\
-		.magic	= _name##_MAGIC,	\
+#define FD_ENTRY(_name, _fmt)           \
+	[CR_FD_##_name] = {             \
+		.fmt = _fmt ".img",     \
+		.magic = _name##_MAGIC, \
 	}
 
-#define FD_ENTRY_F(_name, _fmt, _f)		\
-	[CR_FD_##_name] = {			\
-		.fmt	= _fmt ".img",		\
-		.magic	= _name##_MAGIC,	\
-		.oflags	= _f,			\
+#define FD_ENTRY_F(_name, _fmt, _f)     \
+	[CR_FD_##_name] = {             \
+		.fmt = _fmt ".img",     \
+		.magic = _name##_MAGIC, \
+		.oflags = _f,           \
 	}
 
 struct cr_fd_desc_tmpl imgset_template[CR_FD_MAX] = {
@@ -103,6 +103,10 @@ struct cr_fd_desc_tmpl imgset_template[CR_FD_MAX] = {
 	FD_ENTRY(NETNF_EXP,	"netns-exp-%u"),
 	FD_ENTRY(FILES,		"files"),
 	FD_ENTRY(TIMENS,	"timens-%u"),
+	FD_ENTRY(PIDNS,		"pidns-%u"),
+	FD_ENTRY_F(BPFMAP_FILE,	"bpfmap-file", O_NOBUF),
+	FD_ENTRY_F(BPFMAP_DATA,	"bpfmap-data", O_NOBUF),
+	FD_ENTRY(APPARMOR,	"apparmor"),
 
 	[CR_FD_STATS] = {
 		.fmt	= "stats-%s",

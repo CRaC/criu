@@ -22,7 +22,7 @@ const char *test_author = "Andrey Vagin <avagin@parallels.com";
 
 static int port = 8880;
 
-#define BUF_SIZE 4096
+#define BUF_SIZE    4096
 #define TCP_MAX_BUF (100 << 20)
 
 static void read_safe(int fd, void *buf, size_t size)
@@ -196,7 +196,7 @@ int main(int argc, char **argv)
 			return 1;
 
 		if (size != rcv_buf_size) {
-			fail("the received buffer contains only %d bytes (%d)\n", size, rcv_buf_size);
+			fail("the received buffer contains only %d bytes (%d)", size, rcv_buf_size);
 		}
 
 		rcv_size += size;
@@ -236,15 +236,13 @@ int main(int argc, char **argv)
 	}
 
 	sk_bsize = TCP_MAX_BUF;
-	if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF,
-			&sk_bsize, sizeof(sk_bsize)) == -1) {
+	if (setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sk_bsize, sizeof(sk_bsize)) == -1) {
 		pr_perror("Can't set snd buf");
 		return 1;
 	}
 
 	sk_bsize = TCP_MAX_BUF;
-	if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF,
-			&sk_bsize, sizeof(sk_bsize)) == -1) {
+	if (setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &sk_bsize, sizeof(sk_bsize)) == -1) {
 		pr_perror("Can't set snd buf");
 		return 1;
 	}
@@ -300,19 +298,19 @@ int main(int argc, char **argv)
 
 	ret = clean_sk_buf(fd, 0);
 	if (ret != rcv_buf_size) {
-		fail("the received buffer contains only %d bytes (%d)\n", ret, rcv_buf_size);
+		fail("the received buffer contains only %d bytes (%d)", ret, rcv_buf_size);
 	}
 	rcv_size += ret;
 
 	if (snd != rcv_size) {
-		fail("The child sent %d bytes, but the parent received %d bytes\n", rcv_buf_size, rcv_size);
+		fail("The child sent %d bytes, but the parent received %d bytes", rcv_buf_size, rcv_size);
 		return 1;
 	}
 
 	read_safe(ctl_fd, &ret, sizeof(ret));
 
 	if (ret != snd_size) {
-		fail("The parent sent %d bytes, but the child received %d bytes\n", snd_size, ret);
+		fail("The parent sent %d bytes, but the child received %d bytes", snd_size, ret);
 		return 1;
 	}
 

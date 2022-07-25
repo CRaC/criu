@@ -27,11 +27,32 @@
 #include "protobuf.h"
 #include "images/tcp-stream.pb-c.h"
 
-#undef  LOG_PREFIX
+#undef LOG_PREFIX
 #define LOG_PREFIX "tcp: "
 
 static LIST_HEAD(cpt_tcp_repair_sockets);
 static LIST_HEAD(rst_tcp_repair_sockets);
+
+static int lock_connection(struct inet_sk_desc *sk)
+{
+	if (opts.network_lock_method == NETWORK_LOCK_IPTABLES)
+		return iptables_lock_connection(sk);
+	else if (opts.network_lock_method == NETWORK_LOCK_NFTABLES)
+		return nftables_lock_connection(sk);
+
+	return -1;
+}
+
+static int unlock_connection(struct inet_sk_desc *sk)
+{
+	if (opts.network_lock_method == NETWORK_LOCK_IPTABLES)
+		return iptables_unlock_connection(sk);
+	else if (opts.network_lock_method == NETWORK_LOCK_NFTABLES)
+		/* All connections will be unlocked in network_unlock(void) */
+		return 0;
+
+	return -1;
+}
 
 static int tcp_repair_established(int fd, struct inet_sk_desc *sk)
 {
@@ -51,9 +72,11 @@ static int tcp_repair_established(int fd, struct inet_sk_desc *sk)
 	}
 
 	if (!(root_ns_mask & CLONE_NEWNET)) {
-		ret = nf_lock_connection(sk);
-		if (ret < 0)
+		ret = lock_connection(sk);
+		if (ret < 0) {
+			pr_err("Failed to lock TCP connection %x\n", sk->sd.ino);
 			goto err2;
+		}
 	}
 
 	socr = libsoccr_pause(sk->rfd);
@@ -66,7 +89,7 @@ static int tcp_repair_established(int fd, struct inet_sk_desc *sk)
 
 err3:
 	if (!(root_ns_mask & CLONE_NEWNET))
-		nf_unlock_connection(sk);
+		unlock_connection(sk);
 err2:
 	close(sk->rfd);
 err1:
@@ -80,9 +103,9 @@ static void tcp_unlock_one(struct inet_sk_desc *sk)
 	list_del(&sk->rlist);
 
 	if (!(root_ns_mask & CLONE_NEWNET)) {
-		ret = nf_unlock_connection(sk);
+		ret = unlock_connection(sk);
 		if (ret < 0)
-			pr_perror("Failed to unlock TCP connection");
+			pr_err("Failed to unlock TCP connection %x\n", sk->sd.ino);
 	}
 
 	libsoccr_resume(sk->priv);
@@ -120,8 +143,7 @@ static int dump_tcp_conn_state(struct inet_sk_desc *sk)
 		goto err_r;
 	}
 	if (ret != sizeof(data)) {
-		pr_err("This libsocr is not supported (%d vs %d)\n",
-				ret, (int)sizeof(data));
+		pr_err("This libsocr is not supported (%d vs %d)\n", ret, (int)sizeof(data));
 		goto err_r;
 	}
 
@@ -147,16 +169,16 @@ static int dump_tcp_conn_state(struct inet_sk_desc *sk)
 	}
 
 	if (data.flags & SOCCR_FLAGS_WINDOW) {
-		tse.has_snd_wl1		= true;
-		tse.has_snd_wnd		= true;
-		tse.has_max_window	= true;
-		tse.has_rcv_wnd		= true;
-		tse.has_rcv_wup		= true;
-		tse.snd_wl1		= data.snd_wl1;
-		tse.snd_wnd		= data.snd_wnd;
-		tse.max_window		= data.max_window;
-		tse.rcv_wnd		= data.rcv_wnd;
-		tse.rcv_wup		= data.rcv_wup;
+		tse.has_snd_wl1 = true;
+		tse.has_snd_wnd = true;
+		tse.has_max_window = true;
+		tse.has_rcv_wnd = true;
+		tse.has_rcv_wup = true;
+		tse.snd_wl1 = data.snd_wl1;
+		tse.snd_wnd = data.snd_wnd;
+		tse.max_window = data.max_window;
+		tse.rcv_wnd = data.rcv_wnd;
+		tse.rcv_wup = data.rcv_wup;
 	}
 
 	/*
@@ -241,6 +263,10 @@ int dump_one_tcp(int fd, struct inet_sk_desc *sk, SkOptsEntry *soe)
 	if (sk->dst_port == 0)
 		return 0;
 
+	if (opts.tcp_close) {
+		return 0;
+	}
+
 	pr_info("Dumping TCP connection\n");
 
 	if (tcp_repair_established(fd, sk))
@@ -256,8 +282,7 @@ int dump_one_tcp(int fd, struct inet_sk_desc *sk, SkOptsEntry *soe)
 	return 0;
 }
 
-static int read_tcp_queue(struct libsoccr_sk *sk, struct libsoccr_sk_data *data,
-		int queue, u32 len, struct cr_img *img)
+static int read_tcp_queue(struct libsoccr_sk *sk, struct libsoccr_sk_data *data, int queue, u32 len, struct cr_img *img)
 {
 	char *buf;
 
@@ -347,13 +372,9 @@ static int restore_tcp_conn_state(int sk, struct libsoccr_sk *socr, struct inet_
 		data.rcv_wup = tse->rcv_wup;
 	}
 
-	if (restore_sockaddr(&sa_src,
-				ii->ie->family, ii->ie->src_port,
-				ii->ie->src_addr, 0) < 0)
+	if (restore_sockaddr(&sa_src, ii->ie->family, ii->ie->src_port, ii->ie->src_addr, 0) < 0)
 		goto err_c;
-	if (restore_sockaddr(&sa_dst,
-				ii->ie->family, ii->ie->dst_port,
-				ii->ie->dst_addr, 0) < 0)
+	if (restore_sockaddr(&sa_dst, ii->ie->family, ii->ie->dst_port, ii->ie->dst_addr, 0) < 0)
 		goto err_c;
 
 	libsoccr_set_addr(socr, 1, &sa_src, 0);
@@ -399,7 +420,7 @@ int prepare_tcp_socks(struct task_restore_args *ta)
 {
 	struct inet_sk_info *ii;
 
-	ta->tcp_socks = (struct rst_tcp_sock *) rst_mem_align_cpos(RM_PRIVATE);
+	ta->tcp_socks = (struct rst_tcp_sock *)rst_mem_align_cpos(RM_PRIVATE);
 	ta->tcp_socks_n = 0;
 
 	list_for_each_entry(ii, &rst_tcp_repair_sockets, rlist) {
@@ -430,8 +451,10 @@ int restore_one_tcp(int fd, struct inet_sk_info *ii)
 
 	pr_info("Restoring TCP connection\n");
 
-	if (opts.tcp_close &&
-		ii->ie->state != TCP_LISTEN && ii->ie->state != TCP_CLOSE) {
+	if (opts.tcp_close) {
+		if (shutdown(fd, SHUT_RDWR) && errno != ENOTCONN) {
+			pr_perror("Unable to shutdown the socket id %x ino %x", ii->ie->id, ii->ie->ino);
+		}
 		return 0;
 	}
 
@@ -453,14 +476,28 @@ void tcp_locked_conn_add(struct inet_sk_info *ii)
 	ii->sk_fd = -1;
 }
 
+static int unlock_connection_info(struct inet_sk_info *si)
+{
+	if (opts.network_lock_method == NETWORK_LOCK_IPTABLES)
+		return iptables_unlock_connection_info(si);
+	else if (opts.network_lock_method == NETWORK_LOCK_NFTABLES)
+		/* All connections will be unlocked in network_unlock(void) */
+		return 0;
+
+	return -1;
+}
+
 void rst_unlock_tcp_connections(void)
 {
 	struct inet_sk_info *ii;
+
+	if (opts.tcp_close)
+		return;
 
 	/* Network will be unlocked by network-unlock scripts */
 	if (root_ns_mask & CLONE_NEWNET)
 		return;
 
 	list_for_each_entry(ii, &rst_tcp_repair_sockets, rlist)
-		nf_unlock_connection_info(ii);
+		unlock_connection_info(ii);
 }

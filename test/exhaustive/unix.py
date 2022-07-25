@@ -261,7 +261,7 @@ class sock:
         # that hasn't contributed to some new states is
         # just waste of time, so we close only connected
         # sockets or listeners that has at least one
-        # incoming connection pendig or served
+        # incoming connection pending or served
 
         if self.listen:
             if self.icons:
@@ -304,7 +304,7 @@ class sock:
         for psk in st.sockets:
             if psk == self:
                 continue
-            if psk.peer != None and psk.peer != self.sk_id:
+            if psk.peer is not None and psk.peer != self.sk_id:
                 # Peer by someone else, can do nothing
                 continue
 
@@ -356,11 +356,11 @@ class sock:
                 i_dsc += sock.name_of(psk)
             dsc += '-I%s' % i_dsc
         if self.inqueue:
-            froms = set()
+            from_set = set()
             for m in self.inqueue:
-                froms.add(m[0])
+                from_set.add(m[0])
             q_dsc = ''
-            for f in froms:
+            for f in from_set:
                 fsk = st.get_socket(f, True)
                 q_dsc += sock.name_of(fsk)
             dsc += '-M%s' % q_dsc

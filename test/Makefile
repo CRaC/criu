@@ -5,6 +5,7 @@ export ZDTM_ARGS
 
 all:
 	$(MAKE) zdtm
+	$(MAKE) zdtm-config
 	$(MAKE) zdtm-pre-dump
 	$(MAKE) zdtm-snapshot
 	$(MAKE) zdtm-iter
@@ -22,6 +23,10 @@ other:
 zdtm:
 	./zdtm.py run -a --parallel 2
 .PHONY: zdtm
+
+zdtm-config:
+	./zdtm.py run -a --parallel 2 --criu-config
+.PHONY: zdtm-config
 
 zdtm-pre-dump:
 	./zdtm.py run --pre 2:1 -t zdtm/transition/fork -f uns
@@ -51,7 +56,7 @@ clean_root:
 .PHONY: clean_root
 
 clean: clean_root
-	$(RM) zdtm_ct zdtm-tst-list umount2 zdtm_test_config.conf
+	$(RM) zdtm_ct zdtm-tst-list umount2
 	$(Q) $(RM) *.log
 	$(Q) $(RM) -r ./dump/
 	$(Q) $(MAKE) -C zdtm cleandep clean cleanout

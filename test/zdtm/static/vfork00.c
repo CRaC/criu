@@ -9,10 +9,10 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Block migration by a pending (non-exec()-ed) vfork()";
-const char *test_author	= "Pavel Emelianov <xemul@sw.ru>";
+const char *test_doc = "Block migration by a pending (non-exec()-ed) vfork()";
+const char *test_author = "Pavel Emelianov <xemul@sw.ru>";
 
-int main(int argc, char ** argv)
+int main(int argc, char **argv)
 {
 	int ret = 0;
 	pid_t pid;
@@ -23,7 +23,7 @@ int main(int argc, char ** argv)
 	 * in the child */
 	pid = fork();
 	if (pid < 0) {
-		pr_err("fork failed: %m");
+		pr_perror("fork failed");
 		exit(1);
 	}
 
@@ -54,12 +54,12 @@ int main(int argc, char ** argv)
 	 * the grand-child has exec()-ed, but we don't know the pid of the
 	 * latter */
 	if (kill(0, SIGTERM)) {
-		fail("terminating the children failed: %m");
+		fail("terminating the children failed");
 		exit(1);
 	}
 
 	if (wait(&ret) != pid) {
-		fail("wait() returned wrong pid: %m");
+		fail("wait() returned wrong pid");
 		exit(1);
 	}
 

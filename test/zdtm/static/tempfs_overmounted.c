@@ -8,8 +8,8 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check tmpfs mount";
-const char *test_author	= "Pavel Emelianov <xemul@parallels.com>";
+const char *test_doc = "Check tmpfs mount";
+const char *test_author = "Pavel Emelianov <xemul@parallels.com>";
 
 char *dirname;
 TEST_OPTION(dirname, string, "directory name", 1);
@@ -59,7 +59,7 @@ int main(int argc, char **argv)
 	test_waitsig();
 
 	if (umount("a/b") || umount("a") || umount("a") || umount("a/b/c") || umount("a/b") || umount("a/b")) {
-		pr_err("umount");
+		pr_perror("umount");
 		return 1;
 	}
 

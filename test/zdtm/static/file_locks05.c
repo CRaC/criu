@@ -8,8 +8,8 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Sanity check for criu lock-test quirk";
-const char *test_author	= "Pavel Emelyanov <xemul@parallels.com>";
+const char *test_doc = "Sanity check for criu lock-test quirk";
+const char *test_author = "Pavel Emelyanov <xemul@parallels.com>";
 
 char *filename;
 TEST_OPTION(filename, string, "file name", 1);
@@ -40,7 +40,7 @@ int main(int argc, char **argv)
 	if (flock(fd2, LOCK_SH) == 0)
 		pass();
 	else
-		fail("Flock file locks check failed (%d)", errno);
+		fail("Flock file locks check failed");
 
 	close(fd);
 	close(fd2);

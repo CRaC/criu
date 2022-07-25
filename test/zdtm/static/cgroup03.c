@@ -9,8 +9,8 @@
 #include <limits.h>
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check that global cgroup settings (+perms) are restored";
-const char *test_author	= "Tycho Andersen <tycho.andersen@canonical.com>";
+const char *test_doc = "Check that global cgroup settings (+perms) are restored";
+const char *test_author = "Tycho Andersen <tycho.andersen@canonical.com>";
 
 char *dirname;
 TEST_OPTION(dirname, string, "cgroup directory name", 1);
@@ -102,17 +102,17 @@ int checkperms(char *path)
 	}
 
 	if ((sb.st_mode & 0777) != 0777) {
-		fail("mode for %s doesn't match (%o)\n", path, sb.st_mode);
+		fail("mode for %s doesn't match (%o)", path, sb.st_mode);
 		return -1;
 	}
 
 	if (sb.st_uid != 1000) {
-		fail("uid for %s doesn't match (%d)\n", path, sb.st_uid);
+		fail("uid for %s doesn't match (%d)", path, sb.st_uid);
 		return -1;
 	}
 
 	if (sb.st_gid != 1000) {
-		fail("gid for %s doesn't match (%d)\n", path, sb.st_gid);
+		fail("gid for %s doesn't match (%d)", path, sb.st_gid);
 		return -1;
 	}
 
@@ -136,7 +136,6 @@ int main(int argc, char **argv)
 	sprintf(path, "%s/%s/test/notify_on_release", dirname, cgname);
 	if (chownmod(path, O_RDWR) < 0)
 		goto out_umount;
-
 
 	sprintf(path, "%s/%s/test/cgroup.procs", dirname, cgname);
 	if (chownmod(path, O_RDWR) < 0)

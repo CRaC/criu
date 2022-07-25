@@ -4,6 +4,9 @@
 #include <sys/wait.h>
 #include <sys/syscall.h>
 
+#include <compel/log.h>
+#include <compel/infect.h>
+
 static void print_vmsg(unsigned int lvl, const char *fmt, va_list parms)
 {
 	printf("\tLC%u: ", lvl);
@@ -12,7 +15,11 @@ static void print_vmsg(unsigned int lvl, const char *fmt, va_list parms)
 
 static int do_rsetsid(int pid)
 {
-#define err_and_ret(msg) do { fprintf(stderr, msg); return -1; } while (0)
+#define err_and_ret(msg)              \
+	do {                          \
+		fprintf(stderr, msg); \
+		return -1;            \
+	} while (0)
 
 	int state;
 	long ret;
@@ -61,7 +68,9 @@ static inline int chk(int fd, int val)
 {
 	int v = 0;
 
-	read(fd, &v, sizeof(v));
+	if (read(fd, &v, sizeof(v)) != sizeof(v)) {
+		fprintf(stderr, "read failed\n");
+	}
 	printf("%d, want %d\n", v, val);
 	return v == val;
 }
@@ -80,21 +89,32 @@ int main(int argc, char **argv)
 
 	pid = vfork();
 	if (pid == 0) {
-		close(p_in[1]);  dup2(p_in[0], 0);  close(p_in[0]);
-		close(p_out[0]); dup2(p_out[1], 1); close(p_out[1]);
-		close(p_err[0]); dup2(p_err[1], 2); close(p_err[1]);
+		close(p_in[1]);
+		dup2(p_in[0], 0);
+		close(p_in[0]);
+		close(p_out[0]);
+		dup2(p_out[1], 1);
+		close(p_out[1]);
+		close(p_err[0]);
+		dup2(p_err[1], 2);
+		close(p_err[1]);
 		execl("./victim", "victim", NULL);
 		exit(1);
 	}
 
-	close(p_in[0]); close(p_out[1]); close(p_err[1]);
+	close(p_in[0]);
+	close(p_out[1]);
+	close(p_err[1]);
 	sid = getsid(0);
 
 	/*
 	 * Kick the victim once
 	 */
 	i = 0;
-	write(p_in[1], &i, sizeof(i));
+	if (write(p_in[1], &i, sizeof(i)) != sizeof(i)) {
+		fprintf(stderr, "write to pipe failed\n");
+		return -1;
+	}
 
 	printf("Checking the victim session to be %d\n", sid);
 	pass = chk(p_out[0], sid);
@@ -112,7 +132,10 @@ int main(int argc, char **argv)
 	/*
 	 * Kick the victim again so it tells new session
 	 */
-	write(p_in[1], &i, sizeof(i));
+	if (write(p_in[1], &i, sizeof(i)) != sizeof(i)) {
+		fprintf(stderr, "write to pipe failed\n");
+		return -1;
+	}
 
 	/*
 	 * Stop the victim and check the intrusion went well

@@ -18,6 +18,7 @@ enum faults {
 	FI_PARTIAL_PAGES = 131,
 	FI_HUGE_ANON_SHMEM_ID = 132,
 	FI_CANNOT_MAP_VDSO = 133,
+	FI_CORRUPT_EXTREGS = 134,
 	FI_MAX,
 };
 
@@ -34,12 +35,12 @@ static inline bool __fault_injected(enum faults f, enum faults fi_strategy)
 	return fi_strategy == f;
 }
 
-#define FI_HUGE_ANON_SHMEM_ID_BASE	(0xfffffffflu)
+#define FI_HUGE_ANON_SHMEM_ID_BASE (0xfffffffflu)
 
 #ifndef CR_NOGLIBC
 
 extern enum faults fi_strategy;
-#define fault_injected(f)	__fault_injected(f, fi_strategy)
+#define fault_injected(f) __fault_injected(f, fi_strategy)
 
 extern int fault_injection_init(void);
 

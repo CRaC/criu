@@ -15,8 +15,6 @@ static void sh(int sig)
 	stop = 1;
 }
 
-#define SUCC_ECODE	42
-
 int main(int argc, char **argv)
 {
 	int pid, ret, fd, p[2];
@@ -69,7 +67,7 @@ int main(int argc, char **argv)
 	criu_set_service_binary(argv[1]);
 	criu_set_pid(pid);
 	criu_set_log_file("dump.log");
-	criu_set_log_level(4);
+	criu_set_log_level(CRIU_LOG_DEBUG);
 	fd = open(argv[2], O_DIRECTORY);
 	criu_set_images_dir_fd(fd);
 
@@ -85,7 +83,7 @@ int main(int argc, char **argv)
 
 	printf("--- Restore loop ---\n");
 	criu_init_opts();
-	criu_set_log_level(4);
+	criu_set_log_level(CRIU_LOG_DEBUG);
 	criu_set_log_file("restore.log");
 	criu_set_images_dir_fd(fd);
 

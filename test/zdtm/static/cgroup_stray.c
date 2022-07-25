@@ -13,8 +13,8 @@
 #include <limits.h>
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check that stray cgroups are c/r'd correctly";
-const char *test_author	= "Tycho Andersen <tycho.andersen@canonical.com>";
+const char *test_doc = "Check that stray cgroups are c/r'd correctly";
+const char *test_author = "Tycho Andersen <tycho.andersen@canonical.com>";
 
 char *dirname;
 TEST_OPTION(dirname, string, "cgroup directory name", 1);
@@ -76,7 +76,8 @@ static int add_to_cg(const char *controller, const char *path)
 	return 0;
 }
 
-static bool pid_in_cgroup(pid_t pid, const char *controller, const char *path) {
+static bool pid_in_cgroup(pid_t pid, const char *controller, const char *path)
+{
 	char buf[2048];
 	FILE *f;
 	bool ret = false;
@@ -92,12 +93,12 @@ static bool pid_in_cgroup(pid_t pid, const char *controller, const char *path) {
 		char *pos, *pid_controller, *pid_path;
 
 		/* chop off trailing \n */
-		buf[strlen(buf)-1] = '\0';
+		buf[strlen(buf) - 1] = '\0';
 
 		/* skip hierarchy no. */
 		pos = strstr(buf, ":");
 		if (!pos) {
-			pr_err("invalid /proc/pid/cgroups file");
+			pr_err("invalid /proc/pid/cgroups file\n");
 			goto out;
 		}
 		pos++;
@@ -105,7 +106,7 @@ static bool pid_in_cgroup(pid_t pid, const char *controller, const char *path) {
 
 		pos = strstr(pos, ":");
 		if (!pos) {
-			pr_err("invalid /proc/pid/cgroups file");
+			pr_err("invalid /proc/pid/cgroups file\n");
 			goto out;
 		}
 
@@ -113,12 +114,13 @@ static bool pid_in_cgroup(pid_t pid, const char *controller, const char *path) {
 		pos++;
 		pid_path = pos;
 
-test_msg("comparing %s and %s\n", controller, pid_controller);
+		test_msg("comparing %s and %s\n", controller, pid_controller);
 		if (strcmp(controller, pid_controller))
 			continue;
 
 		if (strcmp(path, pid_path))
-			pr_err("task not in right cg for controller %s expected %s, got %s\n", controller, path, pid_path);
+			pr_err("task not in right cg for controller %s expected %s, got %s\n", controller, path,
+			       pid_path);
 		else
 			ret = true;
 
@@ -206,7 +208,7 @@ int main(int argc, char **argv)
 	}
 
 	if (!WIFEXITED(status) || WEXITSTATUS(status)) {
-		fail("exit status %d\n", status);
+		fail("exit status %d", status);
 		goto out_umount;
 	}
 

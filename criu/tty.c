@@ -73,53 +73,53 @@
  * it depends on "devpts" mount point path.
  */
 
-#undef	LOG_PREFIX
+#undef LOG_PREFIX
 #define LOG_PREFIX "tty: "
 
 struct tty_data_entry {
-	struct list_head		list;
-	TtyDataEntry			*tde;
+	struct list_head list;
+	TtyDataEntry *tde;
 };
 
 struct tty_info {
-	struct list_head		list;
-	struct file_desc		d;
+	struct list_head list;
+	struct file_desc d;
 
-	struct file_desc		*reg_d;
+	struct file_desc *reg_d;
 
-	TtyFileEntry			*tfe;
-	TtyInfoEntry			*tie;
+	TtyFileEntry *tfe;
+	TtyInfoEntry *tie;
 
-	struct list_head		sibling;
-	struct tty_driver		*driver;
+	struct list_head sibling;
+	struct tty_driver *driver;
 
-	bool				create;
-	bool				inherit;
+	bool create;
+	bool inherit;
 
-	struct tty_info			*ctl_tty;
-	struct tty_info			*link;
-	struct tty_data_entry		*tty_data;
+	struct tty_info *ctl_tty;
+	struct tty_info *link;
+	struct tty_data_entry *tty_data;
 
-	int				fdstore_id;
+	int fdstore_id;
 };
 
 struct tty_dump_info {
-	struct list_head		list;
+	struct list_head list;
 
-	u32				id;
-	pid_t				sid;
-	pid_t				pgrp;
-	pid_t				pid_real;
-	int				fd;
-	int				mnt_id;
-	struct tty_driver		*driver;
+	u32 id;
+	pid_t sid;
+	pid_t pgrp;
+	pid_t pid_real;
+	int fd;
+	int mnt_id;
+	struct tty_driver *driver;
 
-	int				index;
-	int				lfd;
-	int				flags;
-	struct tty_dump_info		*link;
-	void				*tty_data;
-	size_t				tty_data_size;
+	int index;
+	int lfd;
+	int flags;
+	struct tty_dump_info *link;
+	void *tty_data;
+	size_t tty_data_size;
 };
 
 static bool stdin_isatty = false;
@@ -140,37 +140,37 @@ static bool tolerate_tty_error(int fd) {
  * Pretty acceptable trade off in a sake of simplicity.
  */
 
-#define MAX_TTYS	1088
+#define MAX_TTYS 1088
 
 /*
  * Custom indices should be even numbers just in case if we
  * need odds for pair numbering someday.
  */
 
-#define MAX_PTY_INDEX	1000
-#define CONSOLE_INDEX	1002
-#define VT_INDEX	1004
-#define CTTY_INDEX	1006
-#define STTY_INDEX	1010
-#define ETTY_INDEX	1012
-#define ETTY_INDEX_MAX	1076
-#define INDEX_ERR	(MAX_TTYS + 1)
+#define MAX_PTY_INDEX  1000
+#define CONSOLE_INDEX  1002
+#define VT_INDEX       1004
+#define CTTY_INDEX     1006
+#define STTY_INDEX     1010
+#define ETTY_INDEX     1012
+#define ETTY_INDEX_MAX 1076
+#define INDEX_ERR      (MAX_TTYS + 1)
 
 static DECLARE_BITMAP(tty_bitmap, (MAX_TTYS << 1));
 static DECLARE_BITMAP(tty_active_pairs, (MAX_TTYS << 1));
 
 struct tty_driver {
-	short				type;
-	short				subtype;
-	char				*name;
-	int				index;
-	int				(*fd_get_index)(int fd, const struct fd_parms *p);
-	int				(*img_get_index)(struct tty_info *ti);
-	int				(*open)(struct tty_info *ti);
+	short type;
+	short subtype;
+	char *name;
+	int index;
+	int (*fd_get_index)(int fd, const struct fd_parms *p);
+	int (*img_get_index)(struct tty_info *ti);
+	int (*open)(struct tty_info *ti);
 };
 
-#define TTY_SUBTYPE_MASTER			0x0001
-#define TTY_SUBTYPE_SLAVE			0x0002
+#define TTY_SUBTYPE_MASTER 0x0001
+#define TTY_SUBTYPE_SLAVE  0x0002
 
 static int ptm_fd_get_index(int fd, const struct fd_parms *p)
 {
@@ -211,51 +211,51 @@ static int ext_fd_get_index(int fd, const struct fd_parms *p)
 static int pty_open_ptmx(struct tty_info *info);
 
 static struct tty_driver ptm_driver = {
-	.type			= TTY_TYPE__PTY,
-	.subtype		= TTY_SUBTYPE_MASTER,
-	.name			= "ptmx",
-	.fd_get_index		= ptm_fd_get_index,
-	.img_get_index		= pty_get_index,
-	.open			= pty_open_ptmx,
+	.type = TTY_TYPE__PTY,
+	.subtype = TTY_SUBTYPE_MASTER,
+	.name = "ptmx",
+	.fd_get_index = ptm_fd_get_index,
+	.img_get_index = pty_get_index,
+	.open = pty_open_ptmx,
 };
 
 static int open_simple_tty(struct tty_info *info);
 
 static struct tty_driver console_driver = {
-	.type			= TTY_TYPE__CONSOLE,
-	.name			= "console",
-	.index			= CONSOLE_INDEX,
-	.open			= open_simple_tty,
+	.type = TTY_TYPE__CONSOLE,
+	.name = "console",
+	.index = CONSOLE_INDEX,
+	.open = open_simple_tty,
 };
 
 static struct tty_driver ctty_driver = {
-	.type			= TTY_TYPE__CTTY,
-	.name			= "ctty",
-	.index			= CTTY_INDEX,
-	.open			= open_simple_tty,
+	.type = TTY_TYPE__CTTY,
+	.name = "ctty",
+	.index = CTTY_INDEX,
+	.open = open_simple_tty,
 };
 
 static struct tty_driver vt_driver = {
-	.type			= TTY_TYPE__VT,
-	.name			= "vt",
-	.index			= VT_INDEX,
-	.open			= open_simple_tty,
+	.type = TTY_TYPE__VT,
+	.name = "vt",
+	.index = VT_INDEX,
+	.open = open_simple_tty,
 };
 
 static int open_ext_tty(struct tty_info *info);
 static struct tty_driver ext_driver = {
-	.type			= TTY_TYPE__EXT_TTY,
-	.name			= "ext",
-	.index			= ETTY_INDEX,
-	.open			= open_ext_tty,
-	.fd_get_index		= ext_fd_get_index,
+	.type = TTY_TYPE__EXT_TTY,
+	.name = "ext",
+	.index = ETTY_INDEX,
+	.open = open_ext_tty,
+	.fd_get_index = ext_fd_get_index,
 };
 
 static struct tty_driver serial_driver = {
-	.type			= TTY_TYPE__SERIAL,
-	.name			= "serial",
-	.index			= STTY_INDEX,
-	.open			= open_simple_tty,
+	.type = TTY_TYPE__SERIAL,
+	.name = "serial",
+	.index = STTY_INDEX,
+	.open = open_simple_tty,
 };
 
 static int pts_fd_get_index(int fd, const struct fd_parms *p)
@@ -279,12 +279,12 @@ static int pts_fd_get_index(int fd, const struct fd_parms *p)
 }
 
 static struct tty_driver pts_driver = {
-	.type			= TTY_TYPE__PTY,
-	.subtype		= TTY_SUBTYPE_SLAVE,
-	.name			= "pts",
-	.fd_get_index		= pts_fd_get_index,
-	.img_get_index		= pty_get_index,
-	.open			= pty_open_ptmx,
+	.type = TTY_TYPE__PTY,
+	.subtype = TTY_SUBTYPE_SLAVE,
+	.name = "pts",
+	.fd_get_index = pts_fd_get_index,
+	.img_get_index = pty_get_index,
+	.open = pty_open_ptmx,
 };
 
 struct tty_driver *get_tty_driver(dev_t rdev, dev_t dev)
@@ -292,7 +292,7 @@ struct tty_driver *get_tty_driver(dev_t rdev, dev_t dev)
 	int major, minor;
 	char id[42];
 
-	snprintf(id, sizeof(id), "tty[%"PRIx64":%"PRIx64"]", rdev, dev);
+	snprintf(id, sizeof(id), "tty[%" PRIx64 ":%" PRIx64 "]", rdev, dev);
 	if (external_lookup_id(id) || inherit_fd_lookup_id(id) >= 0)
 		return &ext_driver;
 
@@ -332,7 +332,7 @@ struct tty_driver *get_tty_driver(dev_t rdev, dev_t dev)
 	case USB_SERIAL_MAJOR:
 	case LOW_DENSE_SERIAL_MAJOR:
 		return &serial_driver;
-	case UNIX98_PTY_MASTER_MAJOR ... (UNIX98_PTY_MASTER_MAJOR + UNIX98_PTY_MAJOR_COUNT - 1):
+	case UNIX98_PTY_MASTER_MAJOR ...(UNIX98_PTY_MASTER_MAJOR + UNIX98_PTY_MAJOR_COUNT - 1):
 		return &ptm_driver;
 	case UNIX98_PTY_SLAVE_MAJOR:
 		return &pts_driver;
@@ -366,26 +366,25 @@ int tty_init_restore(void)
 	return 0;
 }
 
-#define winsize_copy(d, s)				\
-	do {						\
-		ASSIGN_MEMBER((d), (s), ws_row);	\
-		ASSIGN_MEMBER((d), (s), ws_col);	\
-		ASSIGN_MEMBER((d), (s), ws_xpixel);	\
-		ASSIGN_MEMBER((d), (s), ws_ypixel);	\
+#define winsize_copy(d, s)                          \
+	do {                                        \
+		ASSIGN_MEMBER((d), (s), ws_row);    \
+		ASSIGN_MEMBER((d), (s), ws_col);    \
+		ASSIGN_MEMBER((d), (s), ws_xpixel); \
+		ASSIGN_MEMBER((d), (s), ws_ypixel); \
 	} while (0)
 
-#define termios_copy(d, s)				\
-	do {						\
-		struct termios __t;			\
-							\
-		memcpy((d)->c_cc, (s)->c_cc,		\
-		       sizeof(__t.c_cc));		\
-							\
-		ASSIGN_MEMBER((d),(s), c_iflag);	\
-		ASSIGN_MEMBER((d),(s), c_oflag);	\
-		ASSIGN_MEMBER((d),(s), c_cflag);	\
-		ASSIGN_MEMBER((d),(s), c_lflag);	\
-		ASSIGN_MEMBER((d),(s), c_line);		\
+#define termios_copy(d, s)                                      \
+	do {                                                    \
+		struct termios __t;                             \
+                                                                \
+		memcpy((d)->c_cc, (s)->c_cc, sizeof(__t.c_cc)); \
+                                                                \
+		ASSIGN_MEMBER((d), (s), c_iflag);               \
+		ASSIGN_MEMBER((d), (s), c_oflag);               \
+		ASSIGN_MEMBER((d), (s), c_cflag);               \
+		ASSIGN_MEMBER((d), (s), c_lflag);               \
+		ASSIGN_MEMBER((d), (s), c_line);                \
 	} while (0)
 
 static int tty_gen_id(struct tty_driver *driver, int index)
@@ -403,7 +402,8 @@ static int tty_verify_active_pairs(void)
 {
 	unsigned long i, unpaired_slaves = 0;
 
-	for_each_bit(i, tty_active_pairs) {
+	for_each_bit(i, tty_active_pairs)
+	{
 		if ((i % 2) == 0) {
 			if (test_bit(i + 1, tty_active_pairs)) {
 				i++;
@@ -464,18 +464,17 @@ static struct file_desc *pty_alloc_reg(struct tty_info *info, bool add)
 	if (tty_is_master(info))
 		strcpy(r->rfe->name, "/dev/ptmx");
 	else
-		snprintf(r->rfe->name, namelen, "/dev/pts/%u",
-			 info->tie->pty->index);
+		snprintf(r->rfe->name, namelen, "/dev/pts/%u", info->tie->pty->index);
 
 	if (add)
 		file_desc_add(&r->d, tfe->id, &noops);
 	else
 		file_desc_init(&r->d, tfe->id, &noops);
 
-	r->rfe->id	= tfe->id;
-	r->rfe->flags	= tfe->flags;
-	r->rfe->fown	= tfe->fown;
-	r->path		= &r->rfe->name[1];
+	r->rfe->id = tfe->id;
+	r->rfe->flags = tfe->flags;
+	r->rfe->fown = tfe->fown;
+	r->path = &r->rfe->name[1];
 
 	return &r->d;
 }
@@ -499,8 +498,7 @@ static struct reg_file_info *pty_alloc_fake_reg(struct tty_info *info, int subty
 	struct reg_file_info *new, *orig;
 	struct file_desc *fake_desc;
 
-	pr_debug("Allocating fake descriptor for %#x (reg_d %p)\n",
-		 info->tfe->id, info->reg_d);
+	pr_debug("Allocating fake descriptor for %#x (reg_d %p)\n", info->tfe->id, info->reg_d);
 
 	BUG_ON(!info->reg_d);
 	BUG_ON(!is_pty(info->driver));
@@ -530,11 +528,9 @@ static struct reg_file_info *pty_alloc_fake_reg(struct tty_info *info, int subty
 			strcat(inverted_path, "ptmx");
 		} else {
 			if (slash_at >= 3 && strncmp(&inverted_path[slash_at - 3], "pts", 3))
-				snprintf(&inverted_path[slash_at + 1], 10, "pts/%u",
-					 info->tie->pty->index);
+				snprintf(&inverted_path[slash_at + 1], 10, "pts/%u", info->tie->pty->index);
 			else
-				snprintf(&inverted_path[slash_at + 1], 10, "%u",
-					 info->tie->pty->index);
+				snprintf(&inverted_path[slash_at + 1], 10, "%u", info->tie->pty->index);
 		}
 
 		new->rfe->name = inverted_path;
@@ -544,8 +540,8 @@ static struct reg_file_info *pty_alloc_fake_reg(struct tty_info *info, int subty
 	return new;
 }
 
-#define pty_alloc_fake_master(info)	pty_alloc_fake_reg(info, TTY_SUBTYPE_MASTER)
-#define pty_alloc_fake_slave(info)	pty_alloc_fake_reg(info, TTY_SUBTYPE_SLAVE)
+#define pty_alloc_fake_master(info) pty_alloc_fake_reg(info, TTY_SUBTYPE_MASTER)
+#define pty_alloc_fake_slave(info)  pty_alloc_fake_reg(info, TTY_SUBTYPE_SLAVE)
 
 static void pty_free_fake_reg(struct reg_file_info **r)
 {
@@ -568,7 +564,7 @@ static int do_open_tty_reg(int ns_root_fd, struct reg_file_info *rfi, void *arg)
 		 * them. So simply setup mode from image
 		 * the regular file engine will check
 		 * for this, so if we fail here it
-		 * gonna be catched anyway.
+		 * gonna be caught anyway.
 		 */
 		if (rfi->rfe->has_mode)
 			fchmod(fd, rfi->rfe->mode);
@@ -594,8 +590,7 @@ static char *path_from_reg(struct file_desc *d)
 	return rfi->path;
 }
 
-static int __pty_open_ptmx_index(int index, int flags,
-			int (*cb)(void *arg, int flags), void *arg, char *path)
+static int __pty_open_ptmx_index(int index, int flags, int (*cb)(void *arg, int flags), void *arg, char *path)
 {
 	int fds[32], i, ret = -1, cur_idx;
 
@@ -611,8 +606,7 @@ static int __pty_open_ptmx_index(int index, int flags,
 		}
 
 		if (ioctl(fds[i], TIOCGPTN, &cur_idx)) {
-			pr_perror("Can't obtain current index on %s",
-				  path);
+			pr_perror("Can't obtain current index on %s", path);
 			break;
 		}
 
@@ -632,8 +626,7 @@ static int __pty_open_ptmx_index(int index, int flags,
 		if (cur_idx < index && (index - cur_idx) < ARRAY_SIZE(fds))
 			continue;
 
-		pr_err("Unable to open %s with specified index %d\n",
-		       path, index);
+		pr_err("Unable to open %s with specified index %d\n", path, index);
 		break;
 	}
 
@@ -652,8 +645,7 @@ static int pty_open_ptmx_index(struct file_desc *d, struct tty_info *info, int f
 	if (info->fdstore_id >= 0)
 		return fdstore_get(info->fdstore_id);
 
-	return __pty_open_ptmx_index(info->tie->pty->index, flags,
-					open_tty_reg, d, path_from_reg(d));
+	return __pty_open_ptmx_index(info->tie->pty->index, flags, open_tty_reg, d, path_from_reg(d));
 }
 
 static int unlock_pty(int fd)
@@ -745,8 +737,7 @@ static int tty_restore_ctl_terminal(struct file_desc *d)
 	}
 
 out:
-	pr_info("Restore session %d by %d tty (index %d)\n",
-		 info->tie->sid, (int)getpid(), index);
+	pr_info("Restore session %d by %d tty (index %d)\n", info->tie->sid, (int)getpid(), index);
 
 	ret = tty_set_sid(slave);
 	if (!ret)
@@ -791,10 +782,9 @@ static bool tty_is_hung(struct tty_info *info)
 
 static bool tty_has_active_pair(struct tty_info *info)
 {
-	int d = tty_is_master(info) ? -1 : + 1;
+	int d = tty_is_master(info) ? -1 : +1;
 
-	return test_bit(info->tfe->tty_info_id + d,
-			tty_active_pairs);
+	return test_bit(info->tfe->tty_info_id + d, tty_active_pairs);
 }
 
 static void tty_show_pty_info(char *prefix, struct tty_info *info)
@@ -807,17 +797,16 @@ static void tty_show_pty_info(char *prefix, struct tty_info *info)
 	else
 		index = driver->index;
 
-	pr_info("%s driver %s id %#x index %d (master %d sid %d pgrp %d inherit %d)\n",
-		prefix, info->driver->name, info->tfe->id, index,
-		tty_is_master(info), info->tie->sid, info->tie->pgrp, info->inherit);
+	pr_info("%s driver %s id %#x index %d (master %d sid %d pgrp %d inherit %d)\n", prefix, info->driver->name,
+		info->tfe->id, index, tty_is_master(info), info->tie->sid, info->tie->pgrp, info->inherit);
 }
 
 struct tty_parms {
 	int tty_id;
 	unsigned has;
-#define HAS_TERMIOS_L	0x1
-#define HAS_TERMIOS	0x2
-#define HAS_WINS	0x4
+#define HAS_TERMIOS_L 0x1
+#define HAS_TERMIOS   0x2
+#define HAS_WINS      0x4
 	struct termios tl;
 	struct termios t;
 	struct winsize w;
@@ -838,16 +827,13 @@ static int do_restore_tty_parms(void *arg, int fd, pid_t pid)
 	 * on termios too. Just to be on the safe side.
 	 */
 
-	if ((p->has & HAS_TERMIOS_L) &&
-			ioctl(fd, TIOCSLCKTRMIOS, &p->tl) < 0)
+	if ((p->has & HAS_TERMIOS_L) && ioctl(fd, TIOCSLCKTRMIOS, &p->tl) < 0)
 		goto err;
 
-	if ((p->has & HAS_TERMIOS) &&
-			ioctl(fd, TCSETS, &p->t) < 0)
+	if ((p->has & HAS_TERMIOS) && ioctl(fd, TCSETS, &p->t) < 0)
 		goto err;
 
-	if ((p->has & HAS_WINS) &&
-			ioctl(fd, TIOCSWINSZ, &p->w) < 0)
+	if ((p->has & HAS_WINS) && ioctl(fd, TIOCSWINSZ, &p->w) < 0)
 		goto err;
 
 	return 0;
@@ -898,9 +884,7 @@ static int restore_tty_params(int fd, struct tty_info *info)
 
 	if (info->tie->has_uid && info->tie->has_gid) {
 		if (fchown(fd, info->tie->uid, info->tie->gid)) {
-			pr_perror("Can't setup uid %d gid %d on %#x",
-				  (int)info->tie->uid,
-				  (int)info->tie->gid,
+			pr_perror("Can't setup uid %d gid %d on %#x", (int)info->tie->uid, (int)info->tie->gid,
 				  info->tfe->id);
 			return -1;
 		}
@@ -921,13 +905,11 @@ static void pty_restore_queued_data(struct tty_info *info, int fd)
 		ProtobufCBinaryData bd = info->tty_data->tde->data;
 		int retval;
 
-		pr_debug("restore queued data on %#x (%zu bytes)\n",
-			 info->tfe->id, (size_t)bd.len);
+		pr_debug("restore queued data on %#x (%zu bytes)\n", info->tfe->id, (size_t)bd.len);
 
 		retval = write(fd, bd.data, bd.len);
 		if (retval != bd.len)
-			pr_err("Restored %d bytes while %zu expected\n",
-			       retval, (size_t)bd.len);
+			pr_err("Restored %d bytes while %zu expected\n", retval, (size_t)bd.len);
 	}
 }
 
@@ -948,8 +930,7 @@ static int pty_open_slaves(struct tty_info *info)
 		if (restore_tty_params(fd, slave))
 			goto err;
 
-		pr_debug("send slave %#x fd %d connected on %s\n",
-			 slave->tfe->id, fd, path_from_reg(slave->reg_d));
+		pr_debug("send slave %#x fd %d connected on %s\n", slave->tfe->id, fd, path_from_reg(slave->reg_d));
 
 		if (send_desc_to_peer(fd, &slave->d)) {
 			pr_err("Can't send file descriptor\n");
@@ -1004,17 +985,14 @@ static int pty_open_unpaired_slave(struct file_desc *d, struct tty_info *slave)
 				goto err;
 			master = pty_open_ptmx_index(&fake->d, slave, O_RDWR);
 			if (master < 0) {
-				pr_err("Can't open master pty %x (index %d)\n",
-					  slave->tfe->id, slave->tie->pty->index);
+				pr_err("Can't open master pty %x (index %d)\n", slave->tfe->id, slave->tie->pty->index);
 				goto err;
 			}
 
 			if (unlock_pty(master))
 				goto err;
 
-			if (opts.orphan_pts_master &&
-			    rpc_send_fd(ACT_ORPHAN_PTS_MASTER, master) == 0) {
-
+			if (opts.orphan_pts_master && rpc_send_fd(ACT_ORPHAN_PTS_MASTER, master) == 0) {
 				fd = open_tty_reg(slave->reg_d, slave->tfe->flags);
 				if (fd < 0) {
 					pr_err("Can't open slave pty %s\n", path_from_reg(slave->reg_d));
@@ -1041,8 +1019,7 @@ static int pty_open_unpaired_slave(struct file_desc *d, struct tty_info *slave)
 			return -1;
 		}
 
-		pr_info("Migrated slave peer %#x -> to fd %d\n",
-			slave->tfe->id, fd);
+		pr_info("Migrated slave peer %#x -> to fd %d\n", slave->tfe->id, fd);
 #else
 		fd = inherit_fd_lookup_id("fd[0]");
 		pr_info("Possible shell job tty in inherit fd: %d\n", fd);
@@ -1053,8 +1030,7 @@ static int pty_open_unpaired_slave(struct file_desc *d, struct tty_info *slave)
 			goto err;
 		master = pty_open_ptmx_index(&fake->d, slave, O_RDONLY);
 		if (master < 0) {
-			pr_err("Can't open master pty %#x (index %d)\n",
-				  slave->tfe->id, slave->tie->pty->index);
+			pr_err("Can't open master pty %#x (index %d)\n", slave->tfe->id, slave->tie->pty->index);
 			goto err;
 		}
 
@@ -1066,7 +1042,6 @@ static int pty_open_unpaired_slave(struct file_desc *d, struct tty_info *slave)
 			pr_err("Can't open slave pty %s\n", path_from_reg(slave->reg_d));
 			goto err;
 		}
-
 	}
 
 out:
@@ -1095,8 +1070,7 @@ out:
 				if (tty_set_prgp(fd, root_item->pgid))
 					goto err;
 			} else {
-				pr_debug("Restore inherited group %d\n",
-					getpgid(getppid()));
+				pr_debug("Restore inherited group %d\n", getpgid(getppid()));
 				if (tty_set_prgp(fd, getpgid(getppid())))
 					goto err;
 			}
@@ -1121,8 +1095,7 @@ static int pty_open_ptmx(struct tty_info *info)
 
 	master = pty_open_ptmx_index(info->reg_d, info, info->tfe->flags);
 	if (master < 0) {
-		pr_err("Can't open master pty %#x (index %d)\n",
-			  info->tfe->id, info->tie->pty->index);
+		pr_err("Can't open master pty %#x (index %d)\n", info->tfe->id, info->tie->pty->index);
 		return -1;
 	}
 
@@ -1136,8 +1109,7 @@ static int pty_open_ptmx(struct tty_info *info)
 		int packet_mode = 1;
 
 		if (ioctl(master, TIOCPKT, &packet_mode) < 0) {
-			pr_perror("Can't set packed mode on %#x",
-				  info->tfe->id);
+			pr_perror("Can't set packed mode on %#x", info->tfe->id);
 			goto err;
 		}
 	}
@@ -1162,8 +1134,7 @@ static int open_simple_tty(struct tty_info *info)
 
 	fd = open_tty_reg(info->reg_d, info->tfe->flags);
 	if (fd < 0) {
-		pr_err("Can't open tty %s %#x\n",
-				info->driver->name, info->tfe->id);
+		pr_err("Can't open tty %s %#x\n", info->driver->name, info->tfe->id);
 		return -1;
 	}
 
@@ -1213,8 +1184,7 @@ static bool tty_deps_restored(struct tty_info *info)
 			tmp = container_of(fle->desc, struct tty_info, d);
 
 			/* slaves wait for masters except ctty */
-			if (tmp->driver->type == TTY_TYPE__CTTY ||
-			    !tty_is_master(tmp))
+			if (tmp->driver->type == TTY_TYPE__CTTY || !tty_is_master(tmp))
 				continue;
 			if (fle->stage != FLE_RESTORED)
 				return false;
@@ -1256,9 +1226,9 @@ static char *tty_d_name(struct file_desc *d, char *buf, size_t s)
 }
 
 static struct file_desc_ops tty_desc_ops = {
-	.type		= FD_TYPES__TTY,
-	.open		= tty_open,
-	.name		= tty_d_name,
+	.type = FD_TYPES__TTY,
+	.open = tty_open,
+	.name = tty_d_name,
 };
 
 static struct pstree_item *find_first_sid(int sid)
@@ -1283,9 +1253,9 @@ static int add_fake_fle(struct pstree_item *item, u32 desc_id)
 
 	fdinfo_entry__init(e);
 
-	e->id		= desc_id;
-	e->fd		= find_unused_fd(item, -1);
-	e->type		= FD_TYPES__TTY;
+	e->id = desc_id;
+	e->fd = find_unused_fd(item, -1);
+	e->type = FD_TYPES__TTY;
 
 	if (collect_fd(vpid(item), e, rsti(item), true)) {
 		xfree(e);
@@ -1334,8 +1304,8 @@ static int ctl_tty_open(struct file_desc *d, int *new_fd)
  * fles of type FD_TYPES__TTY indirectly.
  */
 static struct file_desc_ops ctl_tty_desc_ops = {
-	.type		= FD_TYPES__CTL_TTY,
-	.open		= ctl_tty_open,
+	.type = FD_TYPES__CTL_TTY,
+	.open = ctl_tty_open,
 };
 
 static int prepare_ctl_tty(struct pstree_item *item, u32 ctl_tty_id)
@@ -1361,8 +1331,8 @@ static int prepare_ctl_tty(struct pstree_item *item, u32 ctl_tty_id)
 	 * Add a fake ctl_tty depending on the above fake fle, which will
 	 * actually restore the session.
 	 */
-	ctl_tty	= xmalloc(sizeof(*ctl_tty));
-	e	= xmalloc(sizeof(*e));
+	ctl_tty = xmalloc(sizeof(*ctl_tty));
+	e = xmalloc(sizeof(*e));
 
 	if (!ctl_tty || !e)
 		goto err;
@@ -1377,9 +1347,9 @@ static int prepare_ctl_tty(struct pstree_item *item, u32 ctl_tty_id)
 
 	fdinfo_entry__init(e);
 
-	e->id		= ctl_tty_id;
-	e->fd		= find_unused_fd(item, -1);
-	e->type		= FD_TYPES__CTL_TTY;
+	e->id = ctl_tty_id;
+	e->fd = find_unused_fd(item, -1);
+	e->type = FD_TYPES__CTL_TTY;
 
 	if (collect_fd(vpid(item), e, rsti(item), true))
 		goto err;
@@ -1466,8 +1436,7 @@ static int tty_find_restoring_task(struct tty_info *info)
 		 */
 		item = find_first_sid(info->tie->sid);
 		if (item && vpid(item) == item->sid) {
-			pr_info("Set a control terminal %#x to %d\n",
-				info->tfe->id, info->tie->sid);
+			pr_info("Set a control terminal %#x to %d\n", info->tfe->id, info->tie->sid);
 			return prepare_ctl_tty(item, info->tfe->id);
 		}
 
@@ -1525,8 +1494,7 @@ static int tty_setup_orphan_slavery(void)
 
 		if (!has_leader) {
 			m->create = true;
-			pr_debug("Found orphan slave fake leader (%#x)\n",
-				 m->tfe->id);
+			pr_debug("Found orphan slave fake leader (%#x)\n", m->tfe->id);
 		}
 	}
 
@@ -1566,8 +1534,7 @@ static int tty_setup_slavery(void)
 	 * terminal.
 	 */
 	list_for_each_entry(info, &all_ttys, list) {
-		if (!info->tie->sid || info->ctl_tty ||
-		    info->driver->type == TTY_TYPE__CTTY)
+		if (!info->tie->sid || info->ctl_tty || info->driver->type == TTY_TYPE__CTTY)
 			continue;
 
 		if (!tty_is_master(info) && info->link)
@@ -1577,8 +1544,7 @@ static int tty_setup_slavery(void)
 		pr_debug("ctl tty leader %#x\n", info->tfe->id);
 		peer = info;
 		list_for_each_entry_safe_continue(peer, m, &all_ttys, list) {
-			if (!peer->tie->sid || peer->ctl_tty ||
-			    peer->driver->type == TTY_TYPE__CTTY)
+			if (!peer->tie->sid || peer->ctl_tty || peer->driver->type == TTY_TYPE__CTTY)
 				continue;
 			if (peer->tie->sid == info->tie->sid) {
 				pr_debug(" `- slave %#x\n", peer->tfe->id);
@@ -1623,23 +1589,17 @@ static int tty_setup_slavery(void)
 static int verify_termios(u32 id, TermiosEntry *e)
 {
 	if (e && e->n_c_cc < TERMIOS_NCC) {
-		pr_err("pty ID %#x n_c_cc (%d) has wrong value\n",
-		       id, (int)e->n_c_cc);
+		pr_err("pty ID %#x n_c_cc (%d) has wrong value\n", id, (int)e->n_c_cc);
 		return -1;
 	}
 	return 0;
 }
 
-#define term_opts_missing_cmp(tie, op)		\
-	(!(tie)->termios		op	\
-	 !(tie)->termios_locked		op	\
-	 !(tie)->winsize)
+#define term_opts_missing_cmp(tie, op) (!(tie)->termios op !(tie)->termios_locked op !(tie)->winsize)
 
-#define term_opts_missing_any(p)		\
-	term_opts_missing_cmp(p, ||)
+#define term_opts_missing_any(p) term_opts_missing_cmp(p, ||)
 
-#define term_opts_missing_all(p)		\
-	term_opts_missing_cmp(p, &&)
+#define term_opts_missing_all(p) term_opts_missing_cmp(p, &&)
 
 static int verify_info(TtyInfoEntry *tie, struct tty_driver *driver)
 {
@@ -1658,8 +1618,7 @@ static int verify_info(TtyInfoEntry *tie, struct tty_driver *driver)
 		}
 	}
 
-	if (verify_termios(tie->id, tie->termios_locked) ||
-	    verify_termios(tie->id, tie->termios))
+	if (verify_termios(tie->id, tie->termios_locked) || verify_termios(tie->id, tie->termios))
 		return -1;
 
 	if (tie->termios && tie->id > (MAX_TTYS << 1))
@@ -1702,8 +1661,7 @@ static int collect_one_tty_info_entry(void *obj, ProtobufCMessage *msg, struct c
 
 	driver = get_tty_driver(tie->rdev, tie->dev);
 	if (driver == NULL) {
-		pr_err("Unable to find a tty driver (rdev %#x dev %#x)\n",
-				tie->rdev, tie->dev);
+		pr_err("Unable to find a tty driver (rdev %#x dev %#x)\n", tie->rdev, tie->dev);
 		return -1;
 	}
 
@@ -1736,10 +1694,10 @@ static int collect_one_tty_info_entry(void *obj, ProtobufCMessage *msg, struct c
 }
 
 struct collect_image_info tty_info_cinfo = {
-	.fd_type	= CR_FD_TTY_INFO,
-	.pb_type	= PB_TTY_INFO,
-	.collect	= collect_one_tty_info_entry,
-	.flags		= COLLECT_NOFREE,
+	.fd_type = CR_FD_TTY_INFO,
+	.pb_type = PB_TTY_INFO,
+	.collect = collect_one_tty_info_entry,
+	.flags = COLLECT_NOFREE,
 };
 
 static int prep_tty_restore_cb(struct pprep_head *ph)
@@ -1785,8 +1743,7 @@ static int tty_info_setup(struct tty_info *info)
 	 * reg file rectord because they are inherited from
 	 * command line on restore.
 	 */
-	info->reg_d = try_collect_special_file( info->tfe->has_regf_id ?
-			info->tfe->regf_id : info->tfe->id, 1);
+	info->reg_d = try_collect_special_file(info->tfe->has_regf_id ? info->tfe->regf_id : info->tfe->id, 1);
 	if (!info->reg_d) {
 		if (info->driver->type != TTY_TYPE__EXT_TTY) {
 			if (!deprecated_ok("TTY w/o regfile"))
@@ -1795,8 +1752,7 @@ static int tty_info_setup(struct tty_info *info)
 			if (is_pty(info->driver)) {
 				info->reg_d = pty_alloc_reg(info, true);
 				if (!info->reg_d) {
-					pr_err("Can't generate new reg descriptor for id %#x\n",
-					       info->tfe->id);
+					pr_err("Can't generate new reg descriptor for id %#x\n", info->tfe->id);
 					return -1;
 				}
 			} else {
@@ -1815,10 +1771,10 @@ static int tty_info_setup(struct tty_info *info)
 }
 
 struct collect_image_info tty_cinfo = {
-	.fd_type	= CR_FD_TTY_FILES,
-	.pb_type	= PB_TTY_FILE,
-	.priv_size	= sizeof(struct tty_info),
-	.collect	= collect_one_tty,
+	.fd_type = CR_FD_TTY_FILES,
+	.pb_type = PB_TTY_FILE,
+	.priv_size = sizeof(struct tty_info),
+	.collect = collect_one_tty,
 };
 
 static int collect_one_tty_data(void *obj, ProtobufCMessage *msg, struct cr_img *i)
@@ -1827,8 +1783,7 @@ static int collect_one_tty_data(void *obj, ProtobufCMessage *msg, struct cr_img 
 	struct tty_info *info;
 
 	tdo->tde = pb_msg(msg, TtyDataEntry);
-	pr_debug("Collected data for id %#x (size %zu bytes)\n",
-		 tdo->tde->tty_id, (size_t)tdo->tde->data.len);
+	pr_debug("Collected data for id %#x (size %zu bytes)\n", tdo->tde->tty_id, (size_t)tdo->tde->data.len);
 
 	list_for_each_entry(info, &all_ttys, list) {
 		if (tdo->tde->tty_id == info->tie->id) {
@@ -1842,10 +1797,10 @@ static int collect_one_tty_data(void *obj, ProtobufCMessage *msg, struct cr_img 
 }
 
 struct collect_image_info tty_cdata = {
-	.fd_type	= CR_FD_TTY_DATA,
-	.pb_type	= PB_TTY_DATA,
-	.priv_size	= sizeof(struct tty_data_entry),
-	.collect	= collect_one_tty_data,
+	.fd_type = CR_FD_TTY_DATA,
+	.pb_type = PB_TTY_DATA,
+	.priv_size = sizeof(struct tty_data_entry),
+	.collect = collect_one_tty_data,
 };
 
 /* Make sure the ttys we're dumping do belong our process tree */
@@ -1879,16 +1834,15 @@ int dump_verify_tty_sids(void)
 			if (!item || vpid(item) != dinfo->sid) {
 				if (!opts.shell_job) {
 					pr_err("Found dangling tty with sid %d pgid %d (%s) on peer fd %d.\n",
-					       dinfo->sid, dinfo->pgrp,
-					       dinfo->driver->name, dinfo->fd);
+					       dinfo->sid, dinfo->pgrp, dinfo->driver->name, dinfo->fd);
 					/*
 					 * First thing people do with criu is dump smth
 					 * run from shell. This is typical pitfall, warn
 					 * user about it explicitly.
 					 */
 					pr_msg("Task attached to shell terminal. "
-						"Consider using --" OPT_SHELL_JOB " option. "
-						"More details on http://criu.org/Simple_loop\n");
+					       "Consider using --" OPT_SHELL_JOB " option. "
+					       "More details on http://criu.org/Simple_loop\n");
 					ret = -1;
 				}
 			}
@@ -1900,11 +1854,11 @@ int dump_verify_tty_sids(void)
 
 static int dump_tty_info(int lfd, u32 id, const struct fd_parms *p, struct tty_driver *driver, int index)
 {
-	TtyInfoEntry info		= TTY_INFO_ENTRY__INIT;
-	TermiosEntry termios		= TERMIOS_ENTRY__INIT;
-	TermiosEntry termios_locked	= TERMIOS_ENTRY__INIT;
-	WinsizeEntry winsize		= WINSIZE_ENTRY__INIT;
-	TtyPtyEntry pty			= TTY_PTY_ENTRY__INIT;
+	TtyInfoEntry info = TTY_INFO_ENTRY__INIT;
+	TermiosEntry termios = TERMIOS_ENTRY__INIT;
+	TermiosEntry termios_locked = TERMIOS_ENTRY__INIT;
+	WinsizeEntry winsize = WINSIZE_ENTRY__INIT;
+	TtyPtyEntry pty = TTY_PTY_ENTRY__INIT;
 	struct parasite_tty_args *pti;
 	struct tty_dump_info *dinfo;
 
@@ -1934,14 +1888,14 @@ static int dump_tty_info(int lfd, u32 id, const struct fd_parms *p, struct tty_d
 	if (!dinfo)
 		return -1;
 
-	dinfo->id		= id;
-	dinfo->sid		= pti->sid;
-	dinfo->pgrp		= pti->pgrp;
-	dinfo->pid_real		= p->pid;
-	dinfo->fd		= p->fd;
-	dinfo->mnt_id		= p->mnt_id;
-	dinfo->driver		= driver;
-	dinfo->flags		= p->flags;
+	dinfo->id = id;
+	dinfo->sid = pti->sid;
+	dinfo->pgrp = pti->pgrp;
+	dinfo->pid_real = p->pid;
+	dinfo->fd = p->fd;
+	dinfo->mnt_id = p->mnt_id;
+	dinfo->driver = driver;
+	dinfo->flags = p->flags;
 
 	if (is_pty(driver)) {
 		dinfo->lfd = dup(lfd);
@@ -1950,33 +1904,33 @@ static int dump_tty_info(int lfd, u32 id, const struct fd_parms *p, struct tty_d
 			xfree(dinfo);
 			return -1;
 		}
-		dinfo->index	= index;
+		dinfo->index = index;
 	} else {
-		dinfo->index	= -1;
-		dinfo->lfd	= -1;
+		dinfo->index = -1;
+		dinfo->lfd = -1;
 	}
 
 	list_add_tail(&dinfo->list, &all_ttys);
 
-	info.id			= id;
-	info.sid		= pti->sid;
-	info.pgrp		= pti->pgrp;
-	info.rdev		= p->stat.st_rdev;
-	info.dev		= p->stat.st_dev;
-	info.has_dev		= true;
-	info.locked		= pti->st_lock;
-	info.exclusive		= pti->st_excl;
-	info.packet_mode	= pti->st_pckt;
+	info.id = id;
+	info.sid = pti->sid;
+	info.pgrp = pti->pgrp;
+	info.rdev = p->stat.st_rdev;
+	info.dev = p->stat.st_dev;
+	info.has_dev = true;
+	info.locked = pti->st_lock;
+	info.exclusive = pti->st_excl;
+	info.packet_mode = pti->st_pckt;
 
-	info.has_uid		= true;
-	info.uid		= userns_uid(p->stat.st_uid);
-	info.has_gid		= true;
-	info.gid		= userns_gid(p->stat.st_gid);
+	info.has_uid = true;
+	info.uid = userns_uid(p->stat.st_uid);
+	info.has_gid = true;
+	info.gid = userns_gid(p->stat.st_gid);
 
 	info.type = driver->type;
 	if (info.type == TTY_TYPE__PTY) {
-		info.pty	= &pty;
-		pty.index	= index;
+		info.pty = &pty;
+		pty.index = index;
 	}
 
 	/*
@@ -1997,15 +1951,15 @@ static int dump_tty_info(int lfd, u32 id, const struct fd_parms *p, struct tty_d
 	if (is_pty(driver))
 		tty_test_and_set(id, tty_active_pairs);
 
-	info.termios		= &termios;
-	info.termios_locked	= &termios_locked;
-	info.winsize		= &winsize;
+	info.termios = &termios;
+	info.termios_locked = &termios_locked;
+	info.winsize = &winsize;
 
-	termios.n_c_cc		= TERMIOS_NCC;
-	termios.c_cc		= xmalloc(pb_repeated_size(&termios, c_cc));
+	termios.n_c_cc = TERMIOS_NCC;
+	termios.c_cc = xmalloc(pb_repeated_size(&termios, c_cc));
 
-	termios_locked.n_c_cc	= TERMIOS_NCC;
-	termios_locked.c_cc	= xmalloc(pb_repeated_size(&termios_locked, c_cc));
+	termios_locked.n_c_cc = TERMIOS_NCC;
+	termios_locked.c_cc = xmalloc(pb_repeated_size(&termios_locked, c_cc));
 
 	if (!termios.c_cc || !termios_locked.c_cc)
 		goto out;
@@ -2047,6 +2001,12 @@ static int dump_one_tty(int lfd, u32 id, const struct fd_parms *p)
 	pr_info("Dumping tty %d with id %#x\n", lfd, id);
 
 	driver = get_tty_driver(p->stat.st_rdev, p->stat.st_dev);
+	if (driver == NULL) {
+		pr_err("Unable to find a tty driver (rdev %#" PRIx64 " dev %#" PRIx64 ")\n", p->stat.st_rdev,
+		       p->stat.st_dev);
+		return -1;
+	}
+
 	if (driver->fd_get_index)
 		index = driver->fd_get_index(lfd, p);
 	else
@@ -2057,10 +2017,10 @@ static int dump_one_tty(int lfd, u32 id, const struct fd_parms *p)
 		return -1;
 	}
 
-	e.id		= id;
-	e.tty_info_id	= tty_gen_id(driver, index);
-	e.flags		= p->flags;
-	e.fown		= (FownEntry *)&p->fown;
+	e.id = id;
+	e.tty_info_id = tty_gen_id(driver, index);
+	e.flags = p->flags;
+	e.fown = (FownEntry *)&p->fown;
 
 	if (driver->type != TTY_TYPE__EXT_TTY) {
 		u32 rf_id;
@@ -2072,7 +2032,6 @@ static int dump_one_tty(int lfd, u32 id, const struct fd_parms *p)
 		e.has_regf_id = true;
 		e.regf_id = rf_id;
 	}
-
 
 	/*
 	 * FIXME
@@ -2110,8 +2069,8 @@ static int dump_one_tty(int lfd, u32 id, const struct fd_parms *p)
 }
 
 const struct fdtype_ops tty_dump_ops = {
-	.type	= FD_TYPES__TTY,
-	.dump	= dump_one_tty,
+	.type = FD_TYPES__TTY,
+	.dump = dump_one_tty,
 };
 
 static int tty_reblock(int id, int lfd, int flags)
@@ -2166,30 +2125,26 @@ static int tty_do_dump_queued_data(struct tty_dump_info *dinfo)
 	while (1) {
 		ret = read(dinfo->lfd, &buf[off], size - off);
 		if (ret == 0) {
-			pr_debug("No more data on tty (%s %#x)\n",
-				 dinfo->driver->name, dinfo->id);
+			pr_debug("No more data on tty (%s %#x)\n", dinfo->driver->name, dinfo->id);
 			break;
 		} else if (ret < 0) {
 			if (errno == EAGAIN) {
-				pr_debug("Not waiting data tty (%s %#x)\n",
-					 dinfo->driver->name, dinfo->id);
+				pr_debug("Not waiting data tty (%s %#x)\n", dinfo->driver->name, dinfo->id);
 				break;
 			} else {
 				ret = -errno;
-				pr_perror("Can't read data from tty (%s %#x)",
-					  dinfo->driver->name, dinfo->id);
+				pr_perror("Can't read data from tty (%s %#x)", dinfo->driver->name, dinfo->id);
 				xfree(buf);
 				return ret;
 			}
 		}
 
 		off += ret;
-		pr_debug("Read %d bytes (%d) from tty (%s %#x)\n",
-			 ret, (int)off, dinfo->driver->name, dinfo->id);
+		pr_debug("Read %d bytes (%d) from tty (%s %#x)\n", ret, (int)off, dinfo->driver->name, dinfo->id);
 
 		if (off >= size) {
-			pr_err("The tty (%s %#x) queued data overflow %zu bytes limit\n",
-			       dinfo->driver->name, dinfo->id, size);
+			pr_err("The tty (%s %#x) queued data overflow %zu bytes limit\n", dinfo->driver->name,
+			       dinfo->id, size);
 			off = size;
 			break;
 		}
@@ -2199,12 +2154,11 @@ static int tty_do_dump_queued_data(struct tty_dump_info *dinfo)
 		dinfo->tty_data = buf;
 		dinfo->tty_data_size = off;
 
-		e.tty_id	= dinfo->id;
-		e.data.data	= (void *)buf;
-		e.data.len	= off;
+		e.tty_id = dinfo->id;
+		e.data.data = (void *)buf;
+		e.data.len = off;
 
-		ret = pb_write_one(img_from_set(glob_imgset, CR_FD_TTY_DATA),
-				   &e, PB_TTY_DATA);
+		ret = pb_write_one(img_from_set(glob_imgset, CR_FD_TTY_DATA), &e, PB_TTY_DATA);
 	} else {
 		xfree(buf);
 		ret = 0;
@@ -2220,8 +2174,7 @@ static int tty_do_dump_queued_data(struct tty_dump_info *dinfo)
 static void __tty_do_writeback_queued_data(struct tty_dump_info *dinfo)
 {
 	if (dinfo->tty_data) {
-		if (write(dinfo->link->lfd, dinfo->tty_data,
-			  dinfo->tty_data_size) != dinfo->tty_data_size)
+		if (write(dinfo->link->lfd, dinfo->tty_data, dinfo->tty_data_size) != dinfo->tty_data_size)
 			pr_perror("Can't writeback to tty (%#x)", dinfo->id);
 	}
 	tty_reblock(dinfo->link->id, dinfo->link->lfd, dinfo->link->flags);
@@ -2324,9 +2277,7 @@ static int tty_verify_ctty(void)
 			continue;
 
 		list_for_each_entry(p, &all_ttys, list) {
-			if (!is_pty(p->driver)	||
-			    p->sid != d->sid	||
-			    p->pgrp != d->sid)
+			if (!is_pty(p->driver) || p->sid != d->sid || p->pgrp != d->sid)
 				continue;
 			n = p;
 			break;
@@ -2384,7 +2335,7 @@ int tty_prep_fds(void)
 
 static int open_pty(void *arg, int flags)
 {
-	int dfd = (unsigned long) arg;
+	int dfd = (unsigned long)arg;
 	/*
 	 * Never set as a control terminal automatically, all
 	 * ctty magic happens only in tty_set_sid().
@@ -2399,7 +2350,7 @@ static int pty_create_ptmx_index(int dfd, int index, int flags)
 	struct tty_info *info;
 	int fd, id;
 
-	fd = __pty_open_ptmx_index(index, flags, open_pty, (void *)(unsigned long) dfd, "ptmx");
+	fd = __pty_open_ptmx_index(index, flags, open_pty, (void *)(unsigned long)dfd, "ptmx");
 	if (fd < 0)
 		return -1;
 
@@ -2470,8 +2421,7 @@ found:
 	}
 
 	if (master_mp->nsid->type != NS_ROOT) {
-		pr_err("The master for %s isn't from the root mntns\n",
-				m->root);
+		pr_err("The master for %s isn't from the root mntns\n", m->root);
 		return -1;
 	}
 
@@ -2484,12 +2434,11 @@ int devpts_restore(struct mount_info *pm)
 	struct mount_info *bm;
 	int dfd, exit_code = -1;
 
-	dfd = open(pm->mountpoint, O_RDONLY);
+	dfd = open(service_mountpoint(pm), O_RDONLY);
 	if (dfd < 0) {
-		pr_perror("Unable to open %s", pm->mountpoint);
+		pr_perror("Unable to open %s", service_mountpoint(pm));
 		return -1;
 	}
-
 
 	list_for_each_entry(bm, &pm->mnt_bind, mnt_bind) {
 		int idx;

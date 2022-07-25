@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <linux/icmp.h>
 #include <linux/icmpv6.h>
+#include <poll.h>
 
 #include "../soccr/soccr.h"
 
@@ -35,11 +36,11 @@
 
 #include "images/inventory.pb-c.h"
 
-#undef  LOG_PREFIX
+#undef LOG_PREFIX
 #define LOG_PREFIX "inet: "
 
-#define PB_ALEN_INET	1
-#define PB_ALEN_INET6	4
+#define PB_ALEN_INET  1
+#define PB_ALEN_INET6 4
 
 static LIST_HEAD(inet_ports);
 
@@ -86,37 +87,31 @@ static void show_one_inet(const char *act, const struct inet_sk_desc *sk)
 {
 	char src_addr[INET_ADDR_LEN] = "<unknown>";
 
-	if (inet_ntop(sk->sd.family, (void *)sk->src_addr, src_addr,
-		      INET_ADDR_LEN) == NULL) {
+	if (inet_ntop(sk->sd.family, (void *)sk->src_addr, src_addr, INET_ADDR_LEN) == NULL) {
 		pr_perror("Failed to translate address");
 	}
 
 	pr_debug("\t%s: ino %#8x family %-10s type %-14s port %8d "
-		"state %-16s src_addr %s\n", act, sk->sd.ino,
-		___socket_family_name(sk->sd.family),
-		___socket_type_name(sk->type), sk->src_port,
-		___tcp_state_name(sk->state), src_addr);
+		 "state %-16s src_addr %s\n",
+		 act, sk->sd.ino, ___socket_family_name(sk->sd.family), ___socket_type_name(sk->type), sk->src_port,
+		 ___tcp_state_name(sk->state), src_addr);
 }
 
 static void show_one_inet_img(const char *act, const InetSkEntry *e)
 {
 	char src_addr[INET_ADDR_LEN] = "<unknown>";
 
-	if (inet_ntop(e->family, (void *)e->src_addr, src_addr,
-		      INET_ADDR_LEN) == NULL) {
+	if (inet_ntop(e->family, (void *)e->src_addr, src_addr, INET_ADDR_LEN) == NULL) {
 		pr_perror("Failed to translate address");
 	}
 
 	pr_debug("\t%s: family %-10s type %-14s proto %-16s port %d "
-		"state %-16s src_addr %s\n", act,
-		___socket_family_name(e->family),
-		___socket_type_name(e->type),
-		___socket_proto_name(e->proto),
-		e->src_port, ___tcp_state_name(e->state),
-		src_addr);
+		 "state %-16s src_addr %s\n",
+		 act, ___socket_family_name(e->family), ___socket_type_name(e->type), ___socket_proto_name(e->proto),
+		 e->src_port, ___tcp_state_name(e->state), src_addr);
 }
 
-static int can_dump_ipproto(int ino, int proto, int type)
+static int can_dump_ipproto(unsigned int ino, int proto, int type)
 {
 	/* Raw sockets may have any protocol inside */
 	if (type == SOCK_RAW)
@@ -144,26 +139,23 @@ static int can_dump_inet_sk(const struct inet_sk_desc *sk)
 	if (sk->type == SOCK_DGRAM) {
 		if (sk->wqlen != 0) {
 			if (sk->cork) {
-				pr_err("Can't dump corked dgram socket %x\n",
-					sk->sd.ino);
+				pr_err("Can't dump corked dgram socket %x\n", sk->sd.ino);
 				return 0;
 			} else {
-				pr_warn("Write queue of the %x socket isn't empty\n",
-					sk->sd.ino);
+				pr_warn("Write queue of the %x socket isn't empty\n", sk->sd.ino);
 			}
 		}
 
 		if (sk->rqlen)
-			pr_warn("Read queue is dropped for socket %x\n",
-					sk->sd.ino);
+			pr_warn("Read queue is dropped for socket %x\n", sk->sd.ino);
 
 		return 1;
 	}
 
 	if (sk->type != SOCK_STREAM && sk->type != SOCK_RAW) {
 		pr_err("Can't dump %d inet socket %x. "
-				"Only stream, dgram and raw are supported.\n",
-				sk->type, sk->sd.ino);
+		       "Only stream, dgram and raw are supported.\n",
+		       sk->type, sk->sd.ino);
 		return 0;
 	}
 
@@ -171,8 +163,7 @@ static int can_dump_inet_sk(const struct inet_sk_desc *sk)
 	case TCP_LISTEN:
 		if (sk->rqlen != 0) {
 			if (opts.tcp_skip_in_flight) {
-				pr_info("Skipping in-flight connection (l) for %x\n",
-						sk->sd.ino);
+				pr_info("Skipping in-flight connection (l) for %x\n", sk->sd.ino);
 				break;
 			}
 			/*
@@ -180,10 +171,10 @@ static int can_dump_inet_sk(const struct inet_sk_desc *sk)
 			 * requests for listen sockets. Need to pick
 			 * those up and fix the connect job respectively
 			 */
-			pr_err("In-flight connection (l) for %x\n",
-					sk->sd.ino);
+			pr_err("In-flight connection (l) for %x\n", sk->sd.ino);
 			pr_err("In-flight connections can be ignored with the "
-					"--%s option.\n", SK_INFLIGHT_PARAM);
+			       "--%s option.\n",
+			       SK_INFLIGHT_PARAM);
 			return 0;
 		}
 		break;
@@ -194,9 +185,8 @@ static int can_dump_inet_sk(const struct inet_sk_desc *sk)
 	case TCP_LAST_ACK:
 	case TCP_CLOSING:
 	case TCP_SYN_SENT:
-		if (!opts.tcp_established_ok) {
-			pr_err("Connected TCP socket, consider using --%s option.\n",
-					SK_EST_PARAM);
+		if (!opts.tcp_established_ok && !opts.tcp_close) {
+			pr_err("Connected TCP socket, consider using --%s option.\n", SK_EST_PARAM);
 			return 0;
 		}
 		break;
@@ -217,7 +207,8 @@ static int dump_sockaddr(union libsoccr_addr *sa, u32 *pb_port, u32 *pb_addr)
 		memcpy(pb_addr, &sa->v4.sin_addr, sizeof(sa->v4.sin_addr));
 		*pb_port = ntohs(sa->v4.sin_port);
 		return 0;
-	} if (sa->sa.sa_family == AF_INET6) {
+	}
+	if (sa->sa.sa_family == AF_INET6) {
 		*pb_port = ntohs(sa->v6.sin6_port);
 		memcpy(pb_addr, &sa->v6.sin6_addr, sizeof(sa->v6.sin6_addr));
 		return 0;
@@ -225,8 +216,31 @@ static int dump_sockaddr(union libsoccr_addr *sa, u32 *pb_port, u32 *pb_addr)
 	return -1;
 }
 
-static struct inet_sk_desc *gen_uncon_sk(int lfd, const struct fd_parms *p,
-					 int proto, int family, int type)
+/*
+ * There is no direct way to get shutdown state for unconnected sockets,
+ * but we can get it indirectly from polling events for a socket.
+ */
+static int dump_tcp_uncon_shutdown(int lfd, struct inet_sk_desc *sk)
+{
+	struct pollfd pfd = { .fd = lfd, .events = POLLRDHUP | POLLHUP };
+
+	if (poll(&pfd, 1, 0) != 1) {
+		pr_perror("Unable to poll the socket");
+		return -1;
+	}
+
+	sk->shutdown = 0;
+
+	if ((pfd.revents & POLLHUP) == 0)
+		return 0;
+
+	if (pfd.revents & POLLRDHUP)
+		sk->shutdown |= SK_SHUTDOWN__READ;
+
+	return 0;
+}
+
+static struct inet_sk_desc *gen_uncon_sk(int lfd, const struct fd_parms *p, int proto, int family, int type)
 {
 	struct inet_sk_desc *sk;
 	union libsoccr_addr address;
@@ -278,12 +292,12 @@ static struct inet_sk_desc *gen_uncon_sk(int lfd, const struct fd_parms *p,
 
 	if (type != SOCK_RAW && proto == IPPROTO_TCP) {
 		struct {
-			__u8    tcpi_state;
-			__u8    tcpi_ca_state;
-			__u8    tcpi_retransmits;
-			__u8    tcpi_probes;
-			__u8    tcpi_backoff;
-			__u8    tcpi_options;
+			__u8 tcpi_state;
+			__u8 tcpi_ca_state;
+			__u8 tcpi_retransmits;
+			__u8 tcpi_probes;
+			__u8 tcpi_backoff;
+			__u8 tcpi_options;
 		} info;
 
 		aux = sizeof(info);
@@ -294,12 +308,14 @@ static struct inet_sk_desc *gen_uncon_sk(int lfd, const struct fd_parms *p,
 		}
 
 		if (info.tcpi_state != TCP_CLOSE) {
-			pr_err("Socket state %d obtained but expected %d\n",
-			       info.tcpi_state, TCP_CLOSE);
+			pr_err("Socket state %d obtained but expected %d\n", info.tcpi_state, TCP_CLOSE);
 			goto err;
 		}
 
 		sk->wqlen = info.tcpi_backoff;
+
+		if (dump_tcp_uncon_shutdown(lfd, sk))
+			goto err;
 	}
 
 	sk->state = TCP_CLOSE;
@@ -316,14 +332,11 @@ static int ip_raw_opts_alloc(int family, int proto, IpOptsRawEntry *r)
 {
 	if (proto == IPPROTO_ICMP || proto == IPPROTO_ICMPV6) {
 		if (family == AF_INET6)
-			r->n_icmpv_filter = NELEMS_AS_ARRAY(struct icmp6_filter,
-							    r->icmpv_filter);
+			r->n_icmpv_filter = NELEMS_AS_ARRAY(struct icmp6_filter, r->icmpv_filter);
 		else
-			r->n_icmpv_filter = NELEMS_AS_ARRAY(struct icmp_filter,
-							    r->icmpv_filter);
+			r->n_icmpv_filter = NELEMS_AS_ARRAY(struct icmp_filter, r->icmpv_filter);
 		r->icmpv_filter = xmalloc(pb_repeated_size(r, icmpv_filter));
-		pr_debug("r->n_icmpv_filter %d size %d\n",
-			 (int)r->n_icmpv_filter,
+		pr_debug("r->n_icmpv_filter %d size %d\n", (int)r->n_icmpv_filter,
 			 (int)pb_repeated_size(r, icmpv_filter));
 		if (!r->icmpv_filter)
 			return -ENOMEM;
@@ -355,8 +368,7 @@ static int dump_ip_raw_opts(int sk, int family, int proto, IpOptsRawEntry *r)
 		ret |= dump_opt(sk, SOL_IPV6, IPV6_HDRINCL, &r->hdrincl);
 
 		if (proto == IPPROTO_ICMPV6)
-			ret |= do_dump_opt(sk, SOL_ICMPV6, ICMPV6_FILTER,
-					   r->icmpv_filter,
+			ret |= do_dump_opt(sk, SOL_ICMPV6, ICMPV6_FILTER, r->icmpv_filter,
 					   pb_repeated_size(r, icmpv_filter));
 		else
 			ip_raw_opts_free(r);
@@ -366,8 +378,7 @@ static int dump_ip_raw_opts(int sk, int family, int proto, IpOptsRawEntry *r)
 		r->has_nodefrag = !!r->nodefrag;
 
 		if (proto == IPPROTO_ICMP)
-			ret |= do_dump_opt(sk, SOL_RAW, ICMP_FILTER,
-					   r->icmpv_filter,
+			ret |= do_dump_opt(sk, SOL_RAW, ICMP_FILTER, r->icmpv_filter,
 					   pb_repeated_size(r, icmpv_filter));
 		else
 			ip_raw_opts_free(r);
@@ -400,12 +411,12 @@ static int dump_ip_opts(int sk, int family, int type, int proto, IpOptsEntry *io
  * link local and (multicast + loopback + linklocal) addrs require a
  * scope id.
  */
-#define IPV6_ADDR_SCOPE_NODELOCAL       0x01
-#define IPV6_ADDR_SCOPE_LINKLOCAL       0x02
+#define IPV6_ADDR_SCOPE_NODELOCAL 0x01
+#define IPV6_ADDR_SCOPE_LINKLOCAL 0x02
 static bool needs_scope_id(uint32_t *src_addr)
 {
 	if ((src_addr[0] & htonl(0xFF00000)) == htonl(0xFF000000)) {
-		if (src_addr[1] & (IPV6_ADDR_SCOPE_LINKLOCAL|IPV6_ADDR_SCOPE_NODELOCAL))
+		if (src_addr[1] & (IPV6_ADDR_SCOPE_LINKLOCAL | IPV6_ADDR_SCOPE_NODELOCAL))
 			return true;
 	}
 
@@ -425,8 +436,7 @@ static int do_dump_one_inet_fd(int lfd, u32 id, const struct fd_parms *p, int fa
 	SkOptsEntry skopts = SK_OPTS_ENTRY__INIT;
 	int ret = -1, err = -1, proto, aux, type;
 
-	ret = do_dump_opt(lfd, SOL_SOCKET, SO_PROTOCOL,
-					&proto, sizeof(proto));
+	ret = do_dump_opt(lfd, SOL_SOCKET, SO_PROTOCOL, &proto, sizeof(proto));
 	if (ret)
 		goto err;
 
@@ -473,24 +483,24 @@ static int do_dump_one_inet_fd(int lfd, u32 id, const struct fd_parms *p, int fa
 
 	BUG_ON(sk->sd.already_dumped);
 
-	ie.id		= id;
-	ie.ino		= sk->sd.ino;
+	ie.id = id;
+	ie.ino = sk->sd.ino;
 	if (sk->sd.sk_ns) {
-		ie.ns_id	= sk->sd.sk_ns->id;
-		ie.has_ns_id	= true;
+		ie.ns_id = sk->sd.sk_ns->id;
+		ie.has_ns_id = true;
 	}
-	ie.family	= family;
-	ie.proto	= proto;
-	ie.type		= sk->type;
-	ie.src_port	= sk->src_port;
-	ie.dst_port	= sk->dst_port;
-	ie.backlog	= sk->wqlen;
-	ie.flags	= p->flags;
+	ie.family = family;
+	ie.proto = proto;
+	ie.type = sk->type;
+	ie.src_port = sk->src_port;
+	ie.dst_port = sk->dst_port;
+	ie.backlog = sk->wqlen;
+	ie.flags = p->flags;
 
-	ie.fown		= (FownEntry *)&p->fown;
-	ie.opts		= &skopts;
-	ie.ip_opts	= &ipopts;
-	ie.ip_opts->raw	= &ipopts_raw;
+	ie.fown = (FownEntry *)&p->fown;
+	ie.opts = &skopts;
+	ie.ip_opts = &ipopts;
+	ie.ip_opts->raw = &ipopts_raw;
 
 	ie.n_src_addr = PB_ALEN_INET;
 	ie.n_dst_addr = PB_ALEN_INET;
@@ -552,6 +562,8 @@ static int do_dump_one_inet_fd(int lfd, u32 id, const struct fd_parms *p, int fa
 	switch (proto) {
 	case IPPROTO_TCP:
 		err = (type != SOCK_RAW) ? dump_one_tcp(lfd, sk, &skopts) : 0;
+		if (sk->shutdown)
+			sk_encode_shutdown(&ie, sk->shutdown);
 		break;
 	case IPPROTO_UDP:
 	case IPPROTO_UDPLITE:
@@ -589,8 +601,8 @@ static int dump_one_inet_fd(int lfd, u32 id, const struct fd_parms *p)
 }
 
 const struct fdtype_ops inet_dump_ops = {
-	.type		= FD_TYPES__INETSK,
-	.dump		= dump_one_inet_fd,
+	.type = FD_TYPES__INETSK,
+	.dump = dump_one_inet_fd,
 };
 
 static int dump_one_inet6_fd(int lfd, u32 id, const struct fd_parms *p)
@@ -599,15 +611,15 @@ static int dump_one_inet6_fd(int lfd, u32 id, const struct fd_parms *p)
 }
 
 const struct fdtype_ops inet6_dump_ops = {
-	.type		= FD_TYPES__INETSK,
-	.dump		= dump_one_inet6_fd,
+	.type = FD_TYPES__INETSK,
+	.dump = dump_one_inet6_fd,
 };
 
 int inet_collect_one(struct nlmsghdr *h, int family, int type, struct ns_id *ns)
 {
 	struct inet_sk_desc *d;
 	struct inet_diag_msg *m = NLMSG_DATA(h);
-	struct nlattr *tb[INET_DIAG_MAX+1];
+	struct nlattr *tb[INET_DIAG_MAX + 1];
 	int ret;
 
 	nlmsg_parse(h, sizeof(struct inet_diag_msg), tb, INET_DIAG_MAX, NULL);
@@ -680,19 +692,15 @@ struct collect_image_info inet_sk_cinfo = {
 static int inet_validate_address(InetSkEntry *ie)
 {
 	if ((ie->family == AF_INET) &&
-			/* v0.1 had 4 in ipv4 addr len */
-			(ie->n_src_addr >= PB_ALEN_INET) &&
-			(ie->n_dst_addr >= PB_ALEN_INET))
+	    /* v0.1 had 4 in ipv4 addr len */
+	    (ie->n_src_addr >= PB_ALEN_INET) && (ie->n_dst_addr >= PB_ALEN_INET))
 		return 0;
 
-	if ((ie->family == AF_INET6) &&
-			(ie->n_src_addr == PB_ALEN_INET6) &&
-			(ie->n_dst_addr == PB_ALEN_INET6))
+	if ((ie->family == AF_INET6) && (ie->n_src_addr == PB_ALEN_INET6) && (ie->n_dst_addr == PB_ALEN_INET6))
 		return 0;
 
-	pr_err("Addr len mismatch f %d ss %zu ds %zu\n", ie->family,
-			pb_repeated_size(ie, src_addr),
-			pb_repeated_size(ie, dst_addr));
+	pr_err("Addr len mismatch f %d ss %zu ds %zu\n", ie->family, pb_repeated_size(ie, src_addr),
+	       pb_repeated_size(ie, dst_addr));
 
 	return -1;
 }
@@ -761,8 +769,8 @@ static int restore_ip_raw_opts(int sk, int family, int proto, IpOptsRawEntry *r)
 	if (r->icmpv_filter) {
 		if (proto == IPPROTO_ICMP || proto == IPPROTO_ICMPV6) {
 			ret |= do_restore_opt(sk, family == AF_INET6 ? SOL_ICMPV6 : SOL_RAW,
-					      family == AF_INET6 ? ICMPV6_FILTER : ICMP_FILTER,
-					      r->icmpv_filter, pb_repeated_size(r, icmpv_filter));
+					      family == AF_INET6 ? ICMPV6_FILTER : ICMP_FILTER, r->icmpv_filter,
+					      pb_repeated_size(r, icmpv_filter));
 		}
 	}
 
@@ -770,8 +778,7 @@ static int restore_ip_raw_opts(int sk, int family, int proto, IpOptsRawEntry *r)
 		ret |= restore_opt(sk, SOL_IP, IP_NODEFRAG, &r->nodefrag);
 	if (r->has_hdrincl)
 		ret |= restore_opt(sk, family == AF_INET6 ? SOL_IPV6 : SOL_IP,
-				   family == AF_INET6 ? IPV6_HDRINCL : IP_HDRINCL,
-				   &r->hdrincl);
+				   family == AF_INET6 ? IPV6_HDRINCL : IP_HDRINCL, &r->hdrincl);
 
 	return ret;
 }
@@ -787,6 +794,7 @@ int restore_ip_opts(int sk, int family, int proto, IpOptsEntry *ioe)
 		ret |= restore_ip_raw_opts(sk, family, proto, ioe->raw);
 	return ret;
 }
+
 static int open_inet_sk(struct file_desc *d, int *new_fd)
 {
 	struct fdinfo_list_entry *fle = file_master(d);
@@ -884,8 +892,7 @@ static int open_inet_sk(struct file_desc *d, int *new_fd)
 		mutex_unlock(&ii->port->reuseaddr_lock);
 	}
 
-	if (ie->dst_port &&
-			inet_connect(sk, ii))
+	if (ie->dst_port && inet_connect(sk, ii))
 		goto err;
 done:
 	dec_users_and_wake(ii->port);
@@ -900,16 +907,15 @@ done:
 		goto err;
 
 	if (ie->has_shutdown &&
-	    (ie->proto == IPPROTO_UDP ||
-	     ie->proto == IPPROTO_UDPLITE)) {
+	    (ie->proto == IPPROTO_UDP || ie->proto == IPPROTO_UDPLITE || ie->proto == IPPROTO_TCP)) {
 		if (shutdown(sk, sk_decode_shutdown(ie->shutdown))) {
 			if (ie->state != TCP_CLOSE && errno != ENOTCONN) {
-				pr_perror("Can't shutdown socket into %d",
-					  sk_decode_shutdown(ie->shutdown));
+				pr_perror("Can't shutdown socket into %d", sk_decode_shutdown(ie->shutdown));
 				goto err;
 			} else {
 				pr_debug("Called shutdown on closed socket, "
-					 "proto %d ino %x", ie->proto, ie->ino);
+					 "proto %d ino %x",
+					 ie->proto, ie->ino);
 			}
 		}
 	}
@@ -922,8 +928,7 @@ err:
 	return -1;
 }
 
-int restore_sockaddr(union libsoccr_addr *sa,
-		int family, u32 pb_port, u32 *pb_addr, u32 ifindex)
+int restore_sockaddr(union libsoccr_addr *sa, int family, u32 pb_port, u32 *pb_addr, u32 ifindex)
 {
 	BUILD_BUG_ON(sizeof(sa->v4.sin_addr.s_addr) > PB_ALEN_INET * sizeof(u32));
 	BUILD_BUG_ON(sizeof(sa->v6.sin6_addr.s6_addr) > PB_ALEN_INET6 * sizeof(u32));
@@ -968,8 +973,7 @@ int inet_bind(int sk, struct inet_sk_info *ii)
 		}
 	}
 
-	addr_size = restore_sockaddr(&addr, ii->ie->family,
-			ii->ie->src_port, ii->ie->src_addr, ifindex);
+	addr_size = restore_sockaddr(&addr, ii->ie->family, ii->ie->src_port, ii->ie->src_addr, ifindex);
 
 	/*
 	 * ipv6 addresses go through a “tentative” phase and
@@ -1016,8 +1020,7 @@ int inet_connect(int sk, struct inet_sk_info *ii)
 	union libsoccr_addr addr;
 	int addr_size;
 
-	addr_size = restore_sockaddr(&addr, ii->ie->family,
-			ii->ie->dst_port, ii->ie->dst_addr, 0);
+	addr_size = restore_sockaddr(&addr, ii->ie->family, ii->ie->dst_port, ii->ie->dst_addr, 0);
 
 	if (connect(sk, (struct sockaddr *)&addr, addr_size) == -1) {
 		pr_perror("Can't connect inet socket back");

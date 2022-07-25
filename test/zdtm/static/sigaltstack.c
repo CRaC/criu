@@ -11,11 +11,13 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check for alternate signal stack";
-const char *test_author	= "Cyrill Gorcunov <gorcunov@openvz.org>";
+const char *test_doc = "Check for alternate signal stack";
+const char *test_author = "Cyrill Gorcunov <gorcunov@openvz.org>";
 
-static char stack_thread[SIGSTKSZ + TEST_MSG_BUFFER_SIZE] __stack_aligned__;
-static char stack_main[SIGSTKSZ + TEST_MSG_BUFFER_SIZE] __stack_aligned__;
+#define TESTSIGSTKSZ 16384
+
+static char stack_thread[TESTSIGSTKSZ + TEST_MSG_BUFFER_SIZE] __stack_aligned__;
+static char stack_main[TESTSIGSTKSZ + TEST_MSG_BUFFER_SIZE] __stack_aligned__;
 
 enum {
 	SAS_MAIN_OLD,
@@ -29,20 +31,17 @@ static stack_t sas_state[SAS_MAX];
 
 static task_waiter_t t;
 
-#define exit_group(code)	syscall(__NR_exit_group, code)
-#define gettid()		syscall(__NR_gettid)
+#define exit_group(code) syscall(__NR_exit_group, code)
+#define gettid()	 syscall(__NR_gettid)
 
 static int sascmp(stack_t *old, stack_t *new)
 {
-	return old->ss_size != new->ss_size	||
-		old->ss_sp != new->ss_sp	||
-		old->ss_flags != new->ss_flags;
+	return old->ss_size != new->ss_size || old->ss_sp != new->ss_sp || old->ss_flags != new->ss_flags;
 }
 
 static void show_ss(char *prefix, stack_t *s)
 {
-	test_msg("%20s: at %p (size %8zu flags %#2x)\n",
-		 prefix, s->ss_sp, s->ss_size, s->ss_flags);
+	test_msg("%20s: at %p (size %8zu flags %#2x)\n", prefix, s->ss_sp, s->ss_size, s->ss_flags);
 }
 
 void thread_sigaction(int signo, siginfo_t *info, void *context)
@@ -62,14 +61,14 @@ void thread_sigaction(int signo, siginfo_t *info, void *context)
 static void *thread_func(void *arg)
 {
 	struct sigaction sa = {
-		.sa_sigaction	= thread_sigaction,
-		.sa_flags	= SA_RESTART | SA_ONSTACK,
+		.sa_sigaction = thread_sigaction,
+		.sa_flags = SA_RESTART | SA_ONSTACK,
 	};
 
-	sas_state[SAS_THRD_OLD] = (stack_t) {
-		.ss_size	= sizeof(stack_thread) - 8,
-		.ss_sp		= stack_thread,
-		.ss_flags	= 0,
+	sas_state[SAS_THRD_OLD] = (stack_t){
+		.ss_size = sizeof(stack_thread) - 8,
+		.ss_sp = stack_thread,
+		.ss_flags = 0,
 	};
 
 	sigemptyset(&sa.sa_mask);
@@ -104,14 +103,14 @@ int main(int argc, char *argv[])
 	pthread_t thread;
 
 	struct sigaction sa = {
-		.sa_sigaction	= leader_sigaction,
-		.sa_flags	= SA_RESTART | SA_ONSTACK,
+		.sa_sigaction = leader_sigaction,
+		.sa_flags = SA_RESTART | SA_ONSTACK,
 	};
 
-	sas_state[SAS_MAIN_OLD] = (stack_t) {
-		.ss_size	= sizeof(stack_main) - 8,
-		.ss_sp		= stack_main,
-		.ss_flags	= 0,
+	sas_state[SAS_MAIN_OLD] = (stack_t){
+		.ss_size = sizeof(stack_main) - 8,
+		.ss_sp = stack_main,
+		.ss_flags = 0,
 	};
 
 	sigemptyset(&sa.sa_mask);

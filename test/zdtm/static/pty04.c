@@ -10,8 +10,8 @@
 #include <signal.h>
 #include <sys/ioctl.h>
 
-const char *test_doc	= "Check two pts with a fake ptmx";
-const char *test_author	= "Cyrill Gorcunov <gorcunov@openvz.org>";
+const char *test_doc = "Check two pts with a fake ptmx";
+const char *test_author = "Cyrill Gorcunov <gorcunov@openvz.org>";
 
 int main(int argc, char *argv[])
 {
@@ -44,7 +44,7 @@ int main(int argc, char *argv[])
 	}
 
 	if (ioctl(slave1, TIOCSCTTY, 1)) {
-		pr_perror("Can't set a controll terminal");
+		pr_perror("Can't set a control terminal");
 		return 1;
 	}
 

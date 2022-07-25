@@ -15,13 +15,13 @@ static int check_socket_state(int sk, int state)
 {
 	int err;
 	struct {
-		__u8    tcpi_state;
+		__u8 tcpi_state;
 	} info;
 	socklen_t len = sizeof(info);
 
 	err = getsockopt(sk, IPPROTO_TCP, TCP_INFO, (void *)&info, &len);
 	if (err != 0) {
-		pr_perror("Can't get socket state\n");
+		pr_perror("Can't get socket state");
 		return -1;
 	}
 	return info.tcpi_state == state ? 0 : -1;
@@ -43,7 +43,7 @@ int main(int argc, char **argv)
 	test_waitsig();
 
 	if (check_socket_state(fd_s, TCP_LISTEN)) {
-		fail("Listen socket state is changed\n");
+		fail("Listen socket state is changed");
 		close(fd_s);
 		return 1;
 	}

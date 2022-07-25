@@ -14,13 +14,19 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Test unix stream sockets with mismatch in shutdown state\n";
-const char *test_author	= "Andrey Ryabinin <aryabinin@virtuozzo.com>";
+const char *test_doc = "Test unix stream sockets with mismatch in shutdown state\n";
+const char *test_author = "Andrey Ryabinin <aryabinin@virtuozzo.com>";
 
 #define SK_DATA "packet"
 
 char *filename;
 TEST_OPTION(filename, string, "socket file name", 1);
+
+#ifdef ZDTM_UNIX_SEQPACKET
+#define SOCK_TYPE SOCK_SEQPACKET
+#else
+#define SOCK_TYPE SOCK_STREAM
+#endif
 
 int main(int argc, char *argv[])
 {
@@ -33,12 +39,12 @@ int main(int argc, char *argv[])
 	int ret;
 
 	test_init(argc, argv);
-    
+
 	signal(SIGPIPE, SIG_IGN);
 
 	cwd = get_current_dir_name();
 	if (!cwd) {
-		fail("getcwd\n");
+		fail("getcwd");
 		exit(1);
 	}
 
@@ -52,34 +58,34 @@ int main(int argc, char *argv[])
 	memcpy(addr.sun_path, path, addrlen);
 	addrlen += sizeof(addr.sun_family);
 
-	sk[0] = socket(AF_UNIX, SOCK_STREAM, 0);
-	sk[1] = socket(AF_UNIX, SOCK_STREAM, 0);
+	sk[0] = socket(AF_UNIX, SOCK_TYPE, 0);
+	sk[1] = socket(AF_UNIX, SOCK_TYPE, 0);
 	if (sk[0] < 0 || sk[1] < 0) {
-		fail("socket\n");
+		fail("socket");
 		exit(1);
 	}
 
-	ret = bind(sk[0], (struct sockaddr *) &addr, addrlen);
+	ret = bind(sk[0], (struct sockaddr *)&addr, addrlen);
 	if (ret) {
-		fail("bind\n");
+		fail("bind");
 		exit(1);
 	}
 
 	ret = listen(sk[0], 16);
 	if (ret) {
-		fail("listen\n");
+		fail("listen");
 		exit(1);
 	}
 
 	ret = shutdown(sk[1], SHUT_RD);
 	if (ret) {
-		fail("shutdown\n");
+		fail("shutdown");
 		exit(1);
 	}
 
-	ret = connect(sk[1], (struct sockaddr *) &addr, addrlen);
+	ret = connect(sk[1], (struct sockaddr *)&addr, addrlen);
 	if (ret) {
-		fail("connect\n");
+		fail("connect");
 		exit(1);
 	}
 
@@ -93,22 +99,22 @@ int main(int argc, char *argv[])
 	test_waitsig();
 
 	if (write(sk[1], SK_DATA, sizeof(SK_DATA)) < 0) {
-		fail("write\n");
+		fail("write");
 		exit(1);
 	}
 
 	if (read(sk[2], &buf, sizeof(buf)) < 0) {
-		fail("read\n");
+		fail("read");
 		exit(1);
 	}
 
 	if (strncmp(buf, SK_DATA, sizeof(SK_DATA))) {
-		fail("data corrupted\n");
+		fail("data corrupted");
 		exit(1);
 	}
 
 	if (write(sk[2], SK_DATA, sizeof(SK_DATA)) >= 0) {
-		fail("successful write to shutdown receiver\n");
+		fail("successful write to shutdown receiver");
 		exit(1);
 	}
 

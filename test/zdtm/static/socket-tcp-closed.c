@@ -1,13 +1,13 @@
 #include "zdtmtst.h"
 
 #ifdef ZDTM_IPV4V6
-#define ZDTM_FAMILY AF_INET
+#define ZDTM_FAMILY	AF_INET
 #define ZDTM_SRV_FAMILY AF_INET6
 #elif defined(ZDTM_IPV6)
-#define ZDTM_FAMILY AF_INET6
+#define ZDTM_FAMILY	AF_INET6
 #define ZDTM_SRV_FAMILY AF_INET6
 #else
-#define ZDTM_FAMILY AF_INET
+#define ZDTM_FAMILY	AF_INET
 #define ZDTM_SRV_FAMILY AF_INET
 #endif
 
@@ -128,7 +128,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	if (memcmp(&addr, &dst_addr, aux)) {
-		pr_err("A destination address mismatch");
+		pr_err("A destination address mismatch\n");
 		return 1;
 	}
 
@@ -137,7 +137,7 @@ int main(int argc, char **argv)
 		return 1;
 	}
 	if (memcmp(&addr, &src_addr, aux)) {
-		pr_err("A source address mismatch");
+		pr_err("A source address mismatch\n");
 		return 1;
 	}
 

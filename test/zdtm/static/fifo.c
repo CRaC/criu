@@ -7,9 +7,9 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check that we can migrate with a named pipe "
-			"open";
-const char *test_author	= "Roman Kagan <rkagan@parallels.com>";
+const char *test_doc = "Check that we can migrate with a named pipe "
+		       "open";
+const char *test_author = "Roman Kagan <rkagan@parallels.com>";
 
 char *filename;
 TEST_OPTION(filename, string, "file name", 1);
@@ -54,17 +54,17 @@ int main(int argc, char **argv)
 
 	crc = ~0;
 	if (datachk(buf, BUF_SIZE, &crc)) {
-		fail("data corrupted\n");
+		fail("data corrupted");
 		return 1;
 	}
 
 	if (close(fd) < 0) {
-		fail("can't close %s: %m", filename);
+		fail("can't close %s", filename);
 		return 1;
 	}
 
 	if (stat(filename, &st) < 0) {
-		fail("can't stat %s: %m", filename);
+		fail("can't stat %s", filename);
 		return 1;
 	}
 
@@ -74,7 +74,7 @@ int main(int argc, char **argv)
 	}
 
 	if (unlink(filename) < 0) {
-		fail("can't unlink %s: %m", filename);
+		fail("can't unlink %s", filename);
 		return 1;
 	}
 

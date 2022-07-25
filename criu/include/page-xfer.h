@@ -10,7 +10,7 @@ struct ps_info {
 extern int cr_page_server(bool daemon_mode, bool lazy_dump, int cfd);
 
 /* User buffer for read-mode pre-dump*/
-#define BUFFER_SIZE (PIPE_MAX_SIZE << PAGE_SHIFT)
+#define PIPE_MAX_BUFFER_SIZE (PIPE_MAX_SIZE << PAGE_SHIFT)
 
 /*
  * page_xfer -- transfer pages into image file.
@@ -72,7 +72,6 @@ extern int check_parent_page_xfer(int fd_type, unsigned long id);
 extern int request_remote_pages(unsigned long img_id, unsigned long addr, int nr_pages);
 
 typedef int (*ps_async_read_complete)(unsigned long img_id, unsigned long vaddr, int nr_pages, void *);
-extern int page_server_start_read(void *buf, int nr_pages,
-		ps_async_read_complete complete, void *priv, unsigned flags);
+extern int page_server_start_read(void *buf, int nr_pages, ps_async_read_complete complete, void *priv, unsigned flags);
 
 #endif /* __CR_PAGE_XFER__H__ */

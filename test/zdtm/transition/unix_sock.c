@@ -13,20 +13,21 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Multi-client - server app";
-const char *test_author	= "Roman Kagan <rkagan@parallels.com>";
+const char *test_doc = "Multi-client - server app";
+const char *test_author = "Roman Kagan <rkagan@parallels.com>";
 
-#define PROCS_DEF	4
-#define PROCS_MAX	64
+#define PROCS_DEF 4
+#define PROCS_MAX 64
 unsigned int num_procs = PROCS_DEF;
-TEST_OPTION(num_procs, uint, "# processes to create "
-	    "(default " __stringify(PROCS_DEF)
-	    ", max " __stringify(PROCS_MAX) ")", 0);
+TEST_OPTION(num_procs, uint,
+	    "# processes to create "
+	    "(default " __stringify(PROCS_DEF) ", max " __stringify(PROCS_MAX) ")",
+	    0);
 
 char *filename;
 TEST_OPTION(filename, string, "file name", 1);
 
-#define ACCEPT_TIMEOUT 100	/* max delay for the child to connect */
+#define ACCEPT_TIMEOUT 100 /* max delay for the child to connect */
 
 static int fill_sock_name(struct sockaddr_un *name, const char *filename)
 {
@@ -54,7 +55,7 @@ static int setup_srv_sock(void)
 		return -1;
 	}
 
-	if (bind(sock, (struct sockaddr *) &name, SUN_LEN(&name)) < 0) {
+	if (bind(sock, (struct sockaddr *)&name, SUN_LEN(&name)) < 0) {
 		pr_perror("can't bind to socket \"%s\"", filename);
 		goto err;
 	}
@@ -121,7 +122,7 @@ static int setup_clnt_sock(void)
 		return ret;
 	}
 
-	if (connect(sock, (struct sockaddr *) &name, SUN_LEN(&name)) < 0) {
+	if (connect(sock, (struct sockaddr *)&name, SUN_LEN(&name)) < 0) {
 		ret = -errno;
 		pr_perror("can't connect");
 		goto err;
@@ -150,12 +151,10 @@ static int child(void)
 	signal(SIGPIPE, SIG_IGN);
 	while (test_go()) {
 		datagen(buf, sizeof(buf), &crc);
-		if (write(sock, buf, sizeof(buf)) < 0 &&
-			(test_go() /* signal NOT received */ ||
-				(errno != EINTR && errno != EPIPE && \
-					errno != ECONNRESET))) {
+		if (write(sock, buf, sizeof(buf)) < 0 && (test_go() /* signal NOT received */ ||
+							  (errno != EINTR && errno != EPIPE && errno != ECONNRESET))) {
 			ret = errno;
-			fail("child write: %m\n");
+			fail("child write");
 			goto out;
 		}
 	}
@@ -212,24 +211,23 @@ int main(int argc, char **argv)
 		FD_SET(child_desc[nproc].sock, &active_fds);
 	}
 
-	close(sock);	/* no more connections */
+	close(sock); /* no more connections */
 	test_daemon();
 
 	while (test_go()) {
 		read_fds = active_fds;
-		if (select(FD_SETSIZE, &read_fds, NULL, NULL, NULL) < 0 &&
-		    errno != EINTR) {
-			fail("error waiting for data: %m");
+		if (select(FD_SETSIZE, &read_fds, NULL, NULL, NULL) < 0 && errno != EINTR) {
+			fail("error waiting for data");
 			goto out;
 		}
 
 		for (i = 0; i < num_procs; i++)
 			if (FD_ISSET(child_desc[i].sock, &read_fds)) {
 				if (read(child_desc[i].sock, buf, sizeof(buf)) < 0) {
-					if(errno == EINTR)	/* we're asked to stop */
+					if (errno == EINTR) /* we're asked to stop */
 						break;
 					else {
-						fail("error reading data from socket: %m");
+						fail("error reading data from socket");
 						goto out;
 					}
 				}
@@ -241,13 +239,12 @@ int main(int argc, char **argv)
 			}
 	}
 
-
 out:
 	test_waitsig();
 
 	if (kill(0, SIGTERM)) {
-		fail("failed to send SIGTERM to my process group: %m\n");
-		goto cleanup;	/* shouldn't wait() in this case */
+		fail("failed to send SIGTERM to my process group");
+		goto cleanup; /* shouldn't wait() in this case */
 	}
 
 	while (nproc-- > 0) {
@@ -258,18 +255,17 @@ out:
 		 * signal to child, child has checked for signal & found none
 		 * (not yet delivered), then called write(), blocking forever.
 		 */
-		if(close(child_desc[nproc].sock))
-			fail("Can't close server socket: %m\n");
+		if (close(child_desc[nproc].sock))
+			fail("Can't close server socket");
 
 		if (wait(&chret) < 0) {
-			fail("can't wait for a child: %m\n");
+			fail("can't wait for a child");
 			goto cleanup;
 		}
 
 		chret = WEXITSTATUS(chret);
 		if (chret) {
-			fail("child exited with non-zero code %d (%s)\n",
-			     chret, strerror(chret));
+			fail("child exited with non-zero code %d (%s)", chret, strerror(chret));
 			goto cleanup;
 		}
 	}

@@ -3,8 +3,8 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check that child subreaper attribute is restored";
-const char *test_author	= "Michał Cłapiński <mclapinski@google.com>";
+const char *test_doc = "Check that child subreaper attribute is restored";
+const char *test_author = "Michał Cłapiński <mclapinski@google.com>";
 
 int main(int argc, char **argv)
 {
@@ -28,7 +28,7 @@ int main(int argc, char **argv)
 	}
 
 	if (cs_before != cs_after)
-		fail("%d != %d\n", cs_before, cs_after);
+		fail("%d != %d", cs_before, cs_after);
 	else
 		pass();
 

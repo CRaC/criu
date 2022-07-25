@@ -17,6 +17,7 @@
 #include "images/inventory.pb-c.h"
 #include "images/pagemap.pb-c.h"
 #include "proc_parse.h"
+#include "img-streamer.h"
 #include "namespaces.h"
 
 bool ns_per_id = false;
@@ -25,7 +26,7 @@ TaskKobjIdsEntry *root_ids;
 u32 root_cg_set;
 Lsmtype image_lsm;
 
-int check_img_inventory(void)
+int check_img_inventory(bool restore)
 {
 	int ret = -1;
 	struct cr_img *img;
@@ -78,6 +79,26 @@ int check_img_inventory(void)
 	default:
 		pr_err("Not supported images version %u\n", he->img_version);
 		goto out_err;
+	}
+
+	if (restore && he->tcp_close && !opts.tcp_close) {
+		pr_err("Need to set the --tcp-close options.\n");
+		goto out_err;
+	}
+
+	if (restore) {
+		if (!he->has_network_lock_method) {
+			/*
+			 * Image files were generated with an older version of CRIU
+			 * so we should fall back to iptables because this is the
+			 * network-lock mechanism used in older versions.
+			 */
+			pr_info("Network lock method not found in inventory image\n");
+			pr_info("Falling back to iptables network lock method\n");
+			opts.network_lock_method = NETWORK_LOCK_IPTABLES;
+		} else {
+			opts.network_lock_method = he->network_lock_method;
+		}
 	}
 
 	ret = 0;
@@ -143,8 +164,7 @@ InventoryEntry *get_parent_inventory(void)
 	InventoryEntry *ie;
 	int dir;
 
-	dir = openat(get_service_fd(IMG_FD_OFF), CR_PARENT_LINK, O_RDONLY);
-	if (dir == -1) {
+	if (open_parent(get_service_fd(IMG_FD_OFF), &dir)) {
 		/*
 		 * We print the warning below to be notified that we had some
 		 * unexpected problem on open. For instance we have a parent
@@ -152,10 +172,11 @@ InventoryEntry *get_parent_inventory(void)
 		 * when also having no parent directory is an expected case of
 		 * first dump iteration.
 		 */
-		if (errno != ENOENT)
-			pr_warn("Failed to open parent directory\n");
+		pr_warn("Failed to open parent directory\n");
 		return NULL;
 	}
+	if (dir < 0)
+		return NULL;
 
 	img = open_image_at(dir, CR_FD_INVENTORY, O_RSTR);
 	if (!img) {
@@ -211,6 +232,16 @@ int prepare_inventory(InventoryEntry *he)
 
 	he->root_ids = crt.i.ids;
 
+	/* tcp_close has to be set on restore if it has been set on dump. */
+	if (opts.tcp_close) {
+		he->tcp_close = true;
+		he->has_tcp_close = true;
+	}
+
+	/* Save network lock method to reuse in restore */
+	he->has_network_lock_method = true;
+	he->network_lock_method = opts.network_lock_method;
+
 	return 0;
 }
 
@@ -262,8 +293,7 @@ void close_cr_imgset(struct cr_imgset **cr_imgset)
 	*cr_imgset = NULL;
 }
 
-struct cr_imgset *cr_imgset_open_range(int pid, int from, int to,
-			       unsigned long flags)
+struct cr_imgset *cr_imgset_open_range(int pid, int from, int to, unsigned long flags)
 {
 	struct cr_imgset *imgset;
 	unsigned int i;
@@ -391,10 +421,10 @@ static int img_write_magic(struct cr_img *img, int oflags, int type)
 }
 
 struct openat_args {
-	char	path[PATH_MAX];
-	int	flags;
-	int	err;
-	int	mode;
+	char path[PATH_MAX];
+	int flags;
+	int err;
+	int mode;
 };
 
 static int userns_openat(void *arg, int dfd, int pid)
@@ -415,13 +445,15 @@ static int do_open_image(struct cr_img *img, int dfd, int type, unsigned long of
 
 	flags = oflags & ~(O_NOBUF | O_SERVICE | O_FORCE_LOCAL);
 
-	/*
-	 * For pages images dedup we need to open images read-write on
-	 * restore, that may require proper capabilities, so we ask
-	 * usernsd to do it for us
-	 */
-	if (root_ns_mask & CLONE_NEWUSER &&
-	    type == CR_FD_PAGES && oflags & O_RDWR) {
+	if (opts.stream && !(oflags & O_FORCE_LOCAL)) {
+		ret = img_streamer_open(path, flags);
+		errno = EIO; /* errno value is meaningless, only the ret value is meaningful */
+	} else if (root_ns_mask & CLONE_NEWUSER && type == CR_FD_PAGES && oflags & O_RDWR) {
+		/*
+		 * For pages images dedup we need to open images read-write on
+		 * restore, that may require proper capabilities, so we ask
+		 * usernsd to do it for us
+		 */
 		struct openat_args pa = {
 			.flags = flags,
 			.err = 0,
@@ -524,7 +556,12 @@ struct cr_img *img_from_fd(int fd)
 	return img;
 }
 
-int open_image_dir(char *dir)
+/*
+ * `mode` should be O_RSTR or O_DUMP depending on the intent.
+ * This is used when opts.stream is enabled for picking the right streamer
+ * socket name. `mode` is ignored when opts.stream is not enabled.
+ */
+int open_image_dir(char *dir, int mode)
 {
 	int fd, ret;
 
@@ -535,11 +572,21 @@ int open_image_dir(char *dir)
 	}
 
 	ret = install_service_fd(IMG_FD_OFF, fd);
-	if (ret < 0)
+	if (ret < 0) {
+		pr_err("install_service_fd failed.\n");
 		return -1;
+	}
 	fd = ret;
 
-	if (opts.img_parent) {
+	if (opts.stream) {
+		if (img_streamer_init(dir, mode) < 0)
+			goto err;
+	} else if (opts.img_parent) {
+		if (faccessat(fd, opts.img_parent, R_OK, 0)) {
+			pr_perror("Invalid parent image directory provided");
+			goto err;
+		}
+
 		ret = symlinkat(opts.img_parent, fd, CR_PARENT_LINK);
 		if (ret < 0 && errno != EEXIST) {
 			pr_perror("Can't link parent snapshot");
@@ -548,7 +595,7 @@ int open_image_dir(char *dir)
 
 		if (opts.img_parent[0] == '/')
 			pr_warn("Absolute paths for parent links "
-					"may not work on restore!\n");
+				"may not work on restore!\n");
 	}
 
 	return 0;
@@ -560,7 +607,29 @@ err:
 
 void close_image_dir(void)
 {
+	if (opts.stream)
+		img_streamer_finish();
 	close_service_fd(IMG_FD_OFF);
+}
+
+int open_parent(int dfd, int *pfd)
+{
+	struct stat st;
+
+	*pfd = -1;
+	/* Check if the parent symlink exists */
+	if (fstatat(dfd, CR_PARENT_LINK, &st, AT_SYMLINK_NOFOLLOW) && errno == ENOENT) {
+		pr_debug("No parent images directory provided\n");
+		return 0;
+	}
+
+	*pfd = openat(dfd, CR_PARENT_LINK, O_RDONLY);
+	if (*pfd < 0) {
+		pr_perror("Can't open parent path");
+		return -1;
+	}
+
+	return 0;
 }
 
 static unsigned long page_ids = 1;

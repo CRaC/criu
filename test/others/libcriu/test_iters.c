@@ -28,7 +28,7 @@ static int open_imgdir(void)
 	criu_set_images_dir_fd(cur_imgdir);
 }
 
-#define MAX_ITERS	2
+#define MAX_ITERS 2
 
 static int next_iter(criu_predump_info pi)
 {
@@ -45,8 +45,6 @@ static int next_iter(criu_predump_info pi)
 
 	return cur_iter < MAX_ITERS;
 }
-
-#define SUCC_ECODE	42
 
 int main(int argc, char **argv)
 {
@@ -106,7 +104,7 @@ int main(int argc, char **argv)
 	criu_set_service_binary(argv[1]);
 	criu_set_pid(pid);
 	criu_set_log_file("dump.log");
-	criu_set_log_level(4);
+	criu_set_log_level(CRIU_LOG_DEBUG);
 
 	open_imgdir();
 	ret = criu_dump_iters(next_iter);
@@ -121,7 +119,7 @@ int main(int argc, char **argv)
 
 	printf("--- Restore loop ---\n");
 	criu_init_opts();
-	criu_set_log_level(4);
+	criu_set_log_level(CRIU_LOG_DEBUG);
 	criu_set_log_file("restore.log");
 	criu_set_images_dir_fd(cur_imgdir);
 

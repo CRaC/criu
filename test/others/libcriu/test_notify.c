@@ -10,8 +10,6 @@
 
 #include "lib.h"
 
-#define SUCC_ECODE	42
-
 static int actions_called = 0;
 static int notify(char *action, criu_notify_arg_t na)
 {
@@ -71,7 +69,7 @@ int main(int argc, char **argv)
 	criu_set_service_binary(argv[1]);
 	criu_set_pid(pid);
 	criu_set_log_file("dump.log");
-	criu_set_log_level(4);
+	criu_set_log_level(CRIU_LOG_DEBUG);
 	criu_set_notify_cb(notify);
 	fd = open(argv[2], O_DIRECTORY);
 	criu_set_images_dir_fd(fd);

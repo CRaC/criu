@@ -1,17 +1,20 @@
-FROM adoptopenjdk/openjdk8-openj9:latest
+FROM docker.io/library/eclipse-temurin:8-focal
+ARG CC=gcc
 
-RUN apt-get update && apt-get install -y --no-install-recommends protobuf-c-compiler \
+COPY scripts/ci/apt-install /bin/apt-install
+
+RUN apt-install protobuf-c-compiler \
 	libprotobuf-c-dev \
 	libaio-dev \
-	python-future \
+	python3-future \
 	libprotobuf-dev \
 	protobuf-compiler \
 	libcap-dev \
 	libnl-3-dev \
 	gdb \
 	bash \
-	python-protobuf \
-	python-yaml \
+	python3-protobuf \
+	python3-yaml \
 	libnet-dev \
 	libnl-route-3-dev \
 	libbsd-dev \
@@ -25,7 +28,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends protobuf-c-comp
 COPY . /criu
 WORKDIR /criu
 
-RUN make
+RUN make mrproper && make -j $(nproc) CC="$CC"
 
-ENTRYPOINT mvn -f test/javaTests/pom.xml test
+ENTRYPOINT mvn -q -f test/javaTests/pom.xml test
 

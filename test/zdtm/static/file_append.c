@@ -9,8 +9,8 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check O_APPEND preserved";
-const char *test_author	= "Pavel Emelyanov <xemul@parallels.com>";
+const char *test_doc = "Check O_APPEND preserved";
+const char *test_author = "Pavel Emelyanov <xemul@parallels.com>";
 
 char *filename;
 TEST_OPTION(filename, string, "file name", 1);
@@ -51,7 +51,7 @@ int main(int argc, char **argv)
 	}
 	tmp[2] = '\0';
 	if (strcmp(tmp, "xy")) {
-		fail("Smth's wron with file contents (%s)", tmp);
+		fail("Smth's wrong with file contents (%s)", tmp);
 		return 1;
 	}
 

@@ -12,14 +12,14 @@
 #include "log.h"
 #include "common/bug.h"
 
-#define PAGE_RSS	1
-#define PAGE_ANON	2
+#define PAGE_RSS  1
+#define PAGE_ANON 2
 
 /*
  * Top bit set in the tgt id means we've remapped
  * to a ghost file.
  */
-#define REMAP_GHOST	(1 << 31)
+#define REMAP_GHOST (1 << 31)
 
 /*
  * VMA_AREA status:
@@ -67,30 +67,31 @@
  *  	are part of image ABI, this particular one must never
  *  	be used in image.
  */
-#define VMA_AREA_NONE		(0 <<  0)
-#define VMA_AREA_REGULAR	(1 <<  0)
-#define VMA_AREA_STACK		(1 <<  1)
-#define VMA_AREA_VSYSCALL	(1 <<  2)
-#define VMA_AREA_VDSO		(1 <<  3)
-#define VMA_AREA_HEAP		(1 <<  5)
+#define VMA_AREA_NONE	  (0 << 0)
+#define VMA_AREA_REGULAR  (1 << 0)
+#define VMA_AREA_STACK	  (1 << 1)
+#define VMA_AREA_VSYSCALL (1 << 2)
+#define VMA_AREA_VDSO	  (1 << 3)
+#define VMA_AREA_HEAP	  (1 << 5)
 
-#define VMA_FILE_PRIVATE	(1 <<  6)
-#define VMA_FILE_SHARED		(1 <<  7)
-#define VMA_ANON_SHARED		(1 <<  8)
-#define VMA_ANON_PRIVATE	(1 <<  9)
+#define VMA_FILE_PRIVATE (1 << 6)
+#define VMA_FILE_SHARED	 (1 << 7)
+#define VMA_ANON_SHARED	 (1 << 8)
+#define VMA_ANON_PRIVATE (1 << 9)
 
-#define VMA_AREA_SYSVIPC	(1 <<  10)
-#define VMA_AREA_SOCKET		(1 <<  11)
-#define VMA_AREA_VVAR		(1 <<  12)
-#define VMA_AREA_AIORING	(1 <<  13)
-#define VMA_AREA_MEMFD		(1 <<  14)
+#define VMA_AREA_SYSVIPC (1 << 10)
+#define VMA_AREA_SOCKET	 (1 << 11)
+#define VMA_AREA_VVAR	 (1 << 12)
+#define VMA_AREA_AIORING (1 << 13)
+#define VMA_AREA_MEMFD	 (1 << 14)
 
-#define VMA_CLOSE		(1 <<  28)
-#define VMA_NO_PROT_WRITE	(1 <<  29)
-#define VMA_PREMMAPED		(1 <<  30)
-#define VMA_UNSUPP		(1 <<  31)
+#define VMA_EXT_PLUGIN	  (1 << 27)
+#define VMA_CLOSE	  (1 << 28)
+#define VMA_NO_PROT_WRITE (1 << 29)
+#define VMA_PREMMAPED	  (1 << 30)
+#define VMA_UNSUPP	  (1 << 31)
 
-#define CR_CAP_SIZE	2
+#define CR_CAP_SIZE 2
 
 #define TASK_COMM_LEN 16
 
@@ -99,11 +100,11 @@
 extern bool ns_per_id;
 extern bool img_common_magic;
 
-#define O_NOBUF		(O_DIRECT)
-#define O_SERVICE	(O_DIRECTORY)
-#define O_DUMP		(O_WRONLY | O_CREAT | O_TRUNC)
-#define O_RSTR		(O_RDONLY)
-#define O_FORCE_LOCAL	(O_SYNC)
+#define O_NOBUF	      (O_DIRECT)
+#define O_SERVICE     (O_DIRECTORY)
+#define O_DUMP	      (O_WRONLY | O_CREAT | O_TRUNC)
+#define O_RSTR	      (O_RDONLY)
+#define O_FORCE_LOCAL (O_SYNC)
 
 struct cr_img {
 	union {
@@ -117,8 +118,8 @@ struct cr_img {
 	};
 };
 
-#define EMPTY_IMG_FD	(-404)
-#define LAZY_IMG_FD	(-505)
+#define EMPTY_IMG_FD (-404)
+#define LAZY_IMG_FD  (-505)
 
 static inline bool empty_image(struct cr_img *img)
 {
@@ -145,8 +146,14 @@ static inline int img_raw_fd(struct cr_img *img)
 
 extern off_t img_raw_size(struct cr_img *img);
 
-extern int open_image_dir(char *dir);
+extern int open_image_dir(char *dir, int mode);
 extern void close_image_dir(void);
+/*
+ * Return -1 -- parent symlink points to invalid target
+ * Return 0 && pfd < 0 -- parent symlink does not exist
+ * Return 0 && pfd >= 0 -- opened
+ */
+extern int open_parent(int dfd, int *pfd);
 
 extern struct cr_img *open_image_at(int dfd, int type, unsigned long flags, ...);
 #define open_image(typ, flags, ...) open_image_at(-1, typ, flags, ##__VA_ARGS__)
@@ -158,11 +165,11 @@ extern void up_page_ids_base(void);
 extern struct cr_img *img_from_fd(int fd); /* for cr-show mostly */
 
 extern int write_img_buf(struct cr_img *, const void *ptr, int size);
-#define write_img(img, ptr)	write_img_buf((img), (ptr), sizeof(*(ptr)))
+#define write_img(img, ptr) write_img_buf((img), (ptr), sizeof(*(ptr)))
 extern int read_img_buf_eof(struct cr_img *, void *ptr, int size);
-#define read_img_eof(img, ptr)	read_img_buf_eof((img), (ptr), sizeof(*(ptr)))
+#define read_img_eof(img, ptr) read_img_buf_eof((img), (ptr), sizeof(*(ptr)))
 extern int read_img_buf(struct cr_img *, void *ptr, int size);
-#define read_img(img, ptr)	read_img_buf((img), (ptr), sizeof(*(ptr)))
+#define read_img(img, ptr) read_img_buf((img), (ptr), sizeof(*(ptr)))
 extern int read_img_str(struct cr_img *, char **pstr, int size);
 
 extern void close_image(struct cr_img *);

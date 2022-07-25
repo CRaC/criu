@@ -4,16 +4,23 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/ptrace.h>
+#include <sys/wait.h>
 #include <sys/mman.h>
 #include <errno.h>
 #include <sys/syscall.h>
 #include <sys/sysmacros.h>
 #include <stdint.h>
 #include <sys/socket.h>
-#include <arpa/inet.h>  /* for sockaddr_in and inet_ntoa() */
+#include <arpa/inet.h> /* for sockaddr_in and inet_ntoa() */
 #include <sys/prctl.h>
 #include <sys/inotify.h>
+#include <sched.h>
+#include <sys/mount.h>
 
+#if defined(CONFIG_HAS_NFTABLES_LIB_API_0) || defined(CONFIG_HAS_NFTABLES_LIB_API_1)
+#include <nftables/libnftables.h>
+#endif
 
 #include "common/config.h"
 #include "int.h"
@@ -32,6 +39,7 @@
 #include "sockets.h"
 #include "net.h"
 #include "tun.h"
+#include <compel/ptrace.h>
 #include <compel/plugins/std/syscall-codes.h>
 #include "netfilter.h"
 #include "fsnotify.h"
@@ -42,9 +50,9 @@
 #include "kcmp.h"
 #include "sched.h"
 #include "memfd.h"
+#include "mount-v2.h"
 
-struct kerndat_s kdat = {
-};
+struct kerndat_s kdat = {};
 
 static int check_pagemap(void)
 {
@@ -54,7 +62,7 @@ static int check_pagemap(void)
 	fd = __open_proc(PROC_SELF, EPERM, O_RDONLY, "pagemap");
 	if (fd < 0) {
 		if (errno == EPERM) {
-			pr_info("Pagemap disabled");
+			pr_info("Pagemap disabled\n");
 			kdat.pmap = PM_DISABLED;
 			return 0;
 		}
@@ -133,29 +141,26 @@ static void kerndat_mmap_min_addr(void)
 
 	struct sysctl_req req[] = {
 		{
-			.name	= "vm/mmap_min_addr",
-			.arg	= &value,
-			.type	= CTL_U64,
+			.name = "vm/mmap_min_addr",
+			.arg = &value,
+			.type = CTL_U64,
 		},
 	};
 
 	if (sysctl_op(req, ARRAY_SIZE(req), CTL_READ, 0)) {
-		pr_warn("Can't fetch %s value, use default %#lx\n",
-			req[0].name, (unsigned long)default_mmap_min_addr);
+		pr_warn("Can't fetch %s value, use default %#lx\n", req[0].name, (unsigned long)default_mmap_min_addr);
 		kdat.mmap_min_addr = default_mmap_min_addr;
 		return;
 	}
 
 	if (value < default_mmap_min_addr) {
-		pr_debug("Adjust mmap_min_addr %#lx -> %#lx\n",
-			 (unsigned long)value,
+		pr_debug("Adjust mmap_min_addr %#lx -> %#lx\n", (unsigned long)value,
 			 (unsigned long)default_mmap_min_addr);
 		kdat.mmap_min_addr = default_mmap_min_addr;
 	} else
 		kdat.mmap_min_addr = value;
 
-	pr_debug("Found mmap_min_addr %#lx\n",
-		 (unsigned long)kdat.mmap_min_addr);
+	pr_debug("Found mmap_min_addr %#lx\n", (unsigned long)kdat.mmap_min_addr);
 }
 
 static int kerndat_files_stat(void)
@@ -165,9 +170,9 @@ static int kerndat_files_stat(void)
 
 	struct sysctl_req req[] = {
 		{
-			.name	= "fs/nr_open",
-			.arg	= &nr_open,
-			.type	= CTL_U32,
+			.name = "fs/nr_open",
+			.arg = &nr_open,
+			.type = CTL_U32,
 		},
 	};
 
@@ -178,28 +183,17 @@ static int kerndat_files_stat(void)
 
 	kdat.sysctl_nr_open = nr_open;
 
-	pr_debug("files stat: %s %u\n",
-		 req[0].name, kdat.sysctl_nr_open);
+	pr_debug("files stat: %s %u\n", req[0].name, kdat.sysctl_nr_open);
 
 	return 0;
 }
 
-static int kerndat_get_shmemdev(void)
+static int kerndat_get_dev(dev_t *dev, char *map, size_t size)
 {
-	void *map;
 	char maps[128];
 	struct stat buf;
-	dev_t dev;
 
-	map = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
-			MAP_SHARED | MAP_ANONYMOUS, 0, 0);
-	if (map == MAP_FAILED) {
-		pr_perror("Can't mmap memory for shmemdev test");
-		return -1;
-	}
-
-	sprintf(maps, "/proc/self/map_files/%lx-%lx",
-			(unsigned long)map, (unsigned long)map + page_size());
+	sprintf(maps, "/proc/self/map_files/%lx-%lx", (unsigned long)map, (unsigned long)map + size);
 	if (stat(maps, &buf) < 0) {
 		int e = errno;
 		if (errno == EPERM) {
@@ -208,20 +202,38 @@ static int kerndat_get_shmemdev(void)
 			 * OK, let's go the slower route.
 			 */
 
-			if (parse_self_maps((unsigned long)map, &dev) < 0) {
+			if (parse_self_maps((unsigned long)map, dev) < 0) {
 				pr_err("Can't read self maps\n");
-				goto err;
+				return -1;
 			}
 		} else {
 			pr_perror("Can't stat self map_files %d", e);
-			goto err;
+			return -1;
 		}
-	} else
-		dev = buf.st_dev;
+	} else {
+		*dev = buf.st_dev;
+	}
+
+	return 0;
+}
+
+static int kerndat_get_shmemdev(void)
+{
+	void *map;
+	dev_t dev;
+
+	map = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, 0, 0);
+	if (map == MAP_FAILED) {
+		pr_perror("Can't mmap memory for shmemdev test");
+		return -1;
+	}
+
+	if (kerndat_get_dev(&dev, map, PAGE_SIZE))
+		goto err;
 
 	munmap(map, PAGE_SIZE);
 	kdat.shmem_dev = dev;
-	pr_info("Found anon-shmem device at %"PRIx64"\n", kdat.shmem_dev);
+	pr_info("Found anon-shmem device at %" PRIx64 "\n", kdat.shmem_dev);
 	return 0;
 
 err:
@@ -229,13 +241,67 @@ err:
 	return -1;
 }
 
+/* Return -1 -- error
+ * Return 0 -- successful but can't get any new device's numbers
+ * Return 1 -- successful and get new device's numbers
+ *
+ * At first, all kdat.hugetlb_dev elements are initialized to 0.
+ * When the function finishes,
+ * kdat.hugetlb_dev[i] == -1 -- this hugetlb page size is not supported
+ * kdat.hugetlb_dev[i] == 0  -- this hugetlb page size is supported but can't collect device's number
+ * Otherwise, kdat.hugetlb_dev[i] contains the corresponding device's number
+ *
+ * Next time the function is called, it only tries to collect the device's number of hugetlb page size
+ * that is supported but can't be collected in the previous call (kdat.hugetlb_dev[i] == 0)
+ */
+static int kerndat_get_hugetlb_dev(void)
+{
+	void *map;
+	int i, flag, ret = 0;
+	unsigned long long size;
+	dev_t dev;
+
+	for (i = 0; i < HUGETLB_MAX; i++) {
+		/* Skip if this hugetlb size is not supported or the device's number has been collected */
+		if (kdat.hugetlb_dev[i])
+			continue;
+
+		size = hugetlb_info[i].size;
+		flag = hugetlb_info[i].flag;
+		map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB | flag, 0, 0);
+		if (map == MAP_FAILED) {
+			if (errno == EINVAL) {
+				kdat.hugetlb_dev[i] = (dev_t)-1;
+				continue;
+			} else if (errno == ENOMEM) {
+				pr_info("Hugetlb size %llu Mb is supported but cannot get dev's number\n", size >> 20);
+				continue;
+			} else {
+				pr_perror("Unexpected result when get hugetlb dev");
+				return -1;
+			}
+		}
+
+		if (kerndat_get_dev(&dev, map, size)) {
+			munmap(map, size);
+			return -1;
+		}
+
+		munmap(map, size);
+		kdat.hugetlb_dev[i] = dev;
+		ret = 1;
+		pr_info("Found hugetlb device at %" PRIx64 "\n", kdat.hugetlb_dev[i]);
+	}
+	return ret;
+}
+
 static dev_t get_host_dev(unsigned int which)
 {
 	static struct kst {
-		const char	*name;
-		const char	*path;
-		unsigned int	magic;
-		dev_t		fs_dev;
+		const char *name;
+		const char *path;
+		unsigned int magic;
+		dev_t fs_dev;
 	} kstat[KERNDAT_FS_STAT_MAX] = {
 		[KERNDAT_FS_STAT_DEVPTS] = {
 			.name	= "devpts",
@@ -314,8 +380,7 @@ static int kerndat_get_dirty_track(void)
 	u64 pmap = 0;
 	int ret = -1;
 
-	map = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
-			MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
+	map = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
 	if (map == MAP_FAILED) {
 		pr_perror("Can't mmap memory for pagemap test");
 		return ret;
@@ -353,7 +418,7 @@ static int kerndat_get_dirty_track(void)
 		pr_info("Dirty track supported on kernel\n");
 		kdat.has_dirty_track = true;
 	} else {
-no_dt:
+	no_dt:
 		pr_info("Dirty tracking support is OFF\n");
 		if (opts.track_mem) {
 			pr_err("Tracking memory is not available\n");
@@ -382,7 +447,7 @@ static int init_zero_page_pfn(void)
 		return 0;
 	}
 
-	if (*((int *) addr) != 0) {
+	if (*((int *)addr) != 0) {
 		BUG();
 		return -1;
 	}
@@ -390,9 +455,10 @@ static int init_zero_page_pfn(void)
 	ret = vaddr_to_pfn(-1, (unsigned long)addr, &kdat.zero_page_pfn);
 	munmap(addr, PAGE_SIZE);
 
-	if (kdat.zero_page_pfn == 0)
+	if (kdat.zero_page_pfn == 0) {
+		pr_err("vaddr_to_pfn succeeded but kdat.zero_page_pfn is invalid.\n");
 		ret = -1;
-
+	}
 	return ret;
 }
 
@@ -416,7 +482,30 @@ static bool kerndat_has_memfd_create(void)
 	else if (ret == -1 && errno == EFAULT)
 		kdat.has_memfd = true;
 	else {
-		pr_err("Unexpected error from memfd_create(NULL, 0): %m\n");
+		pr_perror("Unexpected error from memfd_create(NULL, 0)");
+		return -1;
+	}
+
+	return 0;
+}
+
+static bool kerndat_has_memfd_hugetlb(void)
+{
+	int ret;
+
+	if (!kdat.has_memfd) {
+		kdat.has_memfd_hugetlb = false;
+		return 0;
+	}
+
+	ret = memfd_create("", MFD_HUGETLB);
+	if (ret >= 0) {
+		kdat.has_memfd_hugetlb = true;
+		close(ret);
+	} else if (ret == -1 && (errno == EINVAL || errno == ENOENT)) {
+		kdat.has_memfd_hugetlb = false;
+	} else {
+		pr_perror("Unexpected error from memfd_create(\"\", MFD_HUGETLB)");
 		return -1;
 	}
 
@@ -459,7 +548,7 @@ static int kerndat_fdinfo_has_lock(void)
 
 	exit_code = 0;
 out:
-	close(pfd);
+	close_safe(&pfd);
 	close(fd);
 
 	return exit_code;
@@ -499,10 +588,10 @@ static int kerndat_loginuid(void)
 	 * on that rely dump/restore code.
 	 * See also: marc.info/?l=git-commits-head&m=138509506407067
 	 */
-	if (prepare_loginuid(INVALID_UID, LOG_WARN) < 0)
+	if (prepare_loginuid(INVALID_UID) < 0)
 		return 0;
 	/* Cleaning value back as it was */
-	if (prepare_loginuid(saved_loginuid, LOG_WARN) < 0)
+	if (prepare_loginuid(saved_loginuid) < 0)
 		return 0;
 
 	kdat.luid = LUID_FULL;
@@ -534,7 +623,7 @@ int kerndat_tcp_repair(void)
 	struct sockaddr_in addr;
 	socklen_t aux;
 
-	memset(&addr,0,sizeof(addr));
+	memset(&addr, 0, sizeof(addr));
 	addr.sin_family = AF_INET;
 	inet_pton(AF_INET, "127.0.0.1", &(addr.sin_addr));
 	addr.sin_port = 0;
@@ -544,13 +633,13 @@ int kerndat_tcp_repair(void)
 		return -1;
 	}
 
-	if (bind(sock, (struct sockaddr *) &addr, sizeof(addr))) {
+	if (bind(sock, (struct sockaddr *)&addr, sizeof(addr))) {
 		pr_perror("Unable to bind a socket");
 		goto err;
 	}
 
 	aux = sizeof(addr);
-	if (getsockname(sock, (struct sockaddr *) &addr, &aux)) {
+	if (getsockname(sock, (struct sockaddr *)&addr, &aux)) {
 		pr_perror("Unable to get a socket name");
 		goto err;
 	}
@@ -566,7 +655,7 @@ int kerndat_tcp_repair(void)
 		goto err;
 	}
 
-	if (connect(clnt, (struct sockaddr *) &addr, sizeof(addr))) {
+	if (connect(clnt, (struct sockaddr *)&addr, sizeof(addr))) {
 		pr_perror("Unable to connect a socket");
 		goto err;
 	}
@@ -577,8 +666,10 @@ int kerndat_tcp_repair(void)
 	}
 
 	if (setsockopt(clnt, SOL_TCP, TCP_REPAIR, &yes, sizeof(yes))) {
-		if (errno != EPERM)
+		if (errno != EPERM) {
+			pr_perror("Unable to set TCP_REPAIR with setsockopt");
 			goto err;
+		}
 		kdat.has_tcp_half_closed = false;
 	} else
 		kdat.has_tcp_half_closed = true;
@@ -617,8 +708,10 @@ static int kerndat_compat_restore(void)
 	int ret;
 
 	ret = kdat_can_map_vdso();
-	if (ret < 0)
+	if (ret < 0) {
+		pr_err("kdat_can_map_vdso failed\n");
 		return ret;
+	}
 	kdat.can_map_vdso = !!ret;
 
 	/* depends on kdat.can_map_vdso result */
@@ -636,8 +729,7 @@ static int kerndat_detect_stack_guard_gap(void)
 	FILE *maps;
 	void *mem;
 
-	mem = mmap(NULL, (3ul << 20), PROT_READ | PROT_WRITE,
-		   MAP_PRIVATE | MAP_ANONYMOUS | MAP_GROWSDOWN, -1, 0);
+	mem = mmap(NULL, (3ul << 20), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_GROWSDOWN, -1, 0);
 	if (mem == MAP_FAILED) {
 		pr_perror("Can't mmap stack area");
 		return -1;
@@ -653,13 +745,13 @@ static int kerndat_detect_stack_guard_gap(void)
 
 	maps = fopen("/proc/self/maps", "r");
 	if (maps == NULL) {
+		pr_perror("Could not open /proc/self/maps");
 		munmap(mem, 4096);
 		return -1;
 	}
 
 	while (fgets(buf, sizeof(buf), maps)) {
-		num = sscanf(buf, "%lx-%lx %c%c%c%c",
-			     &start, &end, &r, &w, &x, &s);
+		num = sscanf(buf, "%lx-%lx %c%c%c%c", &start, &end, &r, &w, &x, &s);
 		if (num < 6) {
 			pr_err("Can't parse: %s\n", buf);
 			goto err;
@@ -667,14 +759,14 @@ static int kerndat_detect_stack_guard_gap(void)
 
 		/*
 		 * When reading /proc/$pid/[s]maps the
-		 * start/end addresses might be cutted off
+		 * start/end addresses might be cut off
 		 * with PAGE_SIZE on kernels prior 4.12
 		 * (see kernel commit 1be7107fbe18ee).
 		 *
 		 * Same time there was semi-complete
 		 * patch released which hitted a number
 		 * of repos (Ubuntu, Fedora) where instead
-		 * of PAGE_SIZE the 1M gap is cutted off.
+		 * of PAGE_SIZE the 1M gap is cut off.
 		 */
 		if (start == (unsigned long)mem) {
 			kdat.stack_guard_gap_hidden = false;
@@ -740,7 +832,7 @@ static int kerndat_has_fsopen(void)
 
 static int has_kcmp_epoll_tfd(void)
 {
-	kcmp_epoll_slot_t slot = { };
+	kcmp_epoll_slot_t slot = {};
 	int ret = -1, efd, tfd;
 	pid_t pid = getpid();
 	struct epoll_event ev;
@@ -813,15 +905,173 @@ static int kerndat_x86_has_ptrace_fpu_xsave_bug(void)
 {
 	int ret = kdat_x86_has_ptrace_fpu_xsave_bug();
 
-	if (ret < 0)
+	if (ret < 0) {
+		pr_err("kdat_x86_has_ptrace_fpu_xsave_bug failed\n");
 		return ret;
+	}
 
 	kdat.x86_has_ptrace_fpu_xsave_bug = !!ret;
 	return 0;
 }
 
-#define KERNDAT_CACHE_FILE	KDAT_RUNDIR"/criu.kdat"
-#define KERNDAT_CACHE_FILE_TMP	KDAT_RUNDIR"/.criu.kdat"
+static int kerndat_has_rseq(void)
+{
+	if (syscall(__NR_rseq, NULL, 0, 0, 0) != -1) {
+		pr_err("rseq should fail\n");
+		return -1;
+	}
+	if (errno == ENOSYS)
+		pr_info("rseq syscall isn't supported\n");
+	else
+		kdat.has_rseq = true;
+
+	return 0;
+}
+
+static int kerndat_has_ptrace_get_rseq_conf(void)
+{
+	pid_t pid;
+	int len;
+	struct __ptrace_rseq_configuration rseq;
+
+	pid = fork_and_ptrace_attach(NULL);
+	if (pid < 0)
+		return -1;
+
+	len = ptrace(PTRACE_GET_RSEQ_CONFIGURATION, pid, sizeof(rseq), &rseq);
+	if (len != sizeof(rseq)) {
+		kdat.has_ptrace_get_rseq_conf = false;
+		pr_info("ptrace(PTRACE_GET_RSEQ_CONFIGURATION) is not supported\n");
+		goto out;
+	}
+
+	/*
+	 * flags is always zero from the kernel side, if it will be changed
+	 * we need to pay attention to that and, possibly, make changes on the CRIU side.
+	 */
+	if (rseq.flags != 0) {
+		kdat.has_ptrace_get_rseq_conf = false;
+		pr_err("ptrace(PTRACE_GET_RSEQ_CONFIGURATION): rseq.flags != 0\n");
+	} else {
+		kdat.has_ptrace_get_rseq_conf = true;
+	}
+
+out:
+	kill(pid, SIGKILL);
+	waitpid(pid, NULL, 0);
+	return 0;
+}
+
+int kerndat_sockopt_buf_lock(void)
+{
+	int exit_code = -1;
+	socklen_t len;
+	u32 buf_lock;
+	int sock;
+
+	sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (sock < 0) {
+		pr_perror("Unable to create a socket");
+		return -1;
+	}
+
+	len = sizeof(buf_lock);
+	if (getsockopt(sock, SOL_SOCKET, SO_BUF_LOCK, &buf_lock, &len)) {
+		if (errno != ENOPROTOOPT) {
+			pr_perror("Unable to get SO_BUF_LOCK with getsockopt");
+			goto err;
+		}
+		kdat.has_sockopt_buf_lock = false;
+	} else
+		kdat.has_sockopt_buf_lock = true;
+
+	exit_code = 0;
+err:
+	close(sock);
+	return exit_code;
+}
+
+static int kerndat_has_move_mount_set_group(void)
+{
+	char tmpdir[] = "/tmp/.criu.move_mount_set_group.XXXXXX";
+	char subdir[64];
+	int exit_code = -1;
+
+	if (mkdtemp(tmpdir) == NULL) {
+		pr_perror("Fail to make dir %s", tmpdir);
+		return -1;
+	}
+
+	if (mount("criu.move_mount_set_group", tmpdir, "tmpfs", 0, NULL)) {
+		pr_perror("Fail to mount tmfps to %s", tmpdir);
+		rmdir(tmpdir);
+		return -1;
+	}
+
+	if (mount(NULL, tmpdir, NULL, MS_PRIVATE, NULL)) {
+		pr_perror("Fail to make %s private", tmpdir);
+		goto out;
+	}
+
+	if (snprintf(subdir, sizeof(subdir), "%s/subdir", tmpdir) >= sizeof(subdir)) {
+		pr_err("Fail to snprintf subdir\n");
+		goto out;
+	}
+
+	if (mkdir(subdir, 0700)) {
+		pr_perror("Fail to make dir %s", subdir);
+		goto out;
+	}
+
+	if (mount(subdir, subdir, NULL, MS_BIND, NULL)) {
+		pr_perror("Fail to make bind-mount %s", subdir);
+		goto out;
+	}
+
+	if (mount(NULL, tmpdir, NULL, MS_SHARED, NULL)) {
+		pr_perror("Fail to make %s private", tmpdir);
+		goto out;
+	}
+
+	if (sys_move_mount(AT_FDCWD, tmpdir, AT_FDCWD, subdir, MOVE_MOUNT_SET_GROUP)) {
+		if (errno == EINVAL || errno == ENOSYS) {
+			pr_debug("No MOVE_MOUNT_SET_GROUP kernel feature\n");
+			kdat.has_move_mount_set_group = false;
+			exit_code = 0;
+			goto out;
+		}
+		pr_perror("Fail to MOVE_MOUNT_SET_GROUP");
+		goto out;
+	}
+
+	kdat.has_move_mount_set_group = true;
+	exit_code = 0;
+out:
+	if (umount2(tmpdir, MNT_DETACH))
+		pr_warn("Fail to umount2 %s: %m\n", tmpdir);
+	if (rmdir(tmpdir))
+		pr_warn("Fail to rmdir %s: %m\n", tmpdir);
+	return exit_code;
+}
+
+static int kerndat_has_openat2(void)
+{
+	if (sys_openat2(AT_FDCWD, ".", NULL, 0) != -1) {
+		pr_err("openat2 should fail\n");
+		return -1;
+	}
+	if (errno == ENOSYS) {
+		pr_debug("No openat2 syscall support\n");
+		kdat.has_openat2 = false;
+	} else {
+		kdat.has_openat2 = true;
+	}
+
+	return 0;
+}
+
+#define KERNDAT_CACHE_FILE     KDAT_RUNDIR "/criu.kdat"
+#define KERNDAT_CACHE_FILE_TMP KDAT_RUNDIR "/.criu.kdat"
 
 static int kerndat_try_load_cache(void)
 {
@@ -829,7 +1079,7 @@ static int kerndat_try_load_cache(void)
 
 	fd = open(KERNDAT_CACHE_FILE, O_RDONLY);
 	if (fd < 0) {
-		if(ENOENT == errno)
+		if (ENOENT == errno)
 			pr_debug("File %s does not exist\n", KERNDAT_CACHE_FILE);
 		else
 			pr_warn("Can't load %s\n", KERNDAT_CACHE_FILE);
@@ -845,9 +1095,7 @@ static int kerndat_try_load_cache(void)
 
 	close(fd);
 
-	if (ret != sizeof(kdat) ||
-			kdat.magic1 != KDAT_MAGIC ||
-			kdat.magic2 != KDAT_MAGIC_2) {
+	if (ret != sizeof(kdat) || kdat.magic1 != KDAT_MAGIC || kdat.magic2 != KDAT_MAGIC_2) {
 		pr_warn("Stale %s file\n", KERNDAT_CACHE_FILE);
 		unlink(KERNDAT_CACHE_FILE);
 		return 1;
@@ -899,28 +1147,33 @@ static void kerndat_save_cache(void)
 
 	if (ret < 0) {
 		pr_perror("Couldn't save %s", KERNDAT_CACHE_FILE);
-unl:
+	unl:
 		unlink(KERNDAT_CACHE_FILE_TMP);
 	}
 }
 
 static int kerndat_uffd(void)
 {
-	int uffd;
+	int uffd, err = 0;
 
 	kdat.uffd_features = 0;
-	uffd = uffd_open(0, &kdat.uffd_features);
+	uffd = uffd_open(0, &kdat.uffd_features, &err);
 
 	/*
-	 * uffd == -ENOSYS means userfaultfd is not supported on this
-	 * system and we just happily return with kdat.has_uffd = false.
-	 * Error other than -ENOSYS would mean "Houston, Houston, we
+	 * err == ENOSYS means userfaultfd is not supported on this system and
+	 * we just happily return with kdat.has_uffd = false.
+	 * err == EPERM means that userfaultfd is not allowed as we are
+	 * non-root user, so we also return with kdat.has_uffd = false.
+	 * Errors other than ENOSYS and EPERM would mean "Houston, Houston, we
 	 * have a problem!"
 	 */
 	if (uffd < 0) {
-		if (uffd == -ENOSYS || uffd == -EPERM)
+		if (err == ENOSYS || err == EPERM)
 			return 0;
-
+		if (err == EPERM) {
+			pr_info("Lazy pages are not permitted\n");
+			return 0;
+		}
 		pr_err("Lazy pages are not available\n");
 		return -1;
 	}
@@ -945,21 +1198,24 @@ int kerndat_has_thp_disable(void)
 	bool vma_match = false;
 
 	if (prctl(PR_SET_THP_DISABLE, 1, 0, 0, 0)) {
-		if (errno != EINVAL && errno != EPERM)
+		if (errno != EINVAL && errno != EPERM) {
+			pr_perror("prctl PR_SET_THP_DISABLE failed");
 			return -1;
+		}
 		pr_info("PR_SET_THP_DISABLE is not available\n");
 		return 0;
 	}
 
-	addr = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE,
-		    MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
+	addr = mmap(NULL, PAGE_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
 	if (addr == MAP_FAILED) {
 		pr_perror("Can't mmap memory for THP disable test");
 		return -1;
 	}
 
-	if (prctl(PR_SET_THP_DISABLE, 0, 0, 0, 0))
-		return -1;
+	if (prctl(PR_SET_THP_DISABLE, 0, 0, 0, 0)) {
+		pr_perror("prctl PR_SET_THP_DISABLE failed");
+		goto out_unmap;
+	}
 
 	f.fd = open("/proc/self/smaps", O_RDONLY);
 	if (f.fd < 0) {
@@ -1016,6 +1272,15 @@ static bool kerndat_has_clone3_set_tid(void)
 	pid_t pid;
 	struct _clone_args args = {};
 
+#if defined(CONFIG_MIPS)
+	/*
+	 * Currently the CRIU PIE assembler clone3() wrapper is
+	 * not implemented for MIPS.
+	 */
+	kdat.has_clone3_set_tid = false;
+	return 0;
+#endif
+
 	args.set_tid = -1;
 	/*
 	 * On a system without clone3() this will return ENOSYS.
@@ -1033,10 +1298,196 @@ static bool kerndat_has_clone3_set_tid(void)
 	if (pid == -1 && errno == EINVAL) {
 		kdat.has_clone3_set_tid = true;
 	} else if (pid == -1 && errno != EPERM) {
-		pr_perror("Unexpected error from clone3\n");
+		pr_perror("Unexpected error from clone3");
 		return -1;
 	}
 
+	return 0;
+}
+
+static void kerndat_has_pidfd_open(void)
+{
+	int pidfd;
+
+	pidfd = syscall(SYS_pidfd_open, getpid(), 0);
+	if (pidfd == -1)
+		kdat.has_pidfd_open = false;
+	else
+		kdat.has_pidfd_open = true;
+
+	close_safe(&pidfd);
+}
+
+static int kerndat_has_pidfd_getfd(void)
+{
+	int ret;
+	int fds[2];
+	int val_a, val_b;
+	int pidfd, stolen_fd;
+
+	ret = 0;
+
+	if (socketpair(AF_UNIX, SOCK_DGRAM, 0, fds)) {
+		pr_perror("Can't open unix socket pair");
+		ret = -1;
+		goto out;
+	}
+
+	val_a = 1984;
+	if (write(fds[0], &val_a, sizeof(val_a)) != sizeof(val_a)) {
+		pr_perror("Can't write to socket");
+		ret = -1;
+		goto close_pair;
+	}
+
+	pidfd = syscall(SYS_pidfd_open, getpid(), 0);
+	if (pidfd == -1) {
+		pr_warn("Can't get pidfd\n");
+		/*
+		 * If pidfd_open is not supported then pidfd_getfd
+		 * will not be supported as well.
+		 */
+		kdat.has_pidfd_getfd = false;
+		goto close_pair;
+	}
+
+	stolen_fd = syscall(SYS_pidfd_getfd, pidfd, fds[1], 0);
+	if (stolen_fd == -1) {
+		kdat.has_pidfd_getfd = false;
+		goto close_all;
+	}
+
+	if (read(fds[1], &val_b, sizeof(val_b)) != sizeof(val_b)) {
+		pr_perror("Can't read from socket");
+		ret = -1;
+		goto close_all;
+	}
+
+	if (val_b == val_a) {
+		kdat.has_pidfd_getfd = true;
+	} else {
+		/* If val_b != val_a, something unexpected happened. */
+		pr_err("Unexpected value read from socket\n");
+		ret = -1;
+	}
+
+close_all:
+	close_safe(&stolen_fd);
+	close_safe(&pidfd);
+close_pair:
+	close(fds[0]);
+	close(fds[1]);
+out:
+	return ret;
+}
+
+int kerndat_has_nspid(void)
+{
+	struct bfd f;
+	int ret = -1;
+	char *str;
+
+	f.fd = open("/proc/self/status", O_RDONLY);
+	if (f.fd < 0) {
+		pr_perror("Can't open /proc/self/status");
+		return -1;
+	}
+	if (bfdopenr(&f))
+		return -1;
+	while ((str = breadline(&f)) != NULL) {
+		if (IS_ERR(str))
+			goto close;
+		if (!strncmp(str, "NSpid:", 6)) {
+			kdat.has_nspid = true;
+			break;
+		}
+	}
+	ret = 0;
+close:
+	bclose(&f);
+	return ret;
+}
+
+#if defined(CONFIG_HAS_NFTABLES_LIB_API_0) || defined(CONFIG_HAS_NFTABLES_LIB_API_1)
+static int __has_nftables_concat(void *arg)
+{
+	bool *has = (bool *)arg;
+	struct nft_ctx *nft;
+	int ret = 1;
+
+	/*
+	 * Create a separate network namespace to avoid
+	 * collisions between two CRIU instances.
+	 */
+	if (unshare(CLONE_NEWNET)) {
+		pr_perror("Unable create a network namespace");
+		return 1;
+	}
+
+	nft = nft_ctx_new(NFT_CTX_DEFAULT);
+	if (!nft)
+		return 1;
+
+	if (NFT_RUN_CMD(nft, "create table inet CRIU")) {
+		pr_err("Can't create nftables table\n");
+		goto nft_ctx_free_out;
+	}
+
+	if (NFT_RUN_CMD(nft, "add set inet CRIU conn { type ipv4_addr . inet_service ;}"))
+		*has = false; /* kdat.has_nftables_concat = false */
+	else
+		*has = true; /* kdat.has_nftables_concat = true */
+
+	/* Clean up */
+	NFT_RUN_CMD(nft, "delete table inet CRIU");
+
+	ret = 0;
+nft_ctx_free_out:
+	nft_ctx_free(nft);
+	return ret;
+}
+#endif
+
+static int kerndat_has_nftables_concat(void)
+{
+#if defined(CONFIG_HAS_NFTABLES_LIB_API_0) || defined(CONFIG_HAS_NFTABLES_LIB_API_1)
+	bool has;
+
+	if (call_in_child_process(__has_nftables_concat, (void *)&has))
+		return -1;
+
+	kdat.has_nftables_concat = has;
+	return 0;
+#else
+	pr_warn("CRIU was built without libnftables support\n");
+	kdat.has_nftables_concat = false;
+	return 0;
+#endif
+}
+
+/*
+ * Some features depend on resource that can be dynamically changed
+ * at the OS runtime. There are cases that we cannot determine the
+ * availability of those features at the first time we run kerndat
+ * check. So in later kerndat checks, we need to retry to get those
+ * information. This function contains calls to those kerndat checks.
+ *
+ * Those kerndat checks must
+ * Return -1 on error
+ * Return 0 when the check is successful but no new information
+ * Return 1 when the check is successful and there is new information
+ */
+int kerndat_try_load_new(void)
+{
+	int ret;
+
+	ret = kerndat_get_hugetlb_dev();
+	if (ret < 0)
+		return ret;
+
+	/* New information is found, we need to save to the cache */
+	if (ret)
+		kerndat_save_cache();
 	return 0;
 }
 
@@ -1045,8 +1496,13 @@ int kerndat_init(void)
 	int ret;
 
 	ret = kerndat_try_load_cache();
-	if (ret <= 0)
+	if (ret < 0)
 		return ret;
+
+	if (ret == 0)
+		return kerndat_try_load_new();
+
+	ret = 0;
 
 	/* kerndat_try_load_cache can leave some trash in kdat */
 	memset(&kdat, 0, sizeof(kdat));
@@ -1054,65 +1510,170 @@ int kerndat_init(void)
 	preload_socket_modules();
 	preload_netfilter_modules();
 
-	ret = check_pagemap();
-	if (!ret)
-		ret = kerndat_get_shmemdev();
-	if (!ret)
-		ret = kerndat_get_dirty_track();
-	if (!ret)
-		ret = init_zero_page_pfn();
-	if (!ret)
-		ret = get_last_cap();
-	if (!ret)
-		ret = kerndat_fdinfo_has_lock();
-	if (!ret)
-		ret = get_task_size();
-	if (!ret)
-		ret = get_ipv6();
-	if (!ret)
-		ret = kerndat_loginuid();
-	if (!ret)
-		ret = kerndat_iptables_has_xtlocks();
-	if (!ret)
-		ret = kerndat_tcp_repair();
-	if (!ret)
-		ret = kerndat_compat_restore();
-	if (!ret)
-		ret = kerndat_tun_netns();
-	if (!ret)
-		ret = kerndat_socket_unix_file();
-	if (!ret)
-		ret = kerndat_nsid();
-	if (!ret)
-		ret = kerndat_link_nsid();
-	if (!ret)
-		ret = kerndat_has_memfd_create();
-	if (!ret)
-		ret = kerndat_detect_stack_guard_gap();
-	if (!ret)
-		ret = kerndat_uffd();
-	if (!ret)
-		ret = kerndat_has_thp_disable();
+	if (check_pagemap()) {
+		pr_err("check_pagemap failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_get_shmemdev()) {
+		pr_err("kerndat_get_shmemdev failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_get_hugetlb_dev() < 0) {
+		pr_err("kerndat_get_hugetlb_dev failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_get_dirty_track()) {
+		pr_err("kerndat_get_dirty_track failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && init_zero_page_pfn()) {
+		pr_err("init_zero_page_pfn failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && get_last_cap()) {
+		pr_err("get_last_cap failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_fdinfo_has_lock()) {
+		pr_err("kerndat_fdinfo_has_lock failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && get_task_size()) {
+		pr_err("get_task_size failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && get_ipv6()) {
+		pr_err("get_ipv6 failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_loginuid()) {
+		pr_err("kerndat_loginuid failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_iptables_has_xtlocks()) {
+		pr_err("kerndat_iptables_has_xtlocks failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_tcp_repair()) {
+		pr_err("kerndat_tcp_repair failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_compat_restore()) {
+		pr_err("kerndat_compat_restore failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_tun_netns()) {
+		pr_err("kerndat_tun_netns failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_socket_unix_file()) {
+		pr_err("kerndat_socket_unix_file failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_nsid()) {
+		pr_err("kerndat_nsid failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_link_nsid()) {
+		pr_err("kerndat_link_nsid failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_memfd_create()) {
+		pr_err("kerndat_has_memfd_create failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_memfd_hugetlb()) {
+		pr_err("kerndat_has_memfd_hugetlb failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_detect_stack_guard_gap()) {
+		pr_err("kerndat_detect_stack_guard_gap failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_uffd()) {
+		pr_err("kerndat_uffd failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_thp_disable()) {
+		pr_err("kerndat_has_thp_disable failed when initializing kerndat.\n");
+		ret = -1;
+	}
 	/* Needs kdat.compat_cr filled before */
-	if (!ret)
-		ret = kerndat_vdso_fill_symtable();
+	if (!ret && kerndat_vdso_fill_symtable()) {
+		pr_err("kerndat_vdso_fill_symtable failed when initializing kerndat.\n");
+		ret = -1;
+	}
 	/* Depends on kerndat_vdso_fill_symtable() */
+	if (!ret && kerndat_vdso_preserves_hint()) {
+		pr_err("kerndat_vdso_preserves_hint failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_socket_netns()) {
+		pr_err("kerndat_socket_netns failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_x86_has_ptrace_fpu_xsave_bug()) {
+		pr_err("kerndat_x86_has_ptrace_fpu_xsave_bug failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_inotify_setnextwd()) {
+		pr_err("kerndat_has_inotify_setnextwd failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && has_kcmp_epoll_tfd()) {
+		pr_err("has_kcmp_epoll_tfd failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_fsopen()) {
+		pr_err("kerndat_has_fsopen failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_clone3_set_tid()) {
+		pr_err("kerndat_has_clone3_set_tid failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && has_time_namespace()) {
+		pr_err("has_time_namespace failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_newifindex()) {
+		pr_err("kerndat_has_newifindex failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_pidfd_getfd()) {
+		pr_err("kerndat_has_pidfd_getfd failed when initializing kerndat.\n");
+		ret = -1;
+	}
 	if (!ret)
-		ret = kerndat_vdso_preserves_hint();
-	if (!ret)
-		ret = kerndat_socket_netns();
-	if (!ret)
-		ret = kerndat_x86_has_ptrace_fpu_xsave_bug();
-	if (!ret)
-		ret = kerndat_has_inotify_setnextwd();
-	if (!ret)
-		ret = has_kcmp_epoll_tfd();
-	if (!ret)
-		ret = kerndat_has_fsopen();
-	if (!ret)
-		ret = kerndat_has_clone3_set_tid();
-	if (!ret)
-		ret = has_time_namespace();
+		kerndat_has_pidfd_open();
+	if (!ret && kerndat_has_nspid()) {
+		pr_err("kerndat_has_nspid failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_nftables_concat()) {
+		pr_err("kerndat_has_nftables_concat failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_sockopt_buf_lock()) {
+		pr_err("kerndat_sockopt_buf_lock failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_move_mount_set_group()) {
+		pr_err("kerndat_has_move_mount_set_group failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_openat2()) {
+		pr_err("kerndat_has_openat2 failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_rseq()) {
+		pr_err("kerndat_has_rseq failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_ptrace_get_rseq_conf()) {
+		pr_err("kerndat_has_ptrace_get_rseq_conf failed when initializing kerndat.\n");
+		ret = -1;
+	}
 
 	kerndat_lsm();
 	kerndat_mmap_min_addr();

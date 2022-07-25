@@ -13,12 +13,12 @@
 
 #define N_PAGES 1024
 
-const char *test_doc	= "Test interaction between THP and lazy-pages";
+const char *test_doc = "Test interaction between THP and lazy-pages";
 
 /* The test is based on example by Adrian Reber <areber@redhat.com> */
-const char *test_author	= "Mike Rapoport <rppt@linux.vnet.ibm.com>";
+const char *test_author = "Mike Rapoport <rppt@linux.vnet.ibm.com>";
 
-int main(int argc, char ** argv)
+int main(int argc, char **argv)
 {
 	char *mem, *org, *m;
 	int count;
@@ -29,7 +29,7 @@ int main(int argc, char ** argv)
 	mem = malloc(PAGE_SIZE * N_PAGES);
 	org = malloc(PAGE_SIZE);
 	if (!mem || !org) {
-		fail("malloc failed\n");
+		fail("malloc failed");
 		exit(1);
 	}
 
@@ -44,11 +44,11 @@ int main(int argc, char ** argv)
 		}
 
 		for (count = 0; count < N_PAGES; count++) {
-			m = mem+(count*PAGE_SIZE);
+			m = mem + (count * PAGE_SIZE);
 			org[128] = (count % 2 == 0) ? count : 0x42;
 
 			if (memcmp(org, m, PAGE_SIZE)) {
-				fail("memory corruption\n");
+				fail("memory corruption");
 				return 1;
 			}
 		}

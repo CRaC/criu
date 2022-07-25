@@ -11,11 +11,11 @@
 #include <linux/limits.h>
 #include "zdtmtst.h"
 
-const char *test_doc	= "Test uffd events";
-const char *test_author	= "Mike Rapoport <rppt@linux.vnet.ibm.com>";
+const char *test_doc = "Test uffd events";
+const char *test_author = "Mike Rapoport <rppt@linux.vnet.ibm.com>";
 
-#define NR_MAPS		5
-#define MAP_SIZE	(1 << 20)
+#define NR_MAPS	 5
+#define MAP_SIZE (1 << 20)
 
 static void *map[NR_MAPS];
 
@@ -25,8 +25,7 @@ static int create_mappings(void)
 	int i;
 
 	for (i = 0; i < NR_MAPS; i++) {
-		map[i] = mmap(NULL, MAP_SIZE, PROT_READ | PROT_WRITE,
-			      MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
+		map[i] = mmap(NULL, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
 		if (map[i] == MAP_FAILED) {
 			fail("mmap failed");
 			return 1;
@@ -134,7 +133,7 @@ static int check_swapped_mappings(int idx)
 	return 0;
 }
 
-int main(int argc, char ** argv)
+int main(int argc, char **argv)
 {
 	uint32_t crc;
 	int pid;
@@ -154,28 +153,30 @@ int main(int argc, char ** argv)
 		return 1;
 	}
 
+	test_msg("For a child process\n");
 	pid = fork();
 	if (pid < 0) {
 		fail("Can't fork");
 		return 1;
 	}
 
-	/* check madvise(MADV_DONTNEED) */
+	test_msg("Check madvise(MADV_DONTNEED)\n");
 	if (check_madv_dn(1))
 		return 1;
 
-	/* check growing mremap */
+	test_msg("Check growing mremap\n");
 	if (check_mremap_grow(2))
 		return 1;
 
-	/* check swapped mappings */
+	test_msg("Check swapped mappings\n");
 	if (check_swapped_mappings(3))
 		return 1;
 
 	if (pid) {
-		int status;
+		int status = -1;
 
-		waitpid(-1, &status, 0);
+		test_msg("Wait for the child %d\n", pid);
+		waitpid(pid, &status, 0);
 		if (status) {
 			fail("child failed");
 			return status;

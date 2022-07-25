@@ -13,11 +13,11 @@
 #include <net/if.h>
 #include "zdtmtst.h"
 
-const char *test_doc	= "check that macvlan interfaces are c/r'd correctly";
-const char *test_author	= "Tycho Andersen <tycho.andersen@canonical.com>";
+const char *test_doc = "check that macvlan interfaces are c/r'd correctly";
+const char *test_author = "Tycho Andersen <tycho.andersen@canonical.com>";
 
 #define BRIDGE_NAME "zdtmbr0"
-#define IF_NAME "zdtmmvlan0"
+#define IF_NAME	    "zdtmmvlan0"
 
 static bool wait_for_macvlan(void)
 {
@@ -40,7 +40,7 @@ int main(int argc, char **argv)
 	test_init(argc, argv);
 
 	if (!wait_for_macvlan()) {
-		fail("failed to inject macvlan device\n");
+		fail("failed to inject macvlan device");
 		return 1;
 	}
 

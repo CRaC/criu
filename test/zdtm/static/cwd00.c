@@ -8,8 +8,8 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check that cwd didn't change";
-const char *test_author	= "Pavel Emelianov <xemul@parallels.com>";
+const char *test_doc = "Check that cwd didn't change";
+const char *test_author = "Pavel Emelianov <xemul@parallels.com>";
 
 char *dirname;
 TEST_OPTION(dirname, string, "directory name", 1);
@@ -46,12 +46,12 @@ int main(int argc, char **argv)
 	test_waitsig();
 
 	if (!getcwd(cwd2, sizeof(cwd2))) {
-		fail("can't get cwd: %m\n");
+		fail("can't get cwd");
 		goto cleanup;
 	}
 
 	if (strcmp(cwd1, cwd2))
-		fail("%s != %s\n", cwd1, cwd2);
+		fail("%s != %s", cwd1, cwd2);
 	else
 		pass();
 cleanup:

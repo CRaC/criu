@@ -5,13 +5,13 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Write file before migration, read after";
-const char *test_author	= "Roman Kagan <rkagan@parallels.com>";
+const char *test_doc = "Write file before migration, read after";
+const char *test_author = "Roman Kagan <rkagan@parallels.com>";
 
 char *filename;
 TEST_OPTION(filename, string, "file name", 1);
 
-int main(int argc, char ** argv)
+int main(int argc, char **argv)
 {
 	int fd;
 	uint32_t crc;
@@ -39,18 +39,18 @@ int main(int argc, char ** argv)
 
 	fd = open(filename, O_RDONLY);
 	if (fd < 0) {
-		fail("can't open %s: %m\n", filename);
+		fail("can't open %s", filename);
 		exit(1);
 	}
 
 	if (read(fd, buf, sizeof(buf)) != sizeof(buf)) {
-		fail("can't read %s: %m\n", filename);
+		fail("can't read %s", filename);
 		goto out;
 	}
 
 	crc = ~0;
 	if (datachk(buf, sizeof(buf), &crc)) {
-		fail("CRC mismatch\n");
+		fail("CRC mismatch");
 		goto out;
 	}
 

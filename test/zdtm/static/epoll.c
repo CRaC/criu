@@ -19,10 +19,10 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check for epoll";
-const char *test_author	= "Andrei Vagin <avagin@openvz.org>";
+const char *test_doc = "Check for epoll";
+const char *test_author = "Andrei Vagin <avagin@openvz.org>";
 
-#define DUPFDNO		999
+#define DUPFDNO 999
 
 int main(int argc, char *argv[])
 {
@@ -31,7 +31,7 @@ int main(int argc, char *argv[])
 	int i, ret;
 
 	struct {
-		int	pipefd[2];
+		int pipefd[2];
 	} pipes[250];
 
 	test_init(argc, argv);
@@ -52,7 +52,7 @@ int main(int argc, char *argv[])
 
 	for (i = 0; i < ARRAY_SIZE(pipes); i++) {
 		if (pipe(pipes[i].pipefd)) {
-			pr_err("Can't create pipe %d\n", i);
+			pr_perror("Can't create pipe %d", i);
 			exit(1);
 		}
 
@@ -61,7 +61,7 @@ int main(int argc, char *argv[])
 
 			nfd = dup2(pipes[i].pipefd[0], i + 700);
 			if (nfd < 0) {
-				pr_err("dup2");
+				pr_perror("dup2");
 				exit(1);
 			}
 			close(pipes[i].pipefd[0]);
@@ -99,7 +99,7 @@ int main(int argc, char *argv[])
 		uint8_t cw = 1, cr;
 
 		if (write(pipes[i].pipefd[1], &cw, sizeof(cw)) != sizeof(cw)) {
-			pr_perror("Unable to write into a pipe\n");
+			pr_perror("Unable to write into a pipe");
 			return 1;
 		}
 
@@ -108,8 +108,7 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 		if (ev.data.u64 != i) {
-			pr_err("ev.fd=%d ev.data.u64=%#llx (%d expected)\n",
-			       ev.data.fd, (long long)ev.data.u64, i);
+			pr_err("ev.fd=%d ev.data.u64=%#llx (%d expected)\n", ev.data.fd, (long long)ev.data.u64, i);
 			ret |= 1;
 		}
 
@@ -118,8 +117,7 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 		if (ev.data.u64 != i) {
-			pr_err("ev.fd=%d ev.data.u64=%#llx (%d expected)\n",
-			       ev.data.fd, (long long)ev.data.u64, i);
+			pr_err("ev.fd=%d ev.data.u64=%#llx (%d expected)\n", ev.data.fd, (long long)ev.data.u64, i);
 			ret |= 1;
 		}
 

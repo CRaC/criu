@@ -5,7 +5,7 @@ const char *test_author = "Andrew Vagin <avagin@parallels.com>";
 
 /* Description:
  * Create two tcp socket, server send asynchronous request on
- * read data and clietn write data after migration
+ * read data and client write data after migration
  */
 
 #include <stdio.h>
@@ -31,7 +31,7 @@ int main(int argc, char **argv)
 	int status;
 	pid_t pid;
 	int ret, res;
-	const struct aiocb   *aioary[1];
+	const struct aiocb *aioary[1];
 	task_waiter_t child_waiter;
 
 	test_init(argc, argv);
@@ -51,7 +51,7 @@ int main(int argc, char **argv)
 
 	if (pid == 0) {
 		/*
-		 * Chiled is client of TCP connection
+		 * Child is client of TCP connection.
 		 */
 		close(fd_s);
 		fd = tcp_init_client(AF_INET, "127.0.0.1", port);
@@ -77,7 +77,7 @@ int main(int argc, char **argv)
 		test_msg(".");
 #endif
 		res = 0;
-again:
+	again:
 		if (aio_suspend(aioary, 1, NULL) < 0 && errno != EINTR) {
 			pr_perror("aio_suspend failed");
 			res = 1;
@@ -124,7 +124,6 @@ again:
 		goto error;
 	}
 	close(fd);
-
 
 	if (wait(&status) < 0) {
 		pr_perror("wait failed");

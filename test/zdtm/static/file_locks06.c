@@ -5,12 +5,11 @@
 #include "ofd_file_locks.h"
 #include "zdtmtst.h"
 
-const char *test_doc    = "Check that OFD lock for the whole file is restored";
+const char *test_doc = "Check that OFD lock for the whole file is restored";
 const char *test_author = "Begunkov Pavel <asml.silence@gmail.com>";
 
 char *filename;
 TEST_OPTION(filename, string, "file name", 1);
-
 
 int init_lock(int *fd, struct flock *lck)
 {
@@ -36,10 +35,10 @@ int init_lock(int *fd, struct flock *lck)
 void cleanup(int *fd)
 {
 	if (close(*fd))
-		pr_perror("Can't close fd\n");
+		pr_perror("Can't close fd");
 
 	if (unlink(filename))
-		pr_perror("Can't unlink file\n");
+		pr_perror("Can't unlink file");
 }
 
 int main(int argc, char **argv)
@@ -54,9 +53,8 @@ int main(int argc, char **argv)
 	test_daemon();
 	test_waitsig();
 
-	if (check_file_lock_restored(getpid(), fd, &lck) ||
-		check_lock_exists(filename, &lck) < 0)
-		fail("OFD file locks check failed\n");
+	if (check_file_lock_restored(getpid(), fd, &lck) || check_lock_exists(filename, &lck) < 0)
+		fail("OFD file locks check failed");
 	else
 		pass();
 

@@ -3,6 +3,7 @@ import collections
 import os
 import quopri
 import socket
+import sys
 from ipaddress import IPv4Address, IPv6Address, ip_address
 
 from google.protobuf.descriptor import FieldDescriptor as FD
@@ -22,7 +23,7 @@ if "encodebytes" not in dir(base64):
 # here are some of them:
 #   - both have a common bug in treating optional field with empty
 #     repeated inside.
-#   - protobuf-to-json is not avalible in pip or in any other python
+#   - protobuf-to-json is not available in pip or in any other python
 #     repo, so it is hard to distribute and we can't rely on it.
 #   - both do not treat enums in a way we would like to. They convert
 #     protobuf enum to int, but we need a string here, because it is
@@ -246,11 +247,17 @@ def encode_dev(field, value):
 
 
 def encode_base64(value):
-    return base64.encodebytes(value)
+    if (sys.version_info > (3, 0)):
+        return base64.encodebytes(value).decode()
+    else:
+        return base64.encodebytes(value)
 
 
 def decode_base64(value):
-    return base64.decodebytes(value)
+    if (sys.version_info > (3, 0)):
+        return base64.decodebytes(str.encode(value))
+    else:
+        return base64.decodebytes(value)
 
 
 def encode_unix(value):
@@ -357,7 +364,7 @@ def pb2dict(pb, pretty=False, is_hex=False):
         else:
             d_val = _pb2dict_cast(field, value, pretty, is_hex)
 
-        d[field.name] = d_val
+        d[field.name] = d_val.decode() if type(d_val) == bytes else d_val
     return d
 
 

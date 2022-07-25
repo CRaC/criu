@@ -7,8 +7,8 @@
 
 #include "zdtmtst.h"
 
-const char *test_doc	= "Check that a fifo read-only descriptor is restored with data";
-const char *test_author	= "Andrew Vagin <avagin@openvz.org>";
+const char *test_doc = "Check that a fifo read-only descriptor is restored with data";
+const char *test_author = "Andrew Vagin <avagin@openvz.org>";
 
 char *filename;
 TEST_OPTION(filename, string, "file name", 1);
@@ -62,17 +62,17 @@ int main(int argc, char **argv)
 
 	crc = ~0;
 	if (datachk(buf, BUF_SIZE, &crc)) {
-		fail("data corrupted\n");
+		fail("data corrupted");
 		return 1;
 	}
 
 	if (close(fd_ro) < 0) {
-		fail("can't close %s: %m", filename);
+		fail("can't close %s", filename);
 		return 1;
 	}
 
 	if (stat(filename, &st) < 0) {
-		fail("can't stat %s: %m", filename);
+		fail("can't stat %s", filename);
 		return 1;
 	}
 
@@ -82,7 +82,7 @@ int main(int argc, char **argv)
 	}
 
 	if (unlink(filename) < 0) {
-		fail("can't unlink %s: %m", filename);
+		fail("can't unlink %s", filename);
 		return 1;
 	}
 
