@@ -114,9 +114,6 @@
 
 #define NOT_THAT_PID_ECODE 2
 
-// don't use ptrace during restore
-#define PTRACE 1
-
 struct pstree_item *current;
 
 static int restore_task_with_children(void *);
@@ -1327,9 +1324,11 @@ static int set_next_pid(void *arg)
 	int len;
 	int fd;
 
-	fd = open_proc_rw(PROC_GEN, LAST_PID_PATH);
-	if (fd < 0)
+	fd = do_open_proc(PROC_GEN, O_RDWR, LAST_PID_PATH);
+	if (fd < 0) {
+		pr_pwarn("Can't open %d/" LAST_PID_PATH " on procfs", PROC_GEN); \
 		return -1;
+	}
 
 	len = snprintf(buf, sizeof(buf), "%d", *pid - 1);
 	if (write(fd, buf, len) != len) {
@@ -1973,8 +1972,6 @@ err:
 	exit(1);
 }
 
-#if PTRACE
-
 static int attach_to_tasks(bool root_seized)
 {
 	struct pstree_item *item;
@@ -2096,7 +2093,7 @@ static int catch_tasks(bool root_seized, enum trace_flags *flag)
 			pid_t pid = item->threads[i].real;
 
 			if (ptrace(PTRACE_INTERRUPT, pid, 0, 0)) {
-				pr_perror("Can't interrupt the %d task", pid);
+				pr_pwarn("Can't interrupt the %d task", pid);
 				return -1;
 			}
 
@@ -2191,8 +2188,6 @@ static int finalize_restore_detach(void)
 	return 0;
 }
 
-#endif // PTRACE
-
 static void ignore_kids(void)
 {
 	struct sigaction sa = { .sa_handler = SIG_DFL };
@@ -2268,10 +2263,10 @@ static void reap_zombies(void)
 
 static int restore_root_task(struct pstree_item *init)
 {
-#if PTRACE
 	enum trace_flags flag = TRACE_ALL;
 	int root_seized = 0;
-#endif
+	bool ptrace_allowed = true;
+
 	int ret, fd, mnt_ns_fd = -1;
 	struct pstree_item *item;
 
@@ -2334,8 +2329,7 @@ static int restore_root_task(struct pstree_item *init)
 
 	restore_origin_ns_hook();
 
-#if PTRACE
-	if (rsti(init)->clone_flags & CLONE_PARENT) {
+	if (ptrace_allowed && (rsti(init)->clone_flags & CLONE_PARENT)) {
 		struct sigaction act;
 
 		root_seized = 1;
@@ -2353,11 +2347,10 @@ static int restore_root_task(struct pstree_item *init)
 		sigaction(SIGCHLD, &act, NULL);
 
 		if (ptrace(PTRACE_SEIZE, init->pid->real, 0, 0)) {
-			pr_perror("Can't attach to init");
-			goto out_kill;
+			pr_warn("Can't seize root task, disabling ptrace\n");
+			ptrace_allowed = false;
 		}
 	}
-#endif
 
 	if (!root_ns_mask)
 		goto skip_ns_bouncing;
@@ -2480,38 +2473,38 @@ skip_ns_bouncing:
 	 * Network is unlocked. If something fails below - we lose data
 	 * or a connection.
 	 */
-#if PTRACE
-	attach_to_tasks(root_seized);
-#endif
+	if (ptrace_allowed && (attach_to_tasks(root_seized) < 0)) {
+		pr_warn("Can't attach to all tasks, disabling ptrace\n");
+		ptrace_allowed = false;
+	}
 
 	if (restore_switch_stage(CR_STATE_RESTORE_CREDS))
 		goto out_kill_network_unlocked;
 
 	timing_stop(TIME_RESTORE);
-#if PTRACE
-	if (catch_tasks(root_seized, &flag)) {
-		pr_err("Can't catch all tasks\n");
-		goto out_kill_network_unlocked;
+	if (ptrace_allowed && catch_tasks(root_seized, &flag)) {
+		pr_warn("Can't catch all tasks, disabling ptrace\n");
+		ptrace_allowed = false;
 	}
-#endif
 
 	if (lazy_pages_finish_restore())
 		goto out_kill_network_unlocked;
 
 	__restore_switch_stage(CR_STATE_COMPLETE);
 
-#if PTRACE
-	ret = compel_stop_on_syscall(task_entries->nr_threads, __NR(rt_sigreturn, 0), __NR(rt_sigreturn, 1), flag);
-	if (ret) {
-		pr_err("Can't stop all tasks on rt_sigreturn\n");
-		goto out_kill_network_unlocked;
+	if (ptrace_allowed) {
+		ret = compel_stop_on_syscall(task_entries->nr_threads, __NR(rt_sigreturn, 0), __NR(rt_sigreturn, 1), flag);
+		if (ret) {
+			pr_err("Can't stop all tasks on rt_sigreturn\n");
+			goto out_kill_network_unlocked;
+		}
+
+		if (clear_breakpoints())
+			pr_err("Unable to flush breakpoints\n");
+
+		finalize_restore();
 	}
 
-	if (clear_breakpoints())
-		pr_err("Unable to flush breakpoints\n");
-
-	finalize_restore();
-#endif
 	/*
 	 * Some external devices such as GPUs might need a very late
 	 * trigger to kick-off some events, memory notifiers and for
@@ -2543,15 +2536,15 @@ skip_ns_bouncing:
 	if (restore_freezer_state())
 		pr_err("Unable to restore freezer state\n");
 
-	/* just before releasing threads we have to restore rseq_cs */
-	if (restore_rseq_cs())
-		pr_err("Unable to restore rseq_cs state\n");
+	if (ptrace_allowed) {
+		/* just before releasing threads we have to restore rseq_cs */
+		if (restore_rseq_cs())
+			pr_err("Unable to restore rseq_cs state\n");
 
-	/* Detaches from processes and they continue run through sigreturn. */
-#if PTRACE
-	if (finalize_restore_detach())
-		goto out_kill_network_unlocked;
-#endif
+		/* Detaches from processes and they continue run through sigreturn. */
+		if (finalize_restore_detach())
+			goto out_kill_network_unlocked;
+	}
 
 	pr_info("Restore finished successfully. Tasks resumed.\n");
 	write_stats(RESTORE_STATS);

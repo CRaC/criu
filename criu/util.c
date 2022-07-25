@@ -708,7 +708,7 @@ pid_t fork_and_ptrace_attach(int (*child_setup)(void))
 	close(sk);
 
 	if (ptrace(PTRACE_ATTACH, pid, NULL, NULL) == -1) {
-		pr_perror("Unable to ptrace the child");
+		pr_pwarn("Unable to ptrace the child");
 		kill(pid, SIGKILL);
 		waitpid(pid, NULL, 0);
 		return -1;

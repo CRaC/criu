@@ -935,8 +935,11 @@ static int kerndat_has_ptrace_get_rseq_conf(void)
 	struct __ptrace_rseq_configuration rseq;
 
 	pid = fork_and_ptrace_attach(NULL);
-	if (pid < 0)
-		return -1;
+	if (pid < 0) {
+		kdat.has_ptrace_get_rseq_conf = false;
+		pr_warn("Can't detect has_ptrace_get_rseq_conf\n");
+		return 0;
+	}
 
 	len = ptrace(PTRACE_GET_RSEQ_CONFIGURATION, pid, sizeof(rseq), &rseq);
 	if (len != sizeof(rseq)) {
@@ -1003,6 +1006,11 @@ static int kerndat_has_move_mount_set_group(void)
 	}
 
 	if (mount("criu.move_mount_set_group", tmpdir, "tmpfs", 0, NULL)) {
+		if (errno == EPERM) {
+			kdat.has_move_mount_set_group = false;
+			rmdir(tmpdir);
+			return 0;
+		}
 		pr_perror("Fail to mount tmfps to %s", tmpdir);
 		rmdir(tmpdir);
 		return -1;
