@@ -230,6 +230,7 @@ struct task_restore_args {
 	int child_subreaper;
 	bool has_clone3_set_tid;
 	bool mmap_page_image;
+	bool ptrace_allowed;
 
 	/*
 	 * info about rseq from libc used to

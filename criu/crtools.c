@@ -268,9 +268,6 @@ int main(int argc, char *argv[], char *envp[])
 		kdat.can_map_vdso = 0;
 
 	if (!strcmp(argv[optind], "restore")) {
-		if (!getenv("DISABLE_CRAC_OPTIMIZATION")) {
-			opts.mmap_page_image = true;
-		}
 		if (inherit_fd_parse("fd[0]:fd[0]") < 0)
 			return 1;
 		if (inherit_fd_parse("fd[1]:fd[1]") < 0)

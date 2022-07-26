@@ -430,6 +430,9 @@ void init_opts(void)
 	opts.pre_dump_mode = PRE_DUMP_SPLICE;
 	opts.file_validation_method = FILE_VALIDATION_DEFAULT;
 	opts.network_lock_method = NETWORK_LOCK_DEFAULT;
+
+	opts.mmap_page_image = true;
+	opts.ptrace_allowed = true;
 }
 
 bool deprecated_ok(char *what)
@@ -692,7 +695,8 @@ int parse_options(int argc, char **argv, bool *usage_error, bool *has_exec_cmd, 
 		{ "tls-cert", required_argument, 0, 1094 },
 		{ "tls-key", required_argument, 0, 1095 },
 		BOOL_OPT("tls", &opts.tls),
-		{ "mmap-page-image", no_argument, 0, 101098 },
+		BOOL_OPT("mmap-page-image", &opts.mmap_page_image),
+		BOOL_OPT("ptrace-allowed", &opts.ptrace_allowed),
 		{ "tls-no-cn-verify", no_argument, &opts.tls_no_cn_verify, true },
 		{ "cgroup-yard", required_argument, 0, 1096 },
 		{ "pre-dump-mode", required_argument, 0, 1097 },
@@ -1016,9 +1020,6 @@ int parse_options(int argc, char **argv, bool *usage_error, bool *has_exec_cmd, 
 				pr_err("Unable to parse value of --pre-dump-mode\n");
 				return 1;
 			}
-			break;
-		case 101098:
-			opts.mmap_page_image = true;
 			break;
 		case 1098:
 			if (parse_file_validation_method(&opts, optarg))

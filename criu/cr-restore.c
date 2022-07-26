@@ -2265,7 +2265,7 @@ static int restore_root_task(struct pstree_item *init)
 {
 	enum trace_flags flag = TRACE_ALL;
 	int root_seized = 0;
-	bool ptrace_allowed = true;
+	bool ptrace_allowed = opts.ptrace_allowed;
 
 	int ret, fd, mnt_ns_fd = -1;
 	struct pstree_item *item;

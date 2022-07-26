@@ -201,7 +201,8 @@ struct cr_options {
 	char *tls_key;
 	int tls;
 	int tls_no_cn_verify;
-	bool mmap_page_image;
+	int mmap_page_image;
+	int ptrace_allowed;
 
 	/* This stores which method to use for file validation. */
 	int file_validation_method;
