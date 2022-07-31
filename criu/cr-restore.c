@@ -23,7 +23,6 @@
 #include <compel/ptrace.h>
 #include "common/compiler.h"
 
-#include "linux/mount.h"
 #include "linux/rseq.h"
 
 #include "clone-noasan.h"
@@ -86,6 +85,8 @@
 #include "files-reg.h"
 #include <compel/plugins/std/syscall-codes.h>
 #include "compel/include/asm/syscall.h"
+
+#include "linux/mount.h"
 
 #include "protobuf.h"
 #include "images/sa.pb-c.h"
