@@ -211,6 +211,9 @@ struct cr_options {
 	enum criu_mode mode;
 
 	int mntns_compat_mode;
+
+	/* Enables dump compression/decompression */
+	int compress;
 };
 
 extern struct cr_options opts;

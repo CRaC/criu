@@ -293,7 +293,30 @@ int main(int argc, char *argv[], char *envp[])
 		if (!opts.tree_id)
 			goto opt_pid_missing;
 
-		return cr_dump_tasks(opts.tree_id);
+		printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
+		ret = cr_dump_tasks(opts.tree_id);
+		if (ret)
+			return ret;
+		if (opts.compress) {
+			// Compress dump
+			// tar -c /my_cr | lz4 -z -9 - /cr.tar.lz4
+			printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
+			{
+				char command[PATH_MAX];
+				ret = snprintf(command, sizeof(command), "tar -c %s | lz4 -z -9 - %s/dump.tar.lz4", opts.imgs_dir, opts.imgs_dir);
+				if (0 >= ret || sizeof(command) <= ret) {
+					pr_err("Cannot write compress command to string buffer");
+					return ret;
+				}
+				printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
+				ret = system(command);
+				if (ret) {
+					pr_err("Compressing failed: %s", command);
+				}
+				printf("XXX %s:%d: (%5d) %s: %s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, command);
+			}
+		}
+		return ret;
 	}
 
 	if (opts.mode == CR_PRE_DUMP) {
@@ -425,6 +448,7 @@ usage:
 	       "  --network-lock METHOD\n"
 	       "                      network locking/unlocking method; argument\n"
 	       "                      can be 'nftables' or 'iptables' (default).\n"
+	       "  --compress            use compressed image files when possible\n"
 	       "\n"
 	       "* External resources support:\n"
 	       "  --external RES        dump objects from this list as external resources:\n"
