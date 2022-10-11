@@ -234,6 +234,16 @@ $(SOCCR_A): |soccr/built-in.o
 criu-deps	+= $(SOCCR_A)
 
 #
+# LZ4 library
+#
+LZ4_OBJS = lz4/lib/liblz4.a
+$(LZ4_OBJS) :
+	$(Q) env -i PATH=$$PATH make CC=$(CC) CFLAGS="$(CFLAGS)" -C lz4 lib
+	# $(Q) $(AR) rcs lz4/programs/liblz4io.a lz4/programs/lz4io.o
+
+criu-deps += $(LZ4_OBJS)
+
+#
 # CRIU building done in own directory
 # with slightly different rules so we
 # can't use nmk engine directly (we
@@ -282,6 +292,7 @@ clean mrproper:
 	$(Q) $(MAKE) $(build)=compel/plugins $@
 	$(Q) $(MAKE) $(build)=lib $@
 	$(Q) $(MAKE) $(build)=crit $@
+	$(Q) $(MAKE) -C lz4 clean
 .PHONY: clean mrproper
 
 clean-amdgpu_plugin:
