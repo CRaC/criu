@@ -99,6 +99,8 @@ CFLAGS_REMOVE_vdso-compat.o	+= $(CFLAGS-ASAN) $(CFLAGS-GCOV)
 obj-y			+= pidfd-store.o
 obj-y			+= hugetlb.o
 
+obj-y			+= pages-compress.o
+
 PROTOBUF_GEN := scripts/protobuf-gen.sh
 
 $(obj)/protobuf-desc.d: $(obj)/protobuf-desc-gen.h

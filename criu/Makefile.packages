@@ -30,7 +30,7 @@ else
 REQ-RPM-PKG-TEST-NAMES	+= $(PYTHON)-pyyaml
 endif
 
-export LIBS		+= -Wl,-Bstatic -lprotobuf-c -lsoccr -Lsoccr/ -lnet -lnl-3 -Wl,-Bdynamic -lm -ldl -lpthread
+export LIBS		+= -Wl,-Bstatic -lprotobuf-c -lsoccr -Lsoccr/ -lnet -lnl-3 -Lcriu -llz4io -Llz4/lib -llz4 -Wl,-Bdynamic -lm -ldl -lpthread
 
 check-packages-failed:
 	$(warning Can not find some of the required libraries)

@@ -87,6 +87,8 @@
 #include "apparmor.h"
 #include "asm/dump.h"
 
+int pages_compress(void);
+
 /*
  * Architectures can overwrite this function to restore register sets that
  * are not covered by ptrace_set/get_regs().
@@ -1712,9 +1714,18 @@ static int dump_one_task(struct pstree_item *item, InventoryEntry *parent_ie)
 		goto err;
 	}
 
+	close_cr_imgset(&cr_imgset);
+
+	printf("XXX %s:%d: (%5d) %s: compress=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, (int)opts.compress);
+	if (opts.compress) {
+		pages_compress();
+	}
+
 	exit_code = 0;
 err:
-	close_cr_imgset(&cr_imgset);
+	if (exit_code) {
+		close_cr_imgset(&cr_imgset);
+	}
 	close_pid_proc();
 	free_mappings(&vmas);
 	xfree(dfds);
@@ -2075,6 +2086,7 @@ int cr_dump_tasks(pid_t pid)
 	 *  be bigger than a default file limit, so we need to raise it to the
 	 *  maximum.
 	 */
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	rlimit_unlimit_nofile();
 
 	root_item = alloc_pstree_item();
@@ -2082,35 +2094,45 @@ int cr_dump_tasks(pid_t pid)
 		goto err;
 	root_item->pid->real = pid;
 
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	pre_dump_ret = run_scripts(ACT_PRE_DUMP);
 	if (pre_dump_ret != 0) {
 		pr_err("Pre dump script failed with %d!\n", pre_dump_ret);
 		goto err;
 	}
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	if (init_stats(DUMP_STATS))
 		goto err;
 
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	if (cr_plugin_init(CR_PLUGIN_STAGE__DUMP))
 		goto err;
 
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	if (lsm_check_opts())
 		goto err;
 
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	if (irmap_load_cache())
 		goto err;
 
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	if (cpu_init())
 		goto err;
 
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	if (vdso_init_dump())
 		goto err;
 
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	if (cgp_init(opts.cgroup_props, opts.cgroup_props ? strlen(opts.cgroup_props) : 0, opts.cgroup_props_file))
 		goto err;
 
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	if (parse_cg_info())
 		goto err;
 
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	if (prepare_inventory(&he))
 		goto err;
 
@@ -2164,6 +2186,7 @@ int cr_dump_tasks(pid_t pid)
 			goto err;
 	}
 
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	if (parent_ie) {
 		inventory_entry__free_unpacked(parent_ie, NULL);
 		parent_ie = NULL;
@@ -2237,12 +2260,15 @@ int cr_dump_tasks(pid_t pid)
 
 	he.has_pre_dump_mode = false;
 
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	ret = write_img_inventory(&he);
 	if (ret)
 		goto err;
 err:
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	if (parent_ie)
 		inventory_entry__free_unpacked(parent_ie, NULL);
 
+	printf("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	return cr_dump_finish(ret);
 }

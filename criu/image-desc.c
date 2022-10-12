@@ -89,6 +89,7 @@ struct cr_fd_desc_tmpl imgset_template[CR_FD_MAX] = {
 	FD_ENTRY(FILE_LOCKS,	"filelocks"),
 	FD_ENTRY(RLIMIT,	"rlimit-%u"),
 	FD_ENTRY_F(PAGES,	"pages-%u", O_NOBUF),
+	FD_ENTRY_F(PAGES_COMP,	"pages-%u.comp", O_NOBUF),
 	FD_ENTRY_F(PAGES_OLD,	"pages-%d", O_NOBUF),
 	FD_ENTRY_F(SHM_PAGES_OLD, "pages-shmem-%ld", O_NOBUF),
 	FD_ENTRY(SIGNAL,	"signal-s-%u"),
