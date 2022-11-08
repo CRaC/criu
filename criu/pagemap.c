@@ -19,6 +19,8 @@
 #include "protobuf.h"
 #include "images/pagemap.pb-c.h"
 
+#include <lz4/lib/lz4frame.h>
+
 #ifndef SEEK_DATA
 #define SEEK_DATA 3
 #define SEEK_HOLE 4
@@ -237,6 +239,7 @@ static int read_local_page(struct page_read *pr, unsigned long vaddr, unsigned l
 	ssize_t ret;
 	size_t curr = 0;
 
+	pr_info("XXX\n");
 	fd = img_raw_fd(pr->pi);
 	if (fd < 0) {
 		pr_err("Failed getting raw image fd\n");
@@ -246,6 +249,7 @@ static int read_local_page(struct page_read *pr, unsigned long vaddr, unsigned l
 	 * Flush any pending async requests if any not to break the
 	 * linear reading from the pages.img file.
 	 */
+	pr_info("XXX\n");
 	if (pr->sync(pr))
 		return -1;
 
@@ -329,6 +333,7 @@ int pagemap_enqueue_iovec(struct page_read *pr, void *buf, unsigned long len, st
 	struct page_read_iov *cur_async = NULL;
 	struct iovec *iov;
 
+	pr_debug("to=%p, len=%d\n", to, (int)len);
 	if (!list_empty(to))
 		cur_async = list_entry(to->prev, struct page_read_iov, l);
 
@@ -338,6 +343,7 @@ int pagemap_enqueue_iovec(struct page_read *pr, void *buf, unsigned long len, st
 	 * the previous one.
 	 * Start the new preadv request here.
 	 */
+	pr_debug("XXX\n");
 	if (!cur_async || pr->pi_off != cur_async->end)
 		return enqueue_async_iov(pr, buf, len, to);
 
@@ -349,10 +355,12 @@ int pagemap_enqueue_iovec(struct page_read *pr, void *buf, unsigned long len, st
 	if (iov->iov_base + iov->iov_len == buf) {
 		/* Extendable */
 		iov->iov_len += len;
+	pr_debug("XXX 1\n");
 	} else {
 		/* Need one more target iovec */
 		unsigned int n_iovs = cur_async->nr + 1;
 
+	pr_debug("XXX 2\n");
 		if (n_iovs >= IOV_MAX)
 			return enqueue_async_iov(pr, buf, len, to);
 
@@ -371,6 +379,7 @@ int pagemap_enqueue_iovec(struct page_read *pr, void *buf, unsigned long len, st
 
 	cur_async->end += len;
 
+	pr_debug("XXX p=%p\n", cur_async->to);
 	return 0;
 }
 
@@ -527,12 +536,16 @@ static void advance_piov(struct page_read_iov *piov, ssize_t len)
 	pr_debug("Advanced iov %zu bytes, %d->%d iovs, %zu tail\n", olen, onr, piov->nr, len);
 }
 
-static int process_async_reads(struct page_read *pr)
+static int process_async_reads(struct page_read *pr);
+
+static int process_async_reads_raw(struct page_read *pr)
 {
 	int fd, ret = 0;
 	struct page_read_iov *piov, *n;
 
+	pr_info("XXX pr->async=%p\n", &pr->async);
 	fd = img_raw_fd(pr->pi);
+	pr_info("XXX %s:%d: (%5d) %s: fd=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, fd);
 	list_for_each_entry_safe(piov, n, &pr->async, l) {
 		ssize_t ret;
 		struct iovec *iovs = piov->to;
@@ -583,10 +596,271 @@ static int process_async_reads(struct page_read *pr)
 		xfree(piov);
 	}
 
+	pr_info("XXX\n");
 	if (pr->parent)
 		ret = process_async_reads(pr->parent);
 
+	pr_info("XXX\n");
 	return ret;
+}
+
+// static struct page_read_iov *next_read_request(struct list_head *head, struct list_head *cur) {
+// 	struct list_head *new;
+// 	struct page_read_iov *piov;
+// 	list_for_each(new, cur) {
+// 		if (new == head) {
+// 			break;
+// 		}
+
+// 		piov = list_entry(new, typeof(*piov), l);
+// 		if (piov->nr > 0) {
+// 			return piov;
+// 		}
+// 	}
+// 	return NULL;
+// }
+
+// static void async_read_pretouch_output(struct page_read_iov *piov) {
+// #if 0
+// 	struct iovec *ip;
+// 	pr_debug("  touch output\n");
+// 	for (ip = piov->to; ip < piov->to + piov->nr; ++ip) {
+// 		pr_debug("    %lx-%lx\n", (unsigned long)ip->iov_base, (unsigned long)ip->iov_base + ip->iov_len);
+// 		madvise(ip->iov_base, ip->iov_len, MADV_WILLNEED);
+// 	}
+
+// 	pr_debug("    touching\n");
+// 	for (ip = piov->to; ip < piov->to + piov->nr; ++ip) {
+// 		char *pp;
+// 		pr_debug("    %lx-%lx\n", (unsigned long)ip->iov_base, (unsigned long)ip->iov_base + ip->iov_len);
+// 		for (pp = ip->iov_base; pp < (char *) ip->iov_base + ip->iov_len; pp += 4096) {
+// 			*pp = '\0';
+// 		}
+// 	}
+// 	pr_debug("    touching done\n");
+// #endif
+// }
+
+static int process_async_reads_comp(struct page_read *pr)
+{
+	int fd, ret = 0;
+	struct page_read_iov *piov, *n;
+
+	pr_info("XXX pr->async=%p\n", &pr->async);
+	fd = img_raw_fd(pr->pi);
+	pr_info("XXX %s:%d: (%5d) %s: fd=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, fd);
+	list_for_each_entry_safe(piov, n, &pr->async, l) {
+		ssize_t ret;
+		struct iovec *iovs = piov->to;
+
+		pr_info("Read piov iovs %d, from %ju, len %ju, first %p:%zu\n", piov->nr, piov->from,
+			 piov->end - piov->from, piov->to->iov_base, piov->to->iov_len);
+	more:
+		ret = preadv(fd, piov->to, piov->nr, piov->from);
+		if (fault_injected(FI_PARTIAL_PAGES)) {
+			/*
+			 * We might have read everything, but for debug
+			 * purposes let's try to force the advance_piov()
+			 * and re-read tail.
+			 */
+			if (ret > 0 && piov->nr >= 2) {
+				pr_debug("`- trim preadv %zu\n", ret);
+				ret /= 2;
+			}
+		}
+
+		if (ret < 0) {
+			pr_err("Can't read async pr bytes (%zd / %ju read, %ju off, %d iovs)\n", ret,
+			       piov->end - piov->from, piov->from, piov->nr);
+			return -1;
+		}
+
+		if (opts.auto_dedup && punch_hole(pr, piov->from, ret, false)) {
+	pr_info("XXX %s:%d: (%5d) %s: fd=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, fd);
+			return -1;
+		}
+
+		if (ret != piov->end - piov->from) {
+			/*
+			 * The preadv() can return less than requested. It's
+			 * valid and doesn't mean error or EOF. We should advance
+			 * the iovecs and continue
+			 *
+			 * Modify the piov in-place, we're going to drop this one
+			 * anyway.
+			 */
+
+			advance_piov(piov, ret);
+			goto more;
+		}
+
+		BUG_ON(pr->io_complete); /* FIXME -- implement once needed */
+
+		list_del(&piov->l);
+		xfree(iovs);
+		xfree(piov);	
+	}
+
+	pr_info("XXX\n");
+	if (pr->parent)
+		ret = process_async_reads(pr->parent);
+
+	pr_info("XXX %s:%d: (%5d) %s: ret=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, ret);
+	return ret;
+// 	const int compbufsize = 4 * 1024 * 1024;
+// 	size_t toreadhint = compbufsize;
+// 	char *compbuf = NULL;
+// 	LZ4F_errorCode_t lz4err;
+// 	LZ4F_decompressionContext_t dctx;
+// 	struct page_read_iov *piov, *n;
+// 	struct iovec *iov = NULL;
+// 	size_t iovpos = 0;
+// 	int err = 0;
+
+// 	int fd = img_raw_fd(pr->pi);
+// 	pr_info("XXX %s:%d: (%5d) %s: fd=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, fd);
+
+// 	pr_info("XXX %s:%d: (%5d) %s:\n", __FILE__, __LINE__, getpid(), __FUNCTION__);
+// 	if (list_empty(&pr->async)) {
+// 		pr_info("XXX %s:%d: (%5d) %s:\n", __FILE__, __LINE__, getpid(), __FUNCTION__);
+// 		return 0;
+// 	}
+
+// 	compbuf = xmalloc(compbufsize);
+// 	if (!compbuf) {
+// 		err = -1;
+// 		goto out;
+// 	}
+
+// 	lz4err = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
+// 	if (LZ4F_isError(lz4err)) {
+// 		pr_err("Can't create LZ4 decompression context\n");
+// 		err = -1;
+// 		goto out;
+// 	}
+
+// 	piov = next_read_request(&pr->async, &pr->async);
+// 	if (!piov) {
+// 		err = 0;
+// 		goto out_dctx;
+// 	}
+
+// 	pr_debug("Read piov iovs %d, from %ju, len %ju, first %p:%zu\n",
+// 			piov->nr, piov->from, piov->end - piov->from,
+// 			piov->to->iov_base, piov->to->iov_len);
+
+// 	iov = piov->to;
+
+// 	async_read_pretouch_output(piov);
+
+// 	while (toreadhint) {
+// 		int fullfil;
+// 		size_t readpos = 0;
+// 		size_t readbytes = 0;
+// 		pr_debug("  read max %lu bytes (compressed)\n", (unsigned long) toreadhint);
+// 		readbytes = read(img_raw_fd(pr->pi), compbuf, toreadhint);
+// 		pr_debug("    done read %lu bytes\n", (unsigned long) readbytes);
+// 		if (!readbytes) {
+// 			/* reached end of file or stream */
+// 			break;
+// 		}
+
+// #if 0
+// 		pr_debug("  touch bytes of input\n");
+// 		unsigned int sum = 0;
+// 		{
+// 			int i;
+// 			for (i = 0; i < readbytes; i += 128) {
+// 				sum += compbuf[i];
+// 			}
+// 		}
+// 		pr_debug("    done (%u)\n", sum);
+// #endif
+
+// 		pr_debug("  decomp input\n");
+// 		do {
+// 			size_t consume = readbytes - readpos;
+// 			size_t produce = iov->iov_len - iovpos;
+
+// 			lz4err = LZ4F_decompress(dctx,
+// 					iov->iov_base + iovpos, &produce,
+// 					compbuf + readpos, &consume,
+// 					NULL);
+// #if 0
+// 			FILE *testout = fopen("/tmp/decompout", "ab");
+// 			fwrite(iov->iov_base + iovpos, 1, produce, testout);
+// 			fclose(testout);
+// #endif
+// 			if (!LZ4F_isError(lz4err)) {
+// 				toreadhint = min((unsigned)lz4err, (unsigned)compbufsize);
+// 			} else {
+// 				pr_err("LZ4 Decompress error: %s\n", LZ4F_getErrorName(lz4err));
+// 				err = -1;
+// 				goto out_dctx;
+// 			}
+
+// 			readpos += consume;
+// 			iovpos  += produce;
+
+// 			fullfil = iovpos == iov->iov_len;
+// 			if (fullfil) {
+// 				++iov;
+// 				iovpos = 0;
+
+// 				if (iov == piov->to + piov->nr) {
+// 					piov = next_read_request(&pr->async, &piov->l);
+// 					if (!piov) {
+// 						iov = NULL;
+// 						pr_debug("    done\n");
+// 						goto done;
+// 					}
+// 					iov = piov->to;
+// 				}
+// 			}
+
+// 			if (!toreadhint) {
+// 				break;
+// 			}
+
+// 		} while ((readpos < readbytes) || fullfil);  /* still to read, or still to flush */
+// 		pr_debug("    done\n");
+// 	}
+
+// done:
+// 	list_for_each_entry_safe(piov, n, &pr->async, l) {
+// 		if (opts.auto_dedup && punch_hole(pr, piov->from, piov->end - piov->from, false)) {
+// 			err = -1;
+// 			goto out_dctx;
+// 		}
+
+// 		list_del(&piov->l);
+// 		xfree(piov->to);
+// 		xfree(piov);
+// 	}
+
+// 	err = 0;
+
+// 	pr_debug("Done read piov\n");
+// 	// pr_info("XXX %s:%d: (%5d) %s:\n", __FILE__, __LINE__, getpid(), __FUNCTION__);
+
+// 	if (pr->parent)
+// 		err = process_async_reads(pr->parent);
+// out_dctx:
+// 	LZ4F_freeDecompressionContext(dctx);
+// out:
+// 	xfree(compbuf);
+// 	pr_info("XXX %s:%d: (%5d) %s: err=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, err);
+// 	return err;
+}
+
+static int process_async_reads(struct page_read *pr)
+{
+	pr_info("XXX\n");
+	if (pr->pi->type == CR_FD_PAGES_COMP)
+		return process_async_reads_comp(pr);
+
+	pr_info("XXX\n");
+	return process_async_reads_raw(pr);
 }
 
 static void close_page_read(struct page_read *pr)
@@ -635,6 +909,7 @@ static int try_open_parent(int dfd, unsigned long id, struct page_read *pr, int 
 	int pfd, ret;
 	struct page_read *parent = NULL;
 
+	pr_info("XXX %s:%d: (%5d) %s: dfd=%d, id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)id);
 	/* Image streaming lacks support for incremental images */
 	if (opts.stream)
 		goto out;
@@ -759,6 +1034,7 @@ int open_page_read_at(int dfd, unsigned long img_id, struct page_read *pr, int p
 	static unsigned ids = 1;
 	bool remote = pr_flags & PR_REMOTE;
 
+	pr_info("XXX %s:%d: (%5d) %s: dfd=%d, img_id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)img_id);
 	/*
 	 * Only the top-most page-read can be remote, all the
 	 * others are always local.
@@ -793,31 +1069,37 @@ int open_page_read_at(int dfd, unsigned long img_id, struct page_read *pr, int p
 	pr->pmes = NULL;
 	pr->pieok = false;
 
+	pr_info("XXX\n");
 	pr->pmi = open_image_at(dfd, i_typ, O_RSTR, img_id);
 	if (!pr->pmi)
 		return -1;
+	pr_info("XXX\n");
 
 	if (empty_image(pr->pmi)) {
 		close_image(pr->pmi);
 		return 0;
 	}
 
+	pr_info("XXX %s:%d: (%5d) %s: dfd=%d, img_id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)img_id);
 	if (try_open_parent(dfd, img_id, pr, pr_flags)) {
 		close_image(pr->pmi);
 		return -1;
 	}
 
+	pr_info("XXX %s:%d: (%5d) %s: dfd=%d, img_id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)img_id);
 	pr->pi = open_pages_image_at(dfd, flags, pr->pmi, &pr->pages_img_id);
 	if (!pr->pi) {
 		close_page_read(pr);
 		return -1;
 	}
 
+	pr_info("XXX %s:%d: (%5d) %s: dfd=%d, img_id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)img_id);
 	if (init_pagemaps(pr)) {
 		close_page_read(pr);
 		return -1;
 	}
 
+	pr_info("XXX %s:%d: (%5d) %s: dfd=%d, img_id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)img_id);
 	pr->read_pages = read_pagemap_page;
 	pr->advance = advance;
 	pr->close = close_page_read;
@@ -847,6 +1129,7 @@ int open_page_read_at(int dfd, unsigned long img_id, struct page_read *pr, int p
 
 int open_page_read(unsigned long img_id, struct page_read *pr, int pr_flags)
 {
+	pr_info("XXX %s:%d: (%5d) %s: img_id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, (int)img_id);
 	return open_page_read_at(get_service_fd(IMG_FD_OFF), img_id, pr, pr_flags);
 }
 
@@ -856,6 +1139,7 @@ void dup_page_read(struct page_read *src, struct page_read *dst)
 {
 	static int dup_ids = 1;
 
+	pr_info("XXX\n");
 	memcpy(dst, src, sizeof(*dst));
 	INIT_LIST_HEAD(&dst->async);
 	dst->id = src->id + DUP_IDS_BASE * dup_ids++;
