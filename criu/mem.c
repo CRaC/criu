@@ -1024,6 +1024,7 @@ static int restore_priv_vma_content(struct pstree_item *t, struct page_read *pr)
 	unsigned int nr_lazy = 0;
 	unsigned long va;
 
+	pr_debug("XXX\n");
 	vma = list_first_entry(vmas, struct vma_area, list);
 	rsti(t)->pages_img_id = pr->pages_img_id;
 
@@ -1104,6 +1105,7 @@ static int restore_priv_vma_content(struct pstree_item *t, struct page_read *pr)
 			 * Otherwise to the COW restore
 			 */
 
+	pr_debug("XXX\n");
 			off = (va - vma->e->start) / PAGE_SIZE;
 			p = decode_pointer((off)*PAGE_SIZE + vma->premmaped_addr);
 
@@ -1151,6 +1153,7 @@ static int restore_priv_vma_content(struct pstree_item *t, struct page_read *pr)
 			}
 		}
 	}
+	pr_debug("XXX\n");
 
 err_read:
 	if (pr->sync(pr))
@@ -1396,11 +1399,18 @@ static int prepare_vma_ios(struct pstree_item *t, struct task_restore_args *ta)
 	 * If auto-dedup is on we need RDWR mode to be able to punch holes in
 	 * the input files (in restorer.c)
 	 */
-	pages = open_image(CR_FD_PAGES, opts.auto_dedup ? O_RDWR : O_RSTR, rsti(t)->pages_img_id);
+	pr_info("XXX id=%d\n", (int)rsti(t)->pages_img_id);
+	// if (opts.compress) {
+	// 	pages = open_image(CR_FD_PAGES_COMP, opts.auto_dedup ? O_RDWR : O_RSTR, rsti(t)->pages_img_id);
+	// } else {
+		pages = open_image(CR_FD_PAGES, opts.auto_dedup ? O_RDWR : O_RSTR, rsti(t)->pages_img_id);
+	// }
 	if (!pages)
 		return -1;
 
 	ta->vma_ios_fd = img_raw_fd(pages);
+	ta->vma_ios_fd_compressed = opts.compress;
+	pr_info("XXX id=%d, fd=%d\n", (int)rsti(t)->pages_img_id, (int)ta->vma_ios_fd);
 	return pagemap_render_iovec(&rsti(t)->vma_io, ta);
 }
 
@@ -1415,6 +1425,7 @@ int prepare_vmas(struct pstree_item *t, struct task_restore_args *ta)
 	list_for_each_entry(vma, &vmas->h, list) {
 		VmaEntry *vme;
 
+	pr_info("XXX\n");
 		vme = rst_mem_alloc(sizeof(*vme), RM_PRIVATE);
 		if (!vme)
 			return -1;

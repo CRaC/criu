@@ -1625,7 +1625,7 @@ long __export_restore_task(struct task_restore_args *args)
 		ssize_t r;
 
 		while (nr) {
-			pr_debug("Preadv %lx:%d... (%d iovs) (mmap %d)\n", (unsigned long)iovs->iov_base, (int)iovs->iov_len, nr, args->mmap_page_image);
+			pr_debug("Preadv %lx:%d... (%d iovs) (mmap %d) (compressed %d)\n", (unsigned long)iovs->iov_base, (int)iovs->iov_len, nr, args->mmap_page_image, args->vma_ios_fd_compressed);
 			if (!args->mmap_page_image)
 				r = sys_preadv(args->vma_ios_fd, iovs, nr, rio->off);
 			else
