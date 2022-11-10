@@ -19,6 +19,7 @@
 #include "proc_parse.h"
 #include "img-streamer.h"
 #include "namespaces.h"
+#include "memfd.h"
 
 #include <lz4/programs/lz4io.h>
 #include <lz4/lib/lz4frame.h>
@@ -480,6 +481,81 @@ static int do_open_image(struct cr_img *img, int dfd, int type, unsigned long of
 		ret = openat(dfd, path, flags, CR_FD_PERM);
 		pr_info("XXX %s:%d: (%5d) %s: path=%s, ret=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path, ret);
 	}
+
+	if (CR_FD_PAGES_COMP == type && flags == O_RDONLY && 0 <= ret) {
+		// Decompress image and replace the file descriptor
+
+		const int compbufsize = 64 * 1024;
+		char compbuf[compbufsize];
+		char outbuf[4 * compbufsize];
+		LZ4F_errorCode_t lz4err;
+		LZ4F_decompressionContext_t dctx;
+
+		const int comp_fd = ret;
+
+		lz4err = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
+		if (LZ4F_isError(lz4err)) {
+			pr_err("Can't create LZ4 decompression context\n");
+		} else {
+			const int decomp_fd = memfd_create(path, 0);
+			ret = decomp_fd;
+			if (0 > ret) {
+				pr_err("Can't create memfd, errno=%d\n", errno);
+			} else {
+				size_t totalread = 0;
+				size_t totalwrite = 0;
+				int bytestoread = compbufsize;
+				size_t offset = 0;
+				while (true) {
+					size_t readbytes;
+					readbytes = read(comp_fd, compbuf + offset, bytestoread);
+					totalread += readbytes;
+					pr_debug("read %16lu bytes, total read %16lu\n", (unsigned long)readbytes, (unsigned long)totalread);
+					if (!readbytes) {
+						/* reached end of file or stream */
+						break;
+					}
+					{
+						size_t outsize = sizeof outbuf;
+						size_t insize = offset + readbytes;
+						const size_t insize_orig = insize;
+						pr_debug("    pos %lu, in %lu\n", (unsigned long)totalread, (unsigned long)insize);
+						lz4err = LZ4F_decompress(dctx, outbuf, &outsize, compbuf, &insize, NULL);
+						if (!LZ4F_isError(lz4err)) {
+							{
+								ssize_t res = write(decomp_fd, outbuf, outsize);
+								if (0 > res) {
+									pr_err("write error to output file\n");
+									break;
+								}
+								pr_debug("written %d bytes to output file\n", (int)res);
+							}
+							totalwrite += outsize;
+							offset = insize_orig - insize;
+							// bytestoread = compbufsize; //min((unsigned)lz4err, (unsigned)compbufsize);
+							bytestoread = insize;
+							pr_debug(
+								"    consumed %lu, decompressed %lu, next read %lu, offset %lu, total write %lu\n",
+								(unsigned long)insize, (unsigned long)outsize,
+								(unsigned long)lz4err, (unsigned long)offset,
+								(unsigned long)totalwrite);
+							memmove(compbuf, compbuf + compbufsize - offset, offset);
+						} else {
+							pr_err("LZ4 Decompress error: %s\n", LZ4F_getErrorName(lz4err));
+							break;
+						}
+					}
+				}
+				pr_debug("decompression completed, read %lu, wrote %lu\n", (unsigned long)totalread, (unsigned long)totalwrite);
+				lseek(decomp_fd, 0, SEEK_SET);
+			}
+			LZ4F_freeDecompressionContext(dctx);
+		}
+
+		pr_info("XXX %s:%d: (%5d) %s: path=%s, ret=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path, ret);
+		close(comp_fd);
+	}
+
 	if (ret < 0) {
 		if (!(flags & O_CREAT) && (errno == ENOENT || ret == -ENOENT)) {
 			pr_info("No %s image\n", path);
@@ -498,12 +574,12 @@ static int do_open_image(struct cr_img *img, int dfd, int type, unsigned long of
 		pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
 	img->_x.fd = ret;
 	if (oflags & O_NOBUF)
-		bfd_setraw(&img->_x);
+		bfd_setraw(&img->_x), pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
 	else {
 		if (flags == O_RDONLY)
-			ret = bfdopenr(&img->_x);
+			ret = bfdopenr(&img->_x), pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
 		else
-			ret = bfdopenw(&img->_x);
+			ret = bfdopenw(&img->_x), pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
 
 		if (ret)
 			goto err;
@@ -520,6 +596,7 @@ static int do_open_image(struct cr_img *img, int dfd, int type, unsigned long of
 	if (ret)
 		goto err;
 
+		pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
 skip_magic:
 		pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
 	return 0;
@@ -693,175 +770,8 @@ struct cr_img *open_pages_image_at(int dfd, unsigned long flags, struct cr_img *
 
 	pr_info("XXX %s:%d: (%5d) %s: AAA dfd=%d, id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)*id);
 	if (opts.compress && flags == O_RDONLY) {
-		// {
-		// 	FILE *f = fopen("/dev/shm/test", "wb");
-		// 	if (!f) {
-		// 		pr_err("Can't create a file in /dev/shm/\n");
-		// 	} else {
-		// 		int res = fwrite(&opts.compress, sizeof opts.compress, 1, f);
-		// 		pr_info("Created a file in /dev/shm/\n");
-		// 		if (0 >= res) {
-		// 			pr_err("Can't write to a file in /dev/shm/\n");
-		// 		} else {
-		// 			pr_info("Wrote to a file in /dev/shm/\n");
-		// 		}
-		// 		fclose(f);
-		// 	}
-		// }
-		// {
-		// 	FILE *f = fopen("/tmp/test", "wb");
-		// 	if (!f) {
-		// 		pr_err("Can't create a file in /tmp/\n");
-		// 	} else {
-		// 		int res = fwrite(&opts.compress, sizeof opts.compress, 1, f);
-		// 		pr_info("Created a file in /tmp/\n");
-		// 		if (0 >= res) {
-		// 			pr_err("Can't write to a file in /tmp/\n");
-		// 		} else {
-		// 			pr_info("Wrote to a file in /tmp/\n");
-		// 		}
-		// 		fclose(f);
-		// 	}
-		// }
-		// {
-		// 	char srcpath[PATH_MAX];
-		// 	char fdstpath[PATH_MAX];
-		// 	char dstpath[PATH_MAX];
-		// 	LZ4IO_prefs_t *lz4_prefs;
-		// 	int res;
-		// 	snprintf(srcpath, sizeof srcpath, imgset_template[CR_FD_PAGES_COMP].fmt, *id);
-		// 	snprintf(fdstpath, sizeof fdstpath, "/dev/shm/%s", imgset_template[CR_FD_PAGES].fmt);
-		// 	// snprintf(dstpath, sizeof dstpath, imgset_template[CR_FD_PAGES].fmt, *id);
-		// 	snprintf(dstpath, sizeof dstpath, fdstpath, *id);
-		// 	pr_info("XXX decompressing %s -> %s\n", srcpath, dstpath);
-		// 	{
-		// 		FILE *f = fopen(srcpath, "rb");
-		// 		if (!f) {
-		// 			pr_err("Can't open %s\n", srcpath);
-		// 		} else {
-		// 			pr_info("Opened %s\n", srcpath);
-		// 			fclose(f);
-		// 		}
-		// 	}
-		// 	lz4_prefs = LZ4IO_defaultPreferences();
-        //     LZ4IO_setNotificationLevel(100);
-		//     LZ4IO_setBlockSize(lz4_prefs, 64 * 1024);// * 1024);
-		// 	res = LZ4IO_decompressFilename(srcpath, dstpath, lz4_prefs);
-		// 	LZ4IO_freePreferences(lz4_prefs);
-		// 	if (res) {
-		// 		pr_err("Can't decompress %s to %s, res=%d\n", srcpath, dstpath, res);
-		// 		// return NULL;
-		// 	}
-		// 	// if (unlink(srcpath)) {
-		// 	// 	pr_perror("Can't delete compressed source pages image: %s\n", srcpath);
-		// 	// 	return NULL;
-		// 	// }
-		// }
-		{
-		}
-		{
-			struct cr_img *img;
-			struct cr_img *wrimg;
-			int fd;
-			
-			wrimg = open_image_at(dfd, CR_FD_PAGES, flags | O_CREAT | O_RDWR, *id);
-			if (!wrimg) {
-				pr_err("Can't open wrimg\n");
-			} else {
-				pr_err("Successfully opened wrimg\n");
-				// close_image(wrimg);
-			}
-
-			img = open_image_at(dfd, CR_FD_PAGES_COMP, flags, *id);
-
-			pr_info("XXX %s:%d: (%5d) %s: QQQ dfd=%d, id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)*id);
-			if (img && !empty_image(img) && (0 <= (fd = img_raw_fd(img)))) {
-
-				if (posix_fadvise(fd, 0, 0, POSIX_FADV_WILLNEED)) {
-					pr_perror("fadivise on pages image");
-				}
-
-				pr_info("XXX\n");
-				// return img;
-			}
-
-			{
-				char srcpath[PATH_MAX];
-				// char fdstpath[PATH_MAX];
-				char dstpath[PATH_MAX];
-				snprintf(srcpath, sizeof srcpath, imgset_template[CR_FD_PAGES_COMP].fmt, *id);
-				// snprintf(fdstpath, sizeof fdstpath, "/dev/shm/%s", imgset_template[CR_FD_PAGES].fmt);
-				// snprintf(dstpath, sizeof dstpath, fdstpath, *id);
-				snprintf(dstpath, sizeof dstpath, imgset_template[CR_FD_PAGES].fmt, *id);
-				pr_info("XXX decompressing %s -> %s\n", srcpath, dstpath);
-				{
-					const int compbufsize = 64 * 1024;
-					char compbuf[compbufsize];
-					char outbuf[compbufsize * 4];
-					LZ4F_errorCode_t lz4err;
-					LZ4F_decompressionContext_t dctx;
-					lz4err = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
-					if (LZ4F_isError(lz4err)) {
-						pr_err("Can't create LZ4 decompression context\n");
-					} else {
-						size_t totalread = 0;
-						size_t totalwrite = 0;
-						int bytestoread = compbufsize;
-						size_t offset = 0;
-						while (true) {
-							size_t readbytes;
-							readbytes = read(img_raw_fd(img), compbuf + offset, bytestoread);
-							totalread += readbytes;
-							pr_debug("read %16lu bytes, total read %16lu\n", (unsigned long) readbytes, (unsigned long) totalread);
-							if (!readbytes) {
-								/* reached end of file or stream */
-								break;
-							}
-							{
-								size_t outsize = sizeof outbuf;
-								size_t insize = offset + readbytes;
-								size_t insize_orig = insize;
-								pr_debug("    pos %lu, in %lu\n", (unsigned long) totalread, (unsigned long) insize);
-								lz4err = LZ4F_decompress(dctx, outbuf, &outsize, compbuf, &insize, NULL);
-								if (!LZ4F_isError(lz4err)) {
-									{
-										ssize_t res = write(img_raw_fd(wrimg), outbuf, outsize);
-										if (0 > res) {
-											pr_err("write error to output file\n");
-										} else {
-											pr_err("written %d bytes to output file\n", (int)res);
-										}
-									}
-									totalwrite += outsize;
-									offset = insize_orig - insize;
-									// bytestoread = compbufsize; //min((unsigned)lz4err, (unsigned)compbufsize);
-									bytestoread = insize;
-									pr_debug("    consumed %lu, decompressed %lu, next read %lu, offset %lu, total write %lu\n", 
-										(unsigned long) insize, (unsigned long) outsize, (unsigned long) lz4err,
-										(unsigned long) offset, (unsigned long) totalwrite);
-									memmove(compbuf, compbuf + compbufsize - offset, offset);
-								} else {
-									pr_err("LZ4 Decompress error: %s\n", LZ4F_getErrorName(lz4err));
-									break;
-								}
-							}
-						}
-						pr_debug("decompression completed, read %lu, wrote %lu\n", (unsigned long) totalread, (unsigned long) totalwrite);
-						LZ4F_freeDecompressionContext(dctx);
-					}
-				}
-			}
-
-			if (img)
-				close_image(img);
-
-			if (!wrimg) {
-				// pr_err("Can't open wrimg\n");
-			} else {
-				// pr_err("Successfully opened wrimg\n");
-				close_image(wrimg);
-			}
-		}
+		pr_info("XXX %s:%d: (%5d) %s: dfd=%d, id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)*id);
+		return open_image_at(dfd, CR_FD_PAGES_COMP, flags, *id);
 	}
 
 	pr_info("XXX %s:%d: (%5d) %s: dfd=%d, id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)*id);

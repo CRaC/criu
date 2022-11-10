@@ -25,7 +25,7 @@ int pages_compress(void)
 	const int dfd = get_service_fd(IMG_FD_OFF);
 
 	LZ4IO_prefs_t *lz4_prefs = LZ4IO_defaultPreferences();
-    LZ4IO_setBlockSize(lz4_prefs, 64 * 1024);// * 1024);
+    LZ4IO_setBlockSize(lz4_prefs, 128 * 1024);// * 1024);
 
     pr_debug("Compressing pages\n");
     LZ4IO_setNotificationLevel(100);
@@ -78,6 +78,11 @@ int pages_compress(void)
                 LZ4IO_freePreferences(lz4_prefs);
                 pr_perror("Can't delete uncompressed source pages image: %s\n", pathdst2);
                 return -1;
+            }
+
+            {
+                const char *ff[1] = {pathdst};
+                LZ4IO_displayCompressedFilesInfo(ff, 1);
             }
         }
 
