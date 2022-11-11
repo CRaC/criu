@@ -19,8 +19,6 @@
 #include "protobuf.h"
 #include "images/pagemap.pb-c.h"
 
-#include <lz4/lib/lz4frame.h>
-
 #ifndef SEEK_DATA
 #define SEEK_DATA 3
 #define SEEK_HOLE 4
@@ -331,7 +329,6 @@ int pagemap_enqueue_iovec(struct page_read *pr, void *buf, unsigned long len, st
 	struct page_read_iov *cur_async = NULL;
 	struct iovec *iov;
 
-	pr_debug("to=%p, len=%d\n", to, (int)len);
 	if (!list_empty(to))
 		cur_async = list_entry(to->prev, struct page_read_iov, l);
 
@@ -530,9 +527,7 @@ static void advance_piov(struct page_read_iov *piov, ssize_t len)
 	pr_debug("Advanced iov %zu bytes, %d->%d iovs, %zu tail\n", olen, onr, piov->nr, len);
 }
 
-static int process_async_reads(struct page_read *pr);
-
-static int process_async_reads_raw(struct page_read *pr)
+static int process_async_reads(struct page_read *pr)
 {
 	int fd, ret = 0;
 	struct page_read_iov *piov, *n;
@@ -592,114 +587,6 @@ static int process_async_reads_raw(struct page_read *pr)
 		ret = process_async_reads(pr->parent);
 
 	return ret;
-}
-
-// static struct page_read_iov *next_read_request(struct list_head *head, struct list_head *cur) {
-// 	struct list_head *new;
-// 	struct page_read_iov *piov;
-// 	list_for_each(new, cur) {
-// 		if (new == head) {
-// 			break;
-// 		}
-
-// 		piov = list_entry(new, typeof(*piov), l);
-// 		if (piov->nr > 0) {
-// 			return piov;
-// 		}
-// 	}
-// 	return NULL;
-// }
-
-// static void async_read_pretouch_output(struct page_read_iov *piov) {
-// #if 0
-// 	struct iovec *ip;
-// 	pr_debug("  touch output\n");
-// 	for (ip = piov->to; ip < piov->to + piov->nr; ++ip) {
-// 		pr_debug("    %lx-%lx\n", (unsigned long)ip->iov_base, (unsigned long)ip->iov_base + ip->iov_len);
-// 		madvise(ip->iov_base, ip->iov_len, MADV_WILLNEED);
-// 	}
-
-// 	pr_debug("    touching\n");
-// 	for (ip = piov->to; ip < piov->to + piov->nr; ++ip) {
-// 		char *pp;
-// 		pr_debug("    %lx-%lx\n", (unsigned long)ip->iov_base, (unsigned long)ip->iov_base + ip->iov_len);
-// 		for (pp = ip->iov_base; pp < (char *) ip->iov_base + ip->iov_len; pp += 4096) {
-// 			*pp = '\0';
-// 		}
-// 	}
-// 	pr_debug("    touching done\n");
-// #endif
-// }
-
-static int process_async_reads_comp(struct page_read *pr)
-{
-	int fd, ret = 0;
-	struct page_read_iov *piov, *n;
-
-	fd = img_raw_fd(pr->pi);
-	list_for_each_entry_safe(piov, n, &pr->async, l) {
-		ssize_t ret;
-		struct iovec *iovs = piov->to;
-
-		pr_info("Read piov iovs %d, from %ju, len %ju, first %p:%zu\n", piov->nr, piov->from,
-			 piov->end - piov->from, piov->to->iov_base, piov->to->iov_len);
-	more:
-		ret = preadv(fd, piov->to, piov->nr, piov->from);
-		if (fault_injected(FI_PARTIAL_PAGES)) {
-			/*
-			 * We might have read everything, but for debug
-			 * purposes let's try to force the advance_piov()
-			 * and re-read tail.
-			 */
-			if (ret > 0 && piov->nr >= 2) {
-				pr_debug("`- trim preadv %zu\n", ret);
-				ret /= 2;
-			}
-		}
-
-		if (ret < 0) {
-			pr_err("Can't read async pr bytes (%zd / %ju read, %ju off, %d iovs)\n", ret,
-			       piov->end - piov->from, piov->from, piov->nr);
-			return -1;
-		}
-
-		if (opts.auto_dedup && punch_hole(pr, piov->from, ret, false)) {
-			return -1;
-		}
-
-		if (ret != piov->end - piov->from) {
-			/*
-			 * The preadv() can return less than requested. It's
-			 * valid and doesn't mean error or EOF. We should advance
-			 * the iovecs and continue
-			 *
-			 * Modify the piov in-place, we're going to drop this one
-			 * anyway.
-			 */
-
-			advance_piov(piov, ret);
-			goto more;
-		}
-
-		BUG_ON(pr->io_complete); /* FIXME -- implement once needed */
-
-		list_del(&piov->l);
-		xfree(iovs);
-		xfree(piov);	
-	}
-
-	if (pr->parent)
-		ret = process_async_reads(pr->parent);
-
-	return ret;
-}
-
-static int process_async_reads(struct page_read *pr)
-{
-	if (pr->pi->type == CR_FD_PAGES_COMP)
-		return process_async_reads_comp(pr);
-
-	return process_async_reads_raw(pr);
 }
 
 static void close_page_read(struct page_read *pr)
