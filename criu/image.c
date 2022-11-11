@@ -179,14 +179,12 @@ InventoryEntry *get_parent_inventory(void)
 	if (dir < 0)
 		return NULL;
 
-	pr_info("XXX\n");
 	img = open_image_at(dir, CR_FD_INVENTORY, O_RSTR);
 	if (!img) {
 		pr_warn("Failed to open parent pre-dump inventory image\n");
 		close(dir);
 		return NULL;
 	}
-	pr_info("XXX\n");
 
 	if (pb_read_one(img, &ie, PB_INVENTORY) < 0) {
 		pr_warn("Failed to read parent pre-dump inventory entry\n");
@@ -363,20 +361,17 @@ struct cr_img *open_image_at(int dfd, int type, unsigned long flags, ...)
 	vsnprintf(path, PATH_MAX, imgset_template[type].fmt, args);
 	va_end(args);
 
-	pr_info("XXX %s:%d: (%5d) %s: dfd=%d, type=%d, path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, type, path);
 	if (lazy) {
 		img->fd = LAZY_IMG_FD;
 		img->type = type;
 		img->oflags = oflags;
 		img->path = xstrdup(path);
-		pr_info("XXX %s:%d: (%5d) %s: dfd=%d, type=%d, fd=%d, path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, type, img->fd, path);
 		return img;
 	} else {
 		img->fd = EMPTY_IMG_FD;
 		img->type = type;
 	}
 
-	pr_info("XXX %s:%d: (%5d) %s: dfd=%d, type=%d, fd=%d, path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, type, img->fd, path);
 	if (do_open_image(img, dfd, type, oflags, path)) {
 		close_image(img);
 		return NULL;
@@ -449,14 +444,11 @@ static int userns_openat(void *arg, int dfd, int pid)
 
 static int do_open_image(struct cr_img *img, int dfd, int type, unsigned long oflags, char *path)
 {
-	// static int ___iii = 0;
 	int ret, flags;
 
 	flags = oflags & ~(O_NOBUF | O_SERVICE | O_FORCE_LOCAL);
 
-	pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
 	if (opts.stream && !(oflags & O_FORCE_LOCAL)) {
-		pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
 		ret = img_streamer_open(path, flags);
 		errno = EIO; /* errno value is meaningless, only the ret value is meaningful */
 	} else if (root_ns_mask & CLONE_NEWUSER && type == CR_FD_PAGES && oflags & O_RDWR) {
@@ -471,28 +463,18 @@ static int do_open_image(struct cr_img *img, int dfd, int type, unsigned long of
 			.mode = CR_FD_PERM,
 		};
 		snprintf(pa.path, PATH_MAX, "%s", path);
-		pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
 		ret = userns_call(userns_openat, UNS_FDOUT, &pa, sizeof(struct openat_args), dfd);
 		if (ret < 0)
 			errno = pa.err;
 	} else {
 		ret = openat(dfd, path, flags, CR_FD_PERM);
-		pr_info("XXX %s:%d: (%5d) %s: path=%s, ret=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path, ret);
 	}
 
-	// if (CR_FD_PAGES_COMP == type && flags == O_RDONLY && 0 <= ret && 0 == ___iii) {
-	// 	++___iii;
-	// 	close(ret);
-	// 	ret = -1;
-	// 	pr_info("XXX %s:%d: (%5d) %s: path=%s, ret=%x\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path, ret);
-	// } 
-	// else 
 	if (CR_FD_PAGES_COMP == type && flags == O_RDONLY && 0 <= ret) {
 		// Decompress image and replace the file descriptor
 
 		const int comp_fd = ret;
 		ret = decompress_image(ret, path);
-		pr_info("XXX %s:%d: (%5d) %s: path=%s, ret=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path, ret);
 		close(comp_fd);
 	}
 
@@ -511,21 +493,19 @@ static int do_open_image(struct cr_img *img, int dfd, int type, unsigned long of
 		goto err;
 	}
 
-		pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
 	img->_x.fd = ret;
 	if (oflags & O_NOBUF)
-		bfd_setraw(&img->_x), pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
+		bfd_setraw(&img->_x);
 	else {
 		if (flags == O_RDONLY)
-			ret = bfdopenr(&img->_x), pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
+			ret = bfdopenr(&img->_x);
 		else
-			ret = bfdopenw(&img->_x), pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
+			ret = bfdopenw(&img->_x);
 
 		if (ret)
 			goto err;
 	}
 
-		pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
 	if (imgset_template[type].magic == RAW_IMAGE_MAGIC)
 		goto skip_magic;
 
@@ -536,13 +516,10 @@ static int do_open_image(struct cr_img *img, int dfd, int type, unsigned long of
 	if (ret)
 		goto err;
 
-		pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
 skip_magic:
-		pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
 	return 0;
 
 err:
-		pr_info("XXX %s:%d: (%5d) %s: path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path);
 	return -1;
 }
 
@@ -554,7 +531,6 @@ int open_image_lazy(struct cr_img *img)
 	img->path = NULL;
 
 	dfd = get_service_fd(IMG_FD_OFF);
-	pr_info("XXX %s:%d: (%5d) %s: dfd=%d, path=%s\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, path);
 	if (do_open_image(img, dfd, img->type, img->oflags, path)) {
 		xfree(path);
 		return -1;
@@ -602,7 +578,6 @@ int open_image_dir(char *dir, int mode)
 {
 	int fd, ret;
 
-	pr_info("XXX %s:%d: (%5d) %s: dir=%s, mode=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dir, mode);
 	fd = open(dir, O_RDONLY);
 	if (fd < 0) {
 		pr_perror("Can't open dir %s", dir);
@@ -636,7 +611,6 @@ int open_image_dir(char *dir, int mode)
 				"may not work on restore!\n");
 	}
 
-	pr_info("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	return 0;
 
 err:
@@ -646,7 +620,6 @@ err:
 
 void close_image_dir(void)
 {
-	pr_info("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	if (opts.stream)
 		img_streamer_finish();
 	close_service_fd(IMG_FD_OFF);
@@ -656,7 +629,6 @@ int open_parent(int dfd, int *pfd)
 {
 	struct stat st;
 
-	pr_info("XXX %s:%d: (%5d) %s: \n", __FILE__, __LINE__, getpid(), __FUNCTION__);
 	*pfd = -1;
 	/* Check if the parent symlink exists */
 	if (fstatat(dfd, CR_PARENT_LINK, &st, AT_SYMLINK_NOFOLLOW) && errno == ENOENT) {
@@ -700,29 +672,23 @@ struct cr_img *open_pages_image_at(int dfd, unsigned long flags, struct cr_img *
 		if (pb_read_one(pmi, &h, PB_PAGEMAP_HEAD) < 0)
 			return NULL;
 		*id = h->pages_id;
-		pr_info("XXX %s:%d: (%5d) %s: AAA dfd=%d, id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)*id);
 		pagemap_head__free_unpacked(h, NULL);
 	} else {
 		PagemapHead h = PAGEMAP_HEAD__INIT;
-		pr_info("XXX %s:%d: (%5d) %s: AAA dfd=%d, id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)*id);
 		*id = h.pages_id = page_ids++;
 		if (pb_write_one(pmi, &h, PB_PAGEMAP_HEAD) < 0)
 			return NULL;
 	}
 
-	pr_info("XXX %s:%d: (%5d) %s: AAA dfd=%d, id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)*id);
 	if (opts.compress && flags == O_RDONLY) {
-		pr_info("XXX %s:%d: (%5d) %s: dfd=%d, id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)*id);
 		return open_image_at(dfd, CR_FD_PAGES_COMP, flags, *id);
 	}
 
-	pr_info("XXX %s:%d: (%5d) %s: dfd=%d, id=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, dfd, (int)*id);
 	return open_image_at(dfd, CR_FD_PAGES, flags, *id);
 }
 
 struct cr_img *open_pages_image(unsigned long flags, struct cr_img *pmi, u32 *id)
 {
-	pr_info("XXX\n");
 	return open_pages_image_at(get_service_fd(IMG_FD_OFF), flags, pmi, id);
 }
 
