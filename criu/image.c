@@ -19,7 +19,7 @@
 #include "proc_parse.h"
 #include "img-streamer.h"
 #include "namespaces.h"
-#include "compression.h"
+#include "pages-compress.h"
 
 bool ns_per_id = false;
 bool img_common_magic = true;

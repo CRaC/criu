@@ -87,7 +87,7 @@
 #include "apparmor.h"
 #include "asm/dump.h"
 
-int pages_compress(void);
+#include "pages-compress.h"
 
 /*
  * Architectures can overwrite this function to restore register sets that
@@ -1718,7 +1718,7 @@ static int dump_one_task(struct pstree_item *item, InventoryEntry *parent_ie)
 
 	printf("XXX %s:%d: (%5d) %s: compress=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, (int)opts.compress);
 	if (opts.compress) {
-		pages_compress();
+		compress_images();
 	}
 
 	exit_code = 0;
