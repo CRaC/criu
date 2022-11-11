@@ -1405,7 +1405,6 @@ static int prepare_vma_ios(struct pstree_item *t, struct task_restore_args *ta)
 		return -1;
 
 	ta->vma_ios_fd = img_raw_fd(pages);
-	ta->vma_ios_fd_compressed = opts.compress;
 	return pagemap_render_iovec(&rsti(t)->vma_io, ta);
 }
 

@@ -157,7 +157,6 @@ struct task_restore_args {
 	unsigned int vmas_n;
 
 	int vma_ios_fd;
-	char vma_ios_fd_compressed;
 	struct restore_vma_io *vma_ios;
 	unsigned int vma_ios_n;
 

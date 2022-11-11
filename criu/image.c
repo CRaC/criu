@@ -466,9 +466,8 @@ static int do_open_image(struct cr_img *img, int dfd, int type, unsigned long of
 		ret = userns_call(userns_openat, UNS_FDOUT, &pa, sizeof(struct openat_args), dfd);
 		if (ret < 0)
 			errno = pa.err;
-	} else {
+	} else
 		ret = openat(dfd, path, flags, CR_FD_PERM);
-	}
 
 	if (CR_FD_PAGES_COMP == type && flags == O_RDONLY && 0 <= ret) {
 		// Decompress image and replace the file descriptor
