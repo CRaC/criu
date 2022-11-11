@@ -27,10 +27,10 @@ int compress_images(void)
 	const int dfd = get_service_fd(IMG_FD_OFF);
 
 	LZ4IO_prefs_t *lz4_prefs = LZ4IO_defaultPreferences();
-    LZ4IO_setBlockSize(lz4_prefs, 128 * 1024);// * 1024);
+	LZ4IO_setBlockSize(lz4_prefs, 128 * 1024);
 
-    pr_debug("Compressing pages\n");
-    LZ4IO_setNotificationLevel(100);
+	pr_debug("Compressing pages\n");
+	LZ4IO_setNotificationLevel(100);
 	for (id = 1; id < max_id; ++id) {
 		sprintf(format, "%s/%s", "/proc/%ld/fd/%d", imgset_template[CR_FD_PAGES].fmt);
 		sprintf(pathsrc, format, pid, dfd, id);
