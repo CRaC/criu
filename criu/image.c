@@ -450,8 +450,82 @@ static int userns_openat(void *arg, int dfd, int pid)
 	return ret;
 }
 
+static int decompress_image(int comp_fd, const char *path) {
+
+	const int compbufsize = 64 * 1024;
+	char compbuf[compbufsize];
+	char outbuf[4 * compbufsize];
+	LZ4F_errorCode_t lz4err;
+	LZ4F_decompressionContext_t dctx;
+	int ret;
+	size_t totalread = 0;
+	size_t totalwrite = 0;
+	int bytestoread = compbufsize;
+	size_t offset = 0;
+
+	lz4err = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
+	if (LZ4F_isError(lz4err)) {
+		pr_err("Can't create LZ4 decompression context\n");
+		return -1;
+	}
+
+	ret = memfd_create(path, 0);
+	if (0 > ret) {
+		pr_err("Can't create memfd, errno=%d\n", errno);
+		LZ4F_freeDecompressionContext(dctx);
+		return -1;
+	}
+
+	while (true) {
+		size_t readbytes;
+		readbytes = read(comp_fd, compbuf + offset, bytestoread);
+		totalread += readbytes;
+		pr_debug("read %16lu bytes, total read %16lu\n", (unsigned long)readbytes, (unsigned long)totalread);
+		if (!readbytes) {
+			/* reached end of file or stream */
+			break;
+		}
+		{
+			size_t outsize = sizeof outbuf;
+			size_t insize = offset + readbytes;
+			const size_t insize_orig = insize;
+			pr_debug("    pos %lu, in %lu\n", (unsigned long)totalread, (unsigned long)insize);
+			lz4err = LZ4F_decompress(dctx, outbuf, &outsize, compbuf, &insize, NULL);
+			if (!LZ4F_isError(lz4err)) {
+				{
+					ssize_t res = write(ret, outbuf, outsize);
+					if (0 > res) {
+						pr_err("write error to output file\n");
+						break;
+					}
+					pr_debug("written %d bytes to output file\n", (int)res);
+				}
+				totalwrite += outsize;
+				offset = insize_orig - insize;
+				// bytestoread = compbufsize; //min((unsigned)lz4err, (unsigned)compbufsize);
+				bytestoread = insize;
+				pr_debug(
+					"    consumed %lu, decompressed %lu, next read %lu, offset %lu, total write %lu\n",
+					(unsigned long)insize, (unsigned long)outsize,
+					(unsigned long)lz4err, (unsigned long)offset,
+					(unsigned long)totalwrite);
+				memmove(compbuf, compbuf + compbufsize - offset, offset);
+			} else {
+				pr_err("LZ4 Decompress error: %s\n", LZ4F_getErrorName(lz4err));
+				break;
+			}
+		}
+	}
+	pr_debug("decompression completed, read %lu, wrote %lu\n", (unsigned long)totalread, (unsigned long)totalwrite);
+	lseek(ret, 0, SEEK_SET);
+
+	pr_info("XXX %s:%d: (%5d) %s: path=%s, ret=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path, ret);
+	return ret;
+}
+
 static int do_open_image(struct cr_img *img, int dfd, int type, unsigned long oflags, char *path)
 {
+	// static int ___iii = 0;
 	int ret, flags;
 
 	flags = oflags & ~(O_NOBUF | O_SERVICE | O_FORCE_LOCAL);
@@ -482,76 +556,18 @@ static int do_open_image(struct cr_img *img, int dfd, int type, unsigned long of
 		pr_info("XXX %s:%d: (%5d) %s: path=%s, ret=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path, ret);
 	}
 
+	// if (CR_FD_PAGES_COMP == type && flags == O_RDONLY && 0 <= ret && 0 == ___iii) {
+	// 	++___iii;
+	// 	close(ret);
+	// 	ret = -1;
+	// 	pr_info("XXX %s:%d: (%5d) %s: path=%s, ret=%x\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path, ret);
+	// } 
+	// else 
 	if (CR_FD_PAGES_COMP == type && flags == O_RDONLY && 0 <= ret) {
 		// Decompress image and replace the file descriptor
 
-		const int compbufsize = 64 * 1024;
-		char compbuf[compbufsize];
-		char outbuf[4 * compbufsize];
-		LZ4F_errorCode_t lz4err;
-		LZ4F_decompressionContext_t dctx;
-
 		const int comp_fd = ret;
-
-		lz4err = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
-		if (LZ4F_isError(lz4err)) {
-			pr_err("Can't create LZ4 decompression context\n");
-		} else {
-			const int decomp_fd = memfd_create(path, 0);
-			ret = decomp_fd;
-			if (0 > ret) {
-				pr_err("Can't create memfd, errno=%d\n", errno);
-			} else {
-				size_t totalread = 0;
-				size_t totalwrite = 0;
-				int bytestoread = compbufsize;
-				size_t offset = 0;
-				while (true) {
-					size_t readbytes;
-					readbytes = read(comp_fd, compbuf + offset, bytestoread);
-					totalread += readbytes;
-					pr_debug("read %16lu bytes, total read %16lu\n", (unsigned long)readbytes, (unsigned long)totalread);
-					if (!readbytes) {
-						/* reached end of file or stream */
-						break;
-					}
-					{
-						size_t outsize = sizeof outbuf;
-						size_t insize = offset + readbytes;
-						const size_t insize_orig = insize;
-						pr_debug("    pos %lu, in %lu\n", (unsigned long)totalread, (unsigned long)insize);
-						lz4err = LZ4F_decompress(dctx, outbuf, &outsize, compbuf, &insize, NULL);
-						if (!LZ4F_isError(lz4err)) {
-							{
-								ssize_t res = write(decomp_fd, outbuf, outsize);
-								if (0 > res) {
-									pr_err("write error to output file\n");
-									break;
-								}
-								pr_debug("written %d bytes to output file\n", (int)res);
-							}
-							totalwrite += outsize;
-							offset = insize_orig - insize;
-							// bytestoread = compbufsize; //min((unsigned)lz4err, (unsigned)compbufsize);
-							bytestoread = insize;
-							pr_debug(
-								"    consumed %lu, decompressed %lu, next read %lu, offset %lu, total write %lu\n",
-								(unsigned long)insize, (unsigned long)outsize,
-								(unsigned long)lz4err, (unsigned long)offset,
-								(unsigned long)totalwrite);
-							memmove(compbuf, compbuf + compbufsize - offset, offset);
-						} else {
-							pr_err("LZ4 Decompress error: %s\n", LZ4F_getErrorName(lz4err));
-							break;
-						}
-					}
-				}
-				pr_debug("decompression completed, read %lu, wrote %lu\n", (unsigned long)totalread, (unsigned long)totalwrite);
-				lseek(decomp_fd, 0, SEEK_SET);
-			}
-			LZ4F_freeDecompressionContext(dctx);
-		}
-
+		ret = decompress_image(ret, path);
 		pr_info("XXX %s:%d: (%5d) %s: path=%s, ret=%d\n", __FILE__, __LINE__, getpid(), __FUNCTION__, path, ret);
 		close(comp_fd);
 	}
