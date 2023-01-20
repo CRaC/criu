@@ -99,6 +99,8 @@
 
 #include "cr-errno.h"
 
+#include "pages-compress.h"
+
 #ifndef arch_export_restore_thread
 #define arch_export_restore_thread __export_restore_thread
 #endif
@@ -2274,6 +2276,10 @@ static int restore_root_task(struct pstree_item *init)
 	if (ret != 0) {
 		pr_err("Aborting restore due to pre-restore script ret code %d\n", ret);
 		return -1;
+	}
+
+	if (opts.compress) {
+		decompression_thread_start();
 	}
 
 	fd = open("/proc", O_DIRECTORY | O_RDONLY);
