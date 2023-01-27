@@ -35,7 +35,7 @@ int compress_images(void)
 	LZ4IO_setBlockSize(lz4_prefs, 128 * 1024);
 
 	pr_debug("Compressing pages\n");
-	LZ4IO_setNotificationLevel(100);
+	// LZ4IO_setNotificationLevel(100);
 	for (id = 1; id < max_id; ++id) {
 		sprintf(format, "%s/%s", "/proc/%ld/fd/%d", imgset_template[CR_FD_PAGES].fmt);
 		sprintf(pathsrc, format, pid, dfd, id);
@@ -58,7 +58,8 @@ int compress_images(void)
 	return 0;
 }
 
-int compress_image(const char *pathsrc, const char *pathdst) {
+#if 0
+static int compress_image(const char *pathsrc, const char *pathdst) {
 
     const int LZ4_Compression_Level = 8;
 	LZ4IO_prefs_t *lz4_prefs = LZ4IO_defaultPreferences();
@@ -74,19 +75,20 @@ int compress_image(const char *pathsrc, const char *pathdst) {
     return 0;
 }
 
-// static int decompress_image_file(const char *pathsrc, const char *pathdst) {
-// 	LZ4IO_prefs_t *lz4_prefs = LZ4IO_defaultPreferences();
-//     LZ4IO_setBlockSize(lz4_prefs, 128 * 1024);// * 1024);
-//     // LZ4IO_setNotificationLevel(100);
+static int decompress_image_file(const char *pathsrc, const char *pathdst) {
+	LZ4IO_prefs_t *lz4_prefs = LZ4IO_defaultPreferences();
+    LZ4IO_setBlockSize(lz4_prefs, 128 * 1024);// * 1024);
+    // LZ4IO_setNotificationLevel(100);
 
-//     if (LZ4IO_decompressFilename(pathsrc, pathdst, lz4_prefs)) {
-//         LZ4IO_freePreferences(lz4_prefs);
-//         pr_err("Can't compress %s to %s\n", pathsrc, pathdst);
-//         return -1;
-//     }
-// 	LZ4IO_freePreferences(lz4_prefs);
-//     return 0;
-// }
+    if (LZ4IO_decompressFilename(pathsrc, pathdst, lz4_prefs)) {
+        LZ4IO_freePreferences(lz4_prefs);
+        pr_err("Can't compress %s to %s\n", pathsrc, pathdst);
+        return -1;
+    }
+	LZ4IO_freePreferences(lz4_prefs);
+    return 0;
+}
+#endif
 
 int decompress_image(int comp_fd, const char *path) {
 
@@ -107,24 +109,10 @@ int decompress_image(int comp_fd, const char *path) {
 		return -1;
 	}
 
-	pr_debug("compressdion FD is %d\n", comp_fd);
+	pr_debug("Creating file at '%s'\n", temp_path_decompressed);
+	ret = open(temp_path_decompressed, O_CREAT | O_WRONLY, 0600);
 
-#if 0
-	pr_debug("Creating memfd at '%s'\n", path);
-	ret = memfd_create(path, 0);
 
-	// if (0 <= ret && 0 > ftruncate(ret, 100 * 1024 * 1024)) {
-	// 	pr_err("Can't truncate file, errno=%d\n", errno);
-	// 	LZ4F_freeDecompressionContext(dctx);
-	// 	close(ret);
-	// 	return -1;
-	// }
-#else
-	{
-		pr_debug("Creating file at '%s'\n", temp_path_decompressed);
-		ret = open(temp_path_decompressed, O_CREAT | O_WRONLY, 0600);
-	}
-#endif
 	if (0 > ret) {
 		pr_err("Can't create file, errno=%d\n", errno);
 		LZ4F_freeDecompressionContext(dctx);
@@ -135,7 +123,6 @@ int decompress_image(int comp_fd, const char *path) {
 		size_t readbytes;
 		readbytes = read(comp_fd, compbuf + offset, bytestoread);
 		totalread += readbytes;
-		// pr_debug("read %16lu bytes, total read %16lu\n", (unsigned long)readbytes, (unsigned long)totalread);
 		if (!readbytes) {
 			/* reached end of file or stream */
 			break;
@@ -144,7 +131,6 @@ int decompress_image(int comp_fd, const char *path) {
 			size_t outsize = sizeof outbuf;
 			size_t insize = offset + readbytes;
 			const size_t insize_orig = insize;
-			// pr_debug("    pos %lu, in %lu\n", (unsigned long)totalread, (unsigned long)insize);
 			lz4err = LZ4F_decompress(dctx, outbuf, &outsize, compbuf, &insize, NULL);
 			if (!LZ4F_isError(lz4err)) {
 				{
@@ -153,17 +139,10 @@ int decompress_image(int comp_fd, const char *path) {
 						pr_err("write error to output file, fd=%d, errno=%d\n", ret, errno);
 						break;
 					}
-					// pr_debug("written %d bytes to output file\n", (int)res);
 				}
 				totalwrite += outsize;
 				offset = insize_orig - insize;
-				// bytestoread = compbufsize; //min((unsigned)lz4err, (unsigned)compbufsize);
 				bytestoread = insize;
-				// pr_debug(
-				// 	"    consumed %lu, decompressed %lu, next read %lu, offset %lu, total write %lu\n",
-				// 	(unsigned long)insize, (unsigned long)outsize,
-				// 	(unsigned long)lz4err, (unsigned long)offset,
-				// 	(unsigned long)totalwrite);
 				memmove(compbuf, compbuf + compbufsize - offset, offset);
 			} else {
 				pr_err("LZ4 Decompress error: %s\n", LZ4F_getErrorName(lz4err));
@@ -272,15 +251,4 @@ int decompression_get_fd(void) {
 		}
 	}
 	return ret;
-}
-
-int decompression_get_fd_final(void) {
-	int ret;
-    if (decompression_thread_join()) {
-		return -1;
-	}
-	decomp_thread = 0;
-	ret = decomp_fd;
-	decomp_fd = -1;
-    return ret;
 }
