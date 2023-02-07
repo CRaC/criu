@@ -1,15 +1,19 @@
 #include <limits.h>
-#include <stdio.h>
-#include <unistd.h>
 #include <pthread.h>
+#include <sched.h>
+#include <stdio.h>
 #include <sys/resource.h>
-#include <semaphore.h>
+#include <unistd.h>
+
+#include <compel/plugins/std/syscall-codes.h>
 
 #include "pages-compress.h"
+
 #include "crtools.h"
 #include "image.h"
 #include "log.h"
 #include "memfd.h"
+#include "sched.h"
 #include "util.h"
 
 #include <lz4/programs/lz4io.h>
@@ -17,7 +21,14 @@
 
 unsigned pages_image_max_id(void);
 
+static mutex_t *decompression_mutex = NULL;
+
 const char *temp_path_decompressed = "/tmp/decompressed";
+
+void decompression_mutex_init(mutex_t *mtx)
+{
+	decompression_mutex = mtx;
+}
 
 int compress_images(void)
 {
@@ -94,7 +105,8 @@ int decompress_image(int comp_fd, const char *path) {
 
 	const int compbufsize = 64 * 1024;
 	char compbuf[compbufsize];
-	char outbuf[4 * compbufsize];
+	const int outbufsize = 4 * 1024 * 1024; // LZ4F_max4MB is the max block size; see LZ4F_blockSizeID_t for details
+	char outbuf[outbufsize];
 	LZ4F_errorCode_t lz4err;
 	LZ4F_decompressionContext_t dctx;
 	int ret;
@@ -110,7 +122,7 @@ int decompress_image(int comp_fd, const char *path) {
 	}
 
 	pr_debug("Creating file at '%s'\n", temp_path_decompressed);
-	ret = open(temp_path_decompressed, O_CREAT | O_WRONLY, 0600);
+	ret = open(temp_path_decompressed, O_CREAT | O_WRONLY | O_TRUNC, 0600);
 
 
 	if (0 > ret) {
@@ -120,10 +132,9 @@ int decompress_image(int comp_fd, const char *path) {
 	}
 
 	while (1) {
-		size_t readbytes;
-		readbytes = read(comp_fd, compbuf + offset, bytestoread);
+		const size_t readbytes = read(comp_fd, compbuf + offset, bytestoread);
 		totalread += readbytes;
-		if (!readbytes) {
+		if (!readbytes && 0 == offset) {
 			/* reached end of file or stream */
 			break;
 		}
@@ -132,22 +143,21 @@ int decompress_image(int comp_fd, const char *path) {
 			size_t insize = offset + readbytes;
 			const size_t insize_orig = insize;
 			lz4err = LZ4F_decompress(dctx, outbuf, &outsize, compbuf, &insize, NULL);
-			if (!LZ4F_isError(lz4err)) {
-				{
-					ssize_t res = write(ret, outbuf, outsize);
-					if (0 > res) {
-						pr_err("write error to output file, fd=%d, errno=%d\n", ret, errno);
-						break;
-					}
-				}
-				totalwrite += outsize;
-				offset = insize_orig - insize;
-				bytestoread = insize;
-				memmove(compbuf, compbuf + compbufsize - offset, offset);
-			} else {
+			if (LZ4F_isError(lz4err)) {
 				pr_err("LZ4 Decompress error: %s\n", LZ4F_getErrorName(lz4err));
 				break;
 			}
+			{
+				const ssize_t res = write(ret, outbuf, outsize);
+				if (0 > res) {
+					pr_err("write error to output file, fd=%d, errno=%d\n", ret, errno);
+					break;
+				}
+			}
+			totalwrite += outsize;
+			offset = insize_orig - insize;
+			bytestoread = insize;
+			memmove(compbuf, compbuf + compbufsize - offset, offset);
 		}
 	}
 	pr_info("decompression completed, read %lu, wrote %lu\n", (unsigned long)totalread, (unsigned long)totalwrite);
@@ -155,14 +165,10 @@ int decompress_image(int comp_fd, const char *path) {
 	return 0;
 }
 
-#define DECOMP_MUTEX_NAME "crac_decompression_mutex"
-static sem_t *mutex_sem = NULL;
-
 static pthread_t decomp_thread = 0;
 static int decomp_fd = -1;
 
 static void *decompression_thread_routine(void *param) {
-	const int tid = syscall(SYS_gettid);
     int ret;
     const char *image_path = "pages-1.comp.img";
     const int dfd = get_service_fd(IMG_FD_OFF);
@@ -178,14 +184,17 @@ static void *decompression_thread_routine(void *param) {
     } else {
 	    decomp_fd = ret;
 	}
-	pr_debug("Decompression thread completed, pid=%d, tid=%d, decomp_fd=%d\n", getpid(), tid, decomp_fd);
-
-	ret = sem_post(mutex_sem);
-	if (-1 == ret) {
-        pr_perror("sem_post failed"); 
-	}
+	pr_debug("Decompression thread completed, pid=%d, t=%p, decomp_fd=%d\n", getpid(), (void *)pthread_self(), decomp_fd);
+	mutex_unlock(decompression_mutex);
     return NULL;
 }
+
+int decompression_thread_routine_wrapper(void *param) {
+	return (intptr_t)decompression_thread_routine(param);
+}
+
+#define StackSize (16 * 1024 * 1024)
+static char stack_ptr[StackSize] __attribute__ ((aligned (16)));
 
 int decompression_thread_start(void) {
     int ret;
@@ -193,51 +202,83 @@ int decompression_thread_start(void) {
         pr_err("Decompression thread already started\n");
         return -1;
     }
+	if (!decompression_mutex) {
+        pr_err("Decompression mutext not initialized\n");
+        return -1;
+	}
 
-	pr_debug("Creating decompression mutex...\n");
-	mutex_sem = sem_open(DECOMP_MUTEX_NAME, O_CREAT, 0660, 0);
-    if (SEM_FAILED == mutex_sem) {
-        pr_perror("sem_open failed"); 
-		return -1;
-    }
-
+	mutex_lock(decompression_mutex);
 	pr_debug("Starting decompression thread...\n");
+#if 0
     ret = pthread_create(&decomp_thread, NULL, decompression_thread_routine, NULL);
     if (ret) {
         pr_err("Can't start decompression thread, pthread_create returned %d\n", ret);
+		mutex_unlock(decompression_mutex);
         return ret;
     }
-
+#else
+	{
+		// Start a thread
+		// TODO explain why we need to use clone3 (https://sourceware.org/bugzilla/show_bug.cgi?id=26371)
+		// struct _clone_args c_args = {};
+		const unsigned int clone_flags = 0
+			| CLONE_CHILD_CLEARTID
+			// | CLONE_FILES
+			| CLONE_FS
+			// | CLONE_PARENT_SETTID
+			// | CLONE_SETTLS
+			| CLONE_SIGHAND
+			// | CLONE_SYSVSEM
+			| CLONE_THREAD
+			| CLONE_VM
+			;
+		// c_args.exit_signal = SIGCHLD;
+		// c_args.set_tid = -1;
+		// c_args.flags = clone_flags;
+		// stack_ptr = malloc(StackSize);
+		// if (!stack_ptr) {
+		// 	pr_err("Can't allocate memory, %d bytes\n", StackSize);
+		// 	mutex_unlock(decompression_mutex);
+		// 	return -1;
+		// }
+		// c_args.stack_size = StackSize;
+		// c_args.stack = (uintptr_t)(stack_ptr);
+		pr_debug("stack = %p\n", stack_ptr);
+		ret = clone(decompression_thread_routine_wrapper, stack_ptr + StackSize, clone_flags, NULL);
+		// ret = syscall(__NR_clone3, &c_args, sizeof(c_args));
+		pr_debug("ret = %d\n", ret);
+		if (0 == ret) {
+			// Child thread
+			pr_debug("starting a routine\n");
+			exit((intptr_t)decompression_thread_routine(NULL));
+		}
+		pr_debug("continue parent execution\n");
+		if (-1 == ret) {
+			pr_err("Can't start decompression thread, errno=%d\n", errno);
+			pr_perror("clone");
+			mutex_unlock(decompression_mutex);
+			return ret;
+		}
+	}
+#endif
 	pr_debug("Decompression thread started, decomp_thread=%lu\n", decomp_thread);
     return 0;
 }
 
 int decompression_thread_join(void) {
-	int ret;
 	pr_debug("wait for semaphore...\n");
-	ret = sem_wait(mutex_sem);
-	if (-1 == ret) {
-        pr_perror("sem_wait failed"); 
-		return -1;
-	}
-	if (0 <= decomp_fd) {
-		pr_debug("Decompression FD ready, pid=%d, tid=%d, decomp_fd=%d\n", getpid(), (int)syscall(SYS_gettid), decomp_fd);
-		return 0;
-	}
-	ret = sem_post(mutex_sem);
-	if (-1 == ret) {
-        pr_perror("sem_post failed"); 
-		return -1;
-    }
 	pr_debug("Decompression thread joined, pid=%d, decomp_fd=%d\n", getpid(), decomp_fd);
     return 0;
 }
 
 int decompression_get_fd(void) {
 	int ret;
-    if (decompression_thread_join()) {
-		return -1;
+	if (!decompression_mutex) {
+        pr_err("Decompression mutext not initialized\n");
+        return -1;
 	}
+	pr_debug("wait for semaphore...\n");
+	mutex_lock(decompression_mutex);
 	if (0 < decomp_fd) {
     	ret = dup(decomp_fd);
 		if (0 > ret) {
@@ -250,5 +291,6 @@ int decompression_get_fd(void) {
 			pr_err("Failed open %s errno=%d\n", temp_path_decompressed, errno);
 		}
 	}
+	mutex_unlock(decompression_mutex);
 	return ret;
 }

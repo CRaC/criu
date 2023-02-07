@@ -2279,6 +2279,7 @@ static int restore_root_task(struct pstree_item *init)
 	}
 
 	if (opts.compress) {
+		decompression_mutex_init(&task_entries->decompression_mutex);
 		decompression_thread_start();
 	}
 
@@ -2615,6 +2616,7 @@ int prepare_task_entries(void)
 	futex_set(&task_entries->start, CR_STATE_FAIL);
 	mutex_init(&task_entries->userns_sync_lock);
 	mutex_init(&task_entries->last_pid_mutex);
+	mutex_init(&task_entries->decompression_mutex);
 
 	return 0;
 }
