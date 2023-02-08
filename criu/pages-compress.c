@@ -160,7 +160,7 @@ int decompress_image(int comp_fd, const char *path) {
 			memmove(compbuf, compbuf + compbufsize - offset, offset);
 		}
 	}
-	pr_info("decompression completed, read %lu, wrote %lu\n", (unsigned long)totalread, (unsigned long)totalwrite);
+	pr_debug("decompression completed, read %lu, wrote %lu\n", (unsigned long)totalread, (unsigned long)totalwrite);
 	close(ret);
 	return 0;
 }
@@ -184,7 +184,7 @@ static void *decompression_thread_routine(void *param) {
     } else {
 	    decomp_fd = ret;
 	}
-	pr_debug("Decompression thread completed, pid=%d, t=%p, decomp_fd=%d\n", getpid(), (void *)pthread_self(), decomp_fd);
+	pr_info("Decompression thread completed, pid=%d, t=%p, decomp_fd=%d\n", getpid(), (void *)pthread_self(), decomp_fd);
 	mutex_unlock(decompression_mutex);
     return NULL;
 }
@@ -193,8 +193,8 @@ int decompression_thread_routine_wrapper(void *param) {
 	return (intptr_t)decompression_thread_routine(param);
 }
 
-#define StackSize (16 * 1024 * 1024)
-static char stack_ptr[StackSize] __attribute__ ((aligned (16)));
+// #define StackSize (16 * 1024 * 1024)
+// static char stack_ptr[StackSize] __attribute__ ((aligned (16)));
 
 int decompression_thread_start(void) {
     int ret;
@@ -209,13 +209,25 @@ int decompression_thread_start(void) {
 
 	mutex_lock(decompression_mutex);
 	pr_debug("Starting decompression thread...\n");
-#if 0
-    ret = pthread_create(&decomp_thread, NULL, decompression_thread_routine, NULL);
-    if (ret) {
-        pr_err("Can't start decompression thread, pthread_create returned %d\n", ret);
-		mutex_unlock(decompression_mutex);
-        return ret;
-    }
+#if 1
+	{
+		sigset_t blockmask, oldmask;
+		sigemptyset(&blockmask);
+		sigaddset(&blockmask, SIGCHLD);
+		if (sigprocmask(SIG_BLOCK, &blockmask, &oldmask) == -1) {
+			pr_perror("Cannot set mask of blocked signals");
+			return -1;
+		}
+		ret = pthread_create(&decomp_thread, NULL, decompression_thread_routine, NULL);
+		if (sigprocmask(SIG_SETMASK, &oldmask, NULL) == -1) {
+			pr_perror("Can not unset mask of blocked signals");
+		}
+		if (ret) {
+			pr_err("Can't start decompression thread, pthread_create returned %d\n", ret);
+			mutex_unlock(decompression_mutex);
+			return ret;
+		}
+	}
 #else
 	{
 		// Start a thread
@@ -278,7 +290,7 @@ int decompression_get_fd(void) {
         return -1;
 	}
 	pr_debug("wait for semaphore...\n");
-	mutex_lock(decompression_mutex);
+	// mutex_lock(decompression_mutex);
 	if (0 < decomp_fd) {
     	ret = dup(decomp_fd);
 		if (0 > ret) {
@@ -291,6 +303,6 @@ int decompression_get_fd(void) {
 			pr_err("Failed open %s errno=%d\n", temp_path_decompressed, errno);
 		}
 	}
-	mutex_unlock(decompression_mutex);
+	// mutex_unlock(decompression_mutex);
 	return ret;
 }

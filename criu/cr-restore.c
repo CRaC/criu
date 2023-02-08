@@ -1451,6 +1451,9 @@ static inline int fork_with_pid(struct pstree_item *item)
 		}
 	}
 
+	pr_debug("waiting for decompression thread is completed...\n");
+	mutex_lock(&task_entries->decompression_mutex);
+	mutex_unlock(&task_entries->decompression_mutex);
 	if (kdat.has_clone3_set_tid) {
 		ret = clone3_with_pid_noasan(restore_task_with_children, &ca,
 					     (ca.clone_flags & ~(CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_NEWTIME)),
@@ -2278,11 +2281,6 @@ static int restore_root_task(struct pstree_item *init)
 		return -1;
 	}
 
-	if (opts.compress) {
-		decompression_mutex_init(&task_entries->decompression_mutex);
-		decompression_thread_start();
-	}
-
 	fd = open("/proc", O_DIRECTORY | O_RDONLY);
 	if (fd < 0) {
 		pr_perror("Unable to open /proc");
@@ -2671,6 +2669,11 @@ int cr_restore_tasks(void)
 
 	if (prepare_task_entries() < 0)
 		goto err;
+
+	if (opts.compress) {
+		decompression_mutex_init(&task_entries->decompression_mutex);
+		decompression_thread_start();
+	}
 
 	if (prepare_pstree() < 0)
 		goto err;
