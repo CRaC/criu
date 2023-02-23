@@ -2658,6 +2658,13 @@ int cr_restore_tasks(void)
 
 	timing_start(TIME_RESTORE);
 
+	if (opts.compress) {
+		if (decompression_thread_start()) {
+			pr_err("Failed to start decompression thread\n");
+			goto err;
+		}
+	}
+
 	if (cpu_init() < 0)
 		goto err;
 
@@ -2674,10 +2681,6 @@ int cr_restore_tasks(void)
 
 	if (prepare_task_entries() < 0)
 		goto err;
-
-	if (opts.compress) {
-		decompression_thread_start();
-	}
 
 	if (prepare_pstree() < 0)
 		goto err;

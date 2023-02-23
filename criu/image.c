@@ -655,10 +655,6 @@ void up_page_ids_base(void)
 	page_ids += 0x10000;
 }
 
-unsigned pages_image_max_id(void) {
-	return page_ids;
-}
-
 struct cr_img *open_pages_image_at(int dfd, unsigned long flags, struct cr_img *pmi, u32 *id)
 {
 	if (flags == O_RDONLY || flags == O_RDWR) {

@@ -19,6 +19,9 @@
 #include <lz4/programs/lz4io.h>
 #include <lz4/lib/lz4frame.h>
 
+#undef LOG_PREFIX
+#define LOG_PREFIX "decompress: "
+
 const char *temp_path_decompressed = "/tmp/decompressed";
 
 int compress_images(void)
@@ -123,9 +126,11 @@ static pthread_t decomp_thread = 0;
 
 static void *decompression_thread_routine(void *param) {
     int ret;
-    const char *image_path = "pages-1.comp.img";
+	int comp_fd;
+	char image_path[PATH_MAX];
     const int dfd = get_service_fd(IMG_FD_OFF);
-    const int comp_fd = openat(dfd, image_path, O_RDONLY, CR_FD_PERM);
+	sprintf(image_path, imgset_template[CR_FD_PAGES_COMP].fmt, 1);
+    comp_fd = openat(dfd, image_path, O_RDONLY, CR_FD_PERM);
     if (0 > comp_fd) {
         pr_err("Can't open '%s' for dfd=%d, errno=%d\n", image_path, dfd, errno);
         return NULL;

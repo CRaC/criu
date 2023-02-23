@@ -1,8 +1,6 @@
 #ifndef __CR_PAGES_COMPRESS_H__
 #define __CR_PAGES_COMPRESS_H__
 
-#include "common/lock.h"
-
 int compress_images(void);
 
 int decompression_thread_start(void);
