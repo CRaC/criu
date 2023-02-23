@@ -59,7 +59,7 @@ int compress_images(void)
 	return 0;
 }
 
-int decompress_image(int comp_fd, const char *path) {
+static int decompress_image(int comp_fd) {
 
 	const int compbufsize = 64 * 1024;
 	char compbuf[compbufsize];
@@ -126,16 +126,8 @@ static pthread_t decomp_thread = 0;
 
 static void *decompression_thread_routine(void *param) {
     int ret;
-	int comp_fd;
-	char image_path[PATH_MAX];
-    const int dfd = get_service_fd(IMG_FD_OFF);
-	sprintf(image_path, imgset_template[CR_FD_PAGES_COMP].fmt, 1);
-    comp_fd = openat(dfd, image_path, O_RDONLY, CR_FD_PERM);
-    if (0 > comp_fd) {
-        pr_err("Can't open '%s' for dfd=%d, errno=%d\n", image_path, dfd, errno);
-        return NULL;
-    }
-    ret = decompress_image(comp_fd, image_path);
+	int comp_fd = (intptr_t)param;
+    ret = decompress_image(comp_fd);
     close(comp_fd);
     if (0 > ret) {
         pr_err("Failed to decompress image, ret=%d\n", ret);
@@ -146,8 +138,20 @@ static void *decompression_thread_routine(void *param) {
 
 int decompression_thread_start(void) {
     int ret;
+	int comp_fd;
+	char image_path[PATH_MAX];
+    const int dfd = get_service_fd(IMG_FD_OFF);
+
     if (decomp_thread) {
         pr_err("Decompression thread already started\n");
+        return -1;
+    }
+
+	pr_debug("Opening compressed image...\n");
+	sprintf(image_path, imgset_template[CR_FD_PAGES_COMP].fmt, 1);
+    comp_fd = openat(dfd, image_path, O_RDONLY, CR_FD_PERM);
+    if (0 > comp_fd) {
+        pr_warn("Can't open '%s' for dfd=%d, errno=%d\n", image_path, dfd, errno);
         return -1;
     }
 
@@ -160,18 +164,20 @@ int decompression_thread_start(void) {
 		sigaddset(&blockmask, SIGCHLD);
 		if (sigprocmask(SIG_BLOCK, &blockmask, &oldmask) == -1) {
 			pr_perror("Cannot set mask of blocked signals");
+			close(comp_fd);
 			return -1;
 		}
-		ret = pthread_create(&decomp_thread, NULL, decompression_thread_routine, NULL);
+		ret = pthread_create(&decomp_thread, NULL, decompression_thread_routine, (void *)(intptr_t)comp_fd);
 		if (sigprocmask(SIG_SETMASK, &oldmask, NULL) == -1) {
 			pr_perror("Can not unset mask of blocked signals");
 		}
 		if (ret) {
 			pr_err("Can't start decompression thread, pthread_create returned %d\n", ret);
+			close(comp_fd);
 			return ret;
 		}
 	}
-	pr_debug("Decompression thread started, decomp_thread=%lu\n", decomp_thread);
+	pr_debug("Decompression thread started\n");
     return 0;
 }
 
