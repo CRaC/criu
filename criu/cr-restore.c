@@ -1451,9 +1451,15 @@ static inline int fork_with_pid(struct pstree_item *item)
 		}
 	}
 
-	pr_debug("waiting for decompression thread is completed...\n");
-	mutex_lock(&task_entries->decompression_mutex);
-	mutex_unlock(&task_entries->decompression_mutex);
+	if (opts.compress) {
+		// Sync with decompression thread before fork'ing
+		pr_debug("Waiting for decompression thread is completed...\n");
+		if (decompression_thread_join()) {
+			pr_err("Failed to join decompression thread\n");
+			return -1;
+		}
+	}
+
 	if (kdat.has_clone3_set_tid) {
 		ret = clone3_with_pid_noasan(restore_task_with_children, &ca,
 					     (ca.clone_flags & ~(CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_NEWTIME)),
@@ -2614,7 +2620,6 @@ int prepare_task_entries(void)
 	futex_set(&task_entries->start, CR_STATE_FAIL);
 	mutex_init(&task_entries->userns_sync_lock);
 	mutex_init(&task_entries->last_pid_mutex);
-	mutex_init(&task_entries->decompression_mutex);
 
 	return 0;
 }
@@ -2671,7 +2676,6 @@ int cr_restore_tasks(void)
 		goto err;
 
 	if (opts.compress) {
-		decompression_mutex_init(&task_entries->decompression_mutex);
 		decompression_thread_start();
 	}
 

@@ -15,7 +15,6 @@ struct task_entries {
 	atomic_t cr_err;
 	mutex_t userns_sync_lock;
 	mutex_t last_pid_mutex;
-	mutex_t decompression_mutex;
 };
 
 struct fdt {

@@ -19,87 +19,42 @@
 #include <lz4/programs/lz4io.h>
 #include <lz4/lib/lz4frame.h>
 
-unsigned pages_image_max_id(void);
-
-static mutex_t *decompression_mutex = NULL;
-
 const char *temp_path_decompressed = "/tmp/decompressed";
-
-void decompression_mutex_init(mutex_t *mtx)
-{
-	decompression_mutex = mtx;
-}
 
 int compress_images(void)
 {
 	char format[PATH_MAX];
 	char pathsrc[PATH_MAX];
 	char pathdst[PATH_MAX];
-	int id;
-
-	const int max_id = pages_image_max_id();
-
 	const long pid = getpid();
 	const int dfd = get_service_fd(IMG_FD_OFF);
+	const int id = 1; // the only image we'd like to compress
+	int ret;
 
 	LZ4IO_prefs_t *lz4_prefs = LZ4IO_defaultPreferences();
 	LZ4IO_setBlockSize(lz4_prefs, 128 * 1024);
 
 	pr_debug("Compressing pages\n");
-	// LZ4IO_setNotificationLevel(100);
-	for (id = 1; id < max_id; ++id) {
-		sprintf(format, "%s/%s", "/proc/%ld/fd/%d", imgset_template[CR_FD_PAGES].fmt);
-		sprintf(pathsrc, format, pid, dfd, id);
 
-		sprintf(format, "%s/%s", "/proc/%ld/fd/%d", imgset_template[CR_FD_PAGES_COMP].fmt);
-		sprintf(pathdst, format, pid, dfd, id);
+	sprintf(format, "%s/%s", "/proc/%ld/fd/%d", imgset_template[CR_FD_PAGES].fmt);
+	sprintf(pathsrc, format, pid, dfd, id);
 
-		if (LZ4IO_compressFilename(pathsrc, pathdst, 8, lz4_prefs)) {
-			LZ4IO_freePreferences(lz4_prefs);
-			pr_err("Can't compress %s to %s\n", pathsrc, pathdst);
-			return -1;
-		}
-		if (unlink(pathsrc)) {
-			LZ4IO_freePreferences(lz4_prefs);
-			pr_perror("Can't delete uncompressed source pages image: %s\n", pathsrc);
-			return -1;
-		}
-	}
+	sprintf(format, "%s/%s", "/proc/%ld/fd/%d", imgset_template[CR_FD_PAGES_COMP].fmt);
+	sprintf(pathdst, format, pid, dfd, id);
+
+	ret = LZ4IO_compressFilename(pathsrc, pathdst, 8, lz4_prefs);
 	LZ4IO_freePreferences(lz4_prefs);
+
+	if (ret) {
+		pr_err("Can't compress %s to %s\n", pathsrc, pathdst);
+		return -1;
+	}
+	if (unlink(pathsrc)) {
+		pr_perror("Can't delete uncompressed source pages image: %s\n", pathsrc);
+		return -1;
+	}
 	return 0;
 }
-
-#if 0
-static int compress_image(const char *pathsrc, const char *pathdst) {
-
-    const int LZ4_Compression_Level = 8;
-	LZ4IO_prefs_t *lz4_prefs = LZ4IO_defaultPreferences();
-    LZ4IO_setBlockSize(lz4_prefs, 128 * 1024);// * 1024);
-    LZ4IO_setNotificationLevel(100);
-
-    if (LZ4IO_compressFilename(pathsrc, pathdst, LZ4_Compression_Level, lz4_prefs)) {
-        LZ4IO_freePreferences(lz4_prefs);
-        pr_err("Can't compress %s to %s\n", pathsrc, pathdst);
-        return -1;
-    }
-	LZ4IO_freePreferences(lz4_prefs);
-    return 0;
-}
-
-static int decompress_image_file(const char *pathsrc, const char *pathdst) {
-	LZ4IO_prefs_t *lz4_prefs = LZ4IO_defaultPreferences();
-    LZ4IO_setBlockSize(lz4_prefs, 128 * 1024);// * 1024);
-    // LZ4IO_setNotificationLevel(100);
-
-    if (LZ4IO_decompressFilename(pathsrc, pathdst, lz4_prefs)) {
-        LZ4IO_freePreferences(lz4_prefs);
-        pr_err("Can't compress %s to %s\n", pathsrc, pathdst);
-        return -1;
-    }
-	LZ4IO_freePreferences(lz4_prefs);
-    return 0;
-}
-#endif
 
 int decompress_image(int comp_fd, const char *path) {
 
@@ -123,7 +78,6 @@ int decompress_image(int comp_fd, const char *path) {
 
 	pr_debug("Creating file at '%s'\n", temp_path_decompressed);
 	ret = open(temp_path_decompressed, O_CREAT | O_WRONLY | O_TRUNC, 0600);
-
 
 	if (0 > ret) {
 		pr_err("Can't create file, errno=%d\n", errno);
@@ -160,13 +114,12 @@ int decompress_image(int comp_fd, const char *path) {
 			memmove(compbuf, compbuf + compbufsize - offset, offset);
 		}
 	}
-	pr_debug("decompression completed, read %lu, wrote %lu\n", (unsigned long)totalread, (unsigned long)totalwrite);
 	close(ret);
+	pr_debug("decompression completed, read %lu, wrote %lu\n", (unsigned long)totalread, (unsigned long)totalwrite);
 	return 0;
 }
 
 static pthread_t decomp_thread = 0;
-static int decomp_fd = -1;
 
 static void *decompression_thread_routine(void *param) {
     int ret;
@@ -181,20 +134,10 @@ static void *decompression_thread_routine(void *param) {
     close(comp_fd);
     if (0 > ret) {
         pr_err("Failed to decompress image, ret=%d\n", ret);
-    } else {
-	    decomp_fd = ret;
-	}
-	pr_info("Decompression thread completed, pid=%d, t=%p, decomp_fd=%d\n", getpid(), (void *)pthread_self(), decomp_fd);
-	mutex_unlock(decompression_mutex);
+    }
+	pr_info("Decompression thread completed\n");
     return NULL;
 }
-
-int decompression_thread_routine_wrapper(void *param) {
-	return (intptr_t)decompression_thread_routine(param);
-}
-
-// #define StackSize (16 * 1024 * 1024)
-// static char stack_ptr[StackSize] __attribute__ ((aligned (16)));
 
 int decompression_thread_start(void) {
     int ret;
@@ -202,15 +145,11 @@ int decompression_thread_start(void) {
         pr_err("Decompression thread already started\n");
         return -1;
     }
-	if (!decompression_mutex) {
-        pr_err("Decompression mutext not initialized\n");
-        return -1;
-	}
 
-	mutex_lock(decompression_mutex);
 	pr_debug("Starting decompression thread...\n");
-#if 1
 	{
+		// Preventing processing SIGCHLD by the thread,
+		// because SIGCHLD mask is changed by CRIU's main thread during restore.
 		sigset_t blockmask, oldmask;
 		sigemptyset(&blockmask);
 		sigaddset(&blockmask, SIGCHLD);
@@ -224,85 +163,35 @@ int decompression_thread_start(void) {
 		}
 		if (ret) {
 			pr_err("Can't start decompression thread, pthread_create returned %d\n", ret);
-			mutex_unlock(decompression_mutex);
 			return ret;
 		}
 	}
-#else
-	{
-		// Start a thread
-		// TODO explain why we need to use clone3 (https://sourceware.org/bugzilla/show_bug.cgi?id=26371)
-		// struct _clone_args c_args = {};
-		const unsigned int clone_flags = 0
-			| CLONE_CHILD_CLEARTID
-			// | CLONE_FILES
-			| CLONE_FS
-			// | CLONE_PARENT_SETTID
-			// | CLONE_SETTLS
-			| CLONE_SIGHAND
-			// | CLONE_SYSVSEM
-			| CLONE_THREAD
-			| CLONE_VM
-			;
-		// c_args.exit_signal = SIGCHLD;
-		// c_args.set_tid = -1;
-		// c_args.flags = clone_flags;
-		// stack_ptr = malloc(StackSize);
-		// if (!stack_ptr) {
-		// 	pr_err("Can't allocate memory, %d bytes\n", StackSize);
-		// 	mutex_unlock(decompression_mutex);
-		// 	return -1;
-		// }
-		// c_args.stack_size = StackSize;
-		// c_args.stack = (uintptr_t)(stack_ptr);
-		pr_debug("stack = %p\n", stack_ptr);
-		ret = clone(decompression_thread_routine_wrapper, stack_ptr + StackSize, clone_flags, NULL);
-		// ret = syscall(__NR_clone3, &c_args, sizeof(c_args));
-		pr_debug("ret = %d\n", ret);
-		if (0 == ret) {
-			// Child thread
-			pr_debug("starting a routine\n");
-			exit((intptr_t)decompression_thread_routine(NULL));
-		}
-		pr_debug("continue parent execution\n");
-		if (-1 == ret) {
-			pr_err("Can't start decompression thread, errno=%d\n", errno);
-			pr_perror("clone");
-			mutex_unlock(decompression_mutex);
-			return ret;
-		}
-	}
-#endif
 	pr_debug("Decompression thread started, decomp_thread=%lu\n", decomp_thread);
     return 0;
 }
 
 int decompression_thread_join(void) {
-	pr_debug("wait for semaphore...\n");
-	pr_debug("Decompression thread joined, pid=%d, decomp_fd=%d\n", getpid(), decomp_fd);
+	int ret;
+    if (!decomp_thread) {
+        pr_err("Decompression thread doesn't exist\n");
+        return -1;
+    }
+	ret = pthread_join(decomp_thread, NULL);
+	if (ret) {
+        pr_err("Decompression thread joining failed, ret=%d\n", ret);
+		return -1;
+	}
+	decomp_thread = 0;
+	pr_debug("Decompression thread joined\n");
     return 0;
 }
 
 int decompression_get_fd(void) {
 	int ret;
-	if (!decompression_mutex) {
-        pr_err("Decompression mutext not initialized\n");
-        return -1;
-	}
 	pr_debug("wait for semaphore...\n");
-	// mutex_lock(decompression_mutex);
-	if (0 < decomp_fd) {
-    	ret = dup(decomp_fd);
-		if (0 > ret) {
-			pr_err("Failed duplicate FD %d, errno=%d\n", decomp_fd, errno);
-		}
-		lseek(ret, 0, SEEK_SET);
-	} else {
-		ret = open(temp_path_decompressed, O_RDONLY, 0600);
-		if (0 > ret) {
-			pr_err("Failed open %s errno=%d\n", temp_path_decompressed, errno);
-		}
+	ret = open(temp_path_decompressed, O_RDONLY, 0600);
+	if (0 > ret) {
+		pr_err("Failed open %s errno=%d\n", temp_path_decompressed, errno);
 	}
-	// mutex_unlock(decompression_mutex);
 	return ret;
 }
