@@ -125,35 +125,35 @@ static int decompress_image(int comp_fd) {
 static pthread_t decomp_thread = 0;
 
 static void *decompression_thread_routine(void *param) {
-    int ret;
+	int ret;
 	int comp_fd = (intptr_t)param;
-    ret = decompress_image(comp_fd);
-    close(comp_fd);
-    if (0 > ret) {
-        pr_err("Failed to decompress image, ret=%d\n", ret);
-    }
+	ret = decompress_image(comp_fd);
+	close(comp_fd);
+	if (0 > ret) {
+		pr_err("Failed to decompress image, ret=%d\n", ret);
+	}
 	pr_info("Decompression thread completed\n");
-    return NULL;
+	return NULL;
 }
 
 int decompression_thread_start(void) {
-    int ret;
+	int ret;
 	int comp_fd;
 	char image_path[PATH_MAX];
-    const int dfd = get_service_fd(IMG_FD_OFF);
+	const int dfd = get_service_fd(IMG_FD_OFF);
 
-    if (decomp_thread) {
-        pr_err("Decompression thread already started\n");
-        return -1;
-    }
+	if (decomp_thread) {
+		pr_err("Decompression thread already started\n");
+		return -1;
+	}
 
 	pr_debug("Opening compressed image...\n");
 	sprintf(image_path, imgset_template[CR_FD_PAGES_COMP].fmt, 1);
-    comp_fd = openat(dfd, image_path, O_RDONLY, CR_FD_PERM);
-    if (0 > comp_fd) {
-        pr_warn("Can't open '%s' for dfd=%d, errno=%d\n", image_path, dfd, errno);
-        return -1;
-    }
+	comp_fd = openat(dfd, image_path, O_RDONLY, CR_FD_PERM);
+	if (0 > comp_fd) {
+		pr_warn("Can't open '%s' for dfd=%d, errno=%d\n", image_path, dfd, errno);
+		return -1;
+	}
 
 	pr_debug("Starting decompression thread...\n");
 	{
@@ -178,23 +178,23 @@ int decompression_thread_start(void) {
 		}
 	}
 	pr_debug("Decompression thread started\n");
-    return 0;
+	return 0;
 }
 
 int decompression_thread_join(void) {
 	int ret;
-    if (!decomp_thread) {
-        pr_err("Decompression thread doesn't exist\n");
-        return -1;
-    }
+	if (!decomp_thread) {
+		pr_err("Decompression thread doesn't exist\n");
+		return -1;
+	}
 	ret = pthread_join(decomp_thread, NULL);
 	if (ret) {
-        pr_err("Decompression thread joining failed, ret=%d\n", ret);
+		pr_err("Decompression thread joining failed, ret=%d\n", ret);
 		return -1;
 	}
 	decomp_thread = 0;
 	pr_debug("Decompression thread joined\n");
-    return 0;
+	return 0;
 }
 
 int decompression_get_fd(void) {
