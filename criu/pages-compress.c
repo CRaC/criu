@@ -2,6 +2,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <stdio.h>
+#include <sys/mman.h>
 #include <sys/resource.h>
 #include <unistd.h>
 
@@ -61,17 +62,27 @@ int compress_images(void)
 
 static int decompress_image(int comp_fd) {
 
-	const int compbufsize = 64 * 1024;
-	char compbuf[compbufsize];
+	char *mapped_addr= NULL;
+	const char *compbuf= NULL;
 	const int outbufsize = 4 * 1024 * 1024; // LZ4F_max4MB is the max block size; see LZ4F_blockSizeID_t for details
 	char outbuf[outbufsize];
+	struct stat file_stat;
 	LZ4F_errorCode_t lz4err;
 	LZ4F_decompressionContext_t dctx;
 	int decomp_fd;
 	size_t totalread = 0;
 	size_t totalwrite = 0;
-	int bytestoread = compbufsize;
-	size_t offset = 0;
+
+	if (fstat(comp_fd, &file_stat) < 0) {
+		pr_perror("couldn't stat comp_fd");
+		return -1;
+	}
+
+	compbuf = mapped_addr = mmap(NULL, file_stat.st_size, PROT_READ, MAP_PRIVATE, comp_fd, 0);
+	if (MAP_FAILED == mapped_addr) {
+		pr_perror("failed mmap on comp_fd=%d with length=%lu", comp_fd, (unsigned long)file_stat.st_size);
+		return -1;
+	}
 
 	lz4err = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
 	if (LZ4F_isError(lz4err)) {
@@ -89,28 +100,22 @@ static int decompress_image(int comp_fd) {
 	}
 
 	while (1) {
-		const ssize_t readbytes = read(comp_fd, compbuf + offset, bytestoread);
-		if (0 > readbytes) {
-			if (EINTR == errno) {
-				continue;
-			}
-			pr_perror("failed to read compressed data");
-			break; // stop on error
-		}
-		if (!readbytes && 0 == offset) {
+		size_t insize = file_stat.st_size - (compbuf - mapped_addr);
+		if (!insize) {
 			/* reached end of file or stream */
 			break;
 		}
-		totalread += readbytes;
 		{
 			size_t outsize = sizeof outbuf;
-			size_t insize = offset + readbytes;
-			const size_t insize_orig = insize;
 			lz4err = LZ4F_decompress(dctx, outbuf, &outsize, compbuf, &insize, NULL);
 			if (LZ4F_isError(lz4err)) {
 				pr_err("LZ4 Decompress error: %s\n", LZ4F_getErrorName(lz4err));
 				break;
 			}
+
+			totalread += insize;
+			compbuf += insize;
+
 			{
 				// Write decompressed bytes
 				ssize_t bytes_written = 0;
@@ -138,15 +143,13 @@ static int decompress_image(int comp_fd) {
 				pr_err("writing is not completed, outsize=%lu\n", (unsigned long)outsize);
 				break;
 			}
-			offset = insize_orig - insize;
-			bytestoread = insize;
-			memmove(compbuf, compbuf + compbufsize - offset, offset);
 		}
 	}
 	if (0 > close(decomp_fd)) {
 		pr_perror("failed closing decompressed file");
 	}
 	LZ4F_freeDecompressionContext(dctx);
+	munmap(mapped_addr, file_stat.st_size);
 	pr_debug("decompression completed, read %lu, wrote %lu\n", (unsigned long)totalread, (unsigned long)totalwrite);
 	return 0;
 }
