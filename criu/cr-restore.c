@@ -2706,6 +2706,9 @@ clean_cgroup:
 	fini_cgroup();
 err:
 	cr_plugin_fini(CR_PLUGIN_STAGE__RESTORE, ret);
+	if (opts.compress) {
+		decompression_unlink_tmpfile();
+	}
 	return ret;
 }
 
