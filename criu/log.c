@@ -228,6 +228,12 @@ int log_init(const char *output)
 		}
 	}
 
+	// The file was opened with effective UID, which is usually root (due to suid bit)
+	// To make debugging more convenient we'll try to change that to real UID.
+	if (fchown(new_logfd, getuid(), -1)) {
+		pr_warn("Cannot change ownership of the log file: %s", strerror(errno));
+	}
+
 	fd = install_service_fd(LOG_FD_OFF, new_logfd);
 	if (fd < 0)
 		goto err;
