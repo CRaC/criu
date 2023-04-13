@@ -142,7 +142,7 @@ static int decompress_image(int comp_fd) {
 			}
 			offset = insize_orig - insize;
 			bytestoread = insize;
-			memmove(compbuf, compbuf + compbufsize - offset, offset);
+			memmove(compbuf, compbuf + insize, offset);
 		}
 	}
 	if (0 > close(decomp_fd)) {
