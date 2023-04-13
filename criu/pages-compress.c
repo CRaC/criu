@@ -71,7 +71,6 @@ static int decompress_image(int comp_fd) {
 	int decomp_fd;
 	size_t totalread = 0;
 	size_t totalwrite = 0;
-	int bytestoread = compbufsize;
 	size_t offset = 0;
 
 	lz4err = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
@@ -91,7 +90,7 @@ static int decompress_image(int comp_fd) {
 	}
 
 	while (1) {
-		const ssize_t readbytes = read(comp_fd, compbuf + offset, bytestoread);
+		const ssize_t readbytes = read(comp_fd, compbuf + offset, compbufsize - offset);
 		if (0 > readbytes) {
 			if (EINTR == errno) {
 				continue;
@@ -141,7 +140,6 @@ static int decompress_image(int comp_fd) {
 				break;
 			}
 			offset = insize_orig - insize;
-			bytestoread = insize;
 			memmove(compbuf, compbuf + insize, offset);
 		}
 	}
