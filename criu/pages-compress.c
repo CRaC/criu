@@ -25,6 +25,9 @@
 const char * const decompressed_filename_format = "/tmp/decompressed_pid%d.img";
 static char decompressed_filename[PATH_MAX] = {0};
 
+// Decompression result: 0 - success; negative - decompression error occured.
+static int decompressionResult = -ENOENT;
+
 int compress_images(void)
 {
 	char format[PATH_MAX];
@@ -99,7 +102,8 @@ static int decompress_image(int comp_fd) {
 			break; // stop on error
 		}
 		if (!readbytes && 0 == offset) {
-			/* reached end of file or stream */
+			/* reached end of file or stream, no data left to decompress */
+			decompressionResult = 0;
 			break;
 		}
 		totalread += readbytes;
@@ -228,6 +232,10 @@ int decompression_thread_join(void) {
 
 int decompression_get_fd(void) {
 	int ret;
+	if (0 != decompressionResult) {
+		pr_err("No decompressed image due to decompression is not completed\n");
+		return decompressionResult;
+	}
 	pr_debug("opening %s...\n", decompressed_filename);
 	ret = open(decompressed_filename, O_RDONLY, S_IRUSR | S_IWUSR);
 	if (0 > ret) {
