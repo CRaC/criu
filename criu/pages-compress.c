@@ -91,6 +91,7 @@ static int decompress_image(int comp_fd) {
 	lz4err = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
 	if (LZ4F_isError(lz4err)) {
 		pr_err("Can't create LZ4 decompression context\n");
+		munmap(mapped_addr, file_stat.st_size);
 		return -1;
 	}
 
@@ -101,6 +102,7 @@ static int decompress_image(int comp_fd) {
 	if (0 > decomp_fd) {
 		pr_err("Can't create file, errno=%d\n", errno);
 		LZ4F_freeDecompressionContext(dctx);
+		munmap(mapped_addr, file_stat.st_size);
 		return -1;
 	}
 
@@ -154,8 +156,13 @@ static int decompress_image(int comp_fd) {
 	if (0 > close(decomp_fd)) {
 		pr_perror("failed closing decompressed file");
 	}
-	LZ4F_freeDecompressionContext(dctx);
-	munmap(mapped_addr, file_stat.st_size);
+	lz4err = LZ4F_freeDecompressionContext(dctx);
+	if (LZ4F_isError(lz4err)) {
+		pr_err("LZ4 free context error: %s\n", LZ4F_getErrorName(lz4err));
+	}
+	if (0 > munmap(mapped_addr, file_stat.st_size)) {
+		pr_perror("failed unmapping a file");
+	}
 	pr_debug("decompression completed, read %lu, wrote %lu\n", (unsigned long)totalread, (unsigned long)totalwrite);
 	return 0;
 }
