@@ -23,7 +23,11 @@
 #undef LOG_PREFIX
 #define LOG_PREFIX "decompress: "
 
-const char *temp_path_decompressed = "/tmp/decompressed";
+const char * const decompressed_filename_format = "/tmp/decompressed_pid%d.img";
+static char decompressed_filename[PATH_MAX] = {0};
+
+// Decompression result: 0 - success; negative - decompression error occured.
+static int decompressionResult = -ENOENT;
 
 int compress_images(void)
 {
@@ -90,8 +94,9 @@ static int decompress_image(int comp_fd) {
 		return -1;
 	}
 
-	pr_debug("Creating file at '%s'\n", temp_path_decompressed);
-	decomp_fd = open(temp_path_decompressed, O_CREAT | O_WRONLY | O_TRUNC, S_IRUSR | S_IWUSR);
+	snprintf(decompressed_filename, sizeof(decompressed_filename), decompressed_filename_format, (int)getpid());
+	pr_debug("Creating tmp file at '%s'\n", decompressed_filename);
+	decomp_fd = open(decompressed_filename, O_CREAT | O_WRONLY | O_TRUNC, S_IRUSR | S_IWUSR);
 
 	if (0 > decomp_fd) {
 		pr_err("Can't create file, errno=%d\n", errno);
@@ -102,7 +107,8 @@ static int decompress_image(int comp_fd) {
 	while (1) {
 		size_t insize = file_stat.st_size - (compbuf - mapped_addr);
 		if (!insize) {
-			/* reached end of file or stream */
+			/* reached end of file or stream, no data left to decompress */
+			decompressionResult = 0;
 			break;
 		}
 		{
@@ -131,7 +137,7 @@ static int decompress_image(int comp_fd) {
 					}
 					out_offset += bytes_written;
 					if (outsize < (size_t)bytes_written) {
-						pr_err("written more bytes in total than needed, extected=%lu, written=%lu\n",
+						pr_err("written more bytes in total than needed, expected=%lu, written=%lu\n",
 						       (unsigned long)outsize, (unsigned long)bytes_written);
 						break;
 					}
@@ -231,10 +237,25 @@ int decompression_thread_join(void) {
 
 int decompression_get_fd(void) {
 	int ret;
-	pr_debug("wait for semaphore...\n");
-	ret = open(temp_path_decompressed, O_RDONLY, S_IRUSR | S_IWUSR);
+	if (0 != decompressionResult) {
+		pr_err("No decompressed image due to decompression is not completed\n");
+		return decompressionResult;
+	}
+	pr_debug("opening %s...\n", decompressed_filename);
+	ret = open(decompressed_filename, O_RDONLY, S_IRUSR | S_IWUSR);
 	if (0 > ret) {
-		pr_err("Failed open %s errno=%d\n", temp_path_decompressed, errno);
+		pr_err("Failed open %s, errno=%d\n", decompressed_filename, errno);
 	}
 	return ret;
+}
+
+int decompression_unlink_tmpfile(void) {
+	if (*decompressed_filename) {
+		pr_debug("deleting %s...\n", decompressed_filename);
+		if (0 > unlink(decompressed_filename)) {
+			pr_perror("Can't delete temporary decompressed image: %s\n", decompressed_filename);
+			return -1;
+		}
+	}
+	return 0;
 }
