@@ -123,6 +123,10 @@ static int decompress_image(int comp_fd) {
 
 			totalread += insize;
 			compbuf += insize;
+			if (file_stat.st_size < (compbuf - mapped_addr)) {
+				pr_err("decompression went wrong, compression buffer is out of bounds\n");
+				break;
+			}
 
 			{
 				// Write decompressed bytes
