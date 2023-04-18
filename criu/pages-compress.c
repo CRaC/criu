@@ -64,36 +64,14 @@ int compress_images(void)
 	return 0;
 }
 
-static int decompress_image(int comp_fd) {
-
-	char *mapped_addr= NULL;
-	const char *compbuf= NULL;
+static int decompress_image3(const char *mapped_addr, size_t mapped_size, LZ4F_decompressionContext_t dctx) {
+	const char *compbuf = mapped_addr;
 	const int outbufsize = 4 * 1024 * 1024; // LZ4F_max4MB is the max block size; see LZ4F_blockSizeID_t for details
 	char outbuf[outbufsize];
-	struct stat file_stat;
 	LZ4F_errorCode_t lz4err;
-	LZ4F_decompressionContext_t dctx;
 	int decomp_fd;
 	size_t totalread = 0;
 	size_t totalwrite = 0;
-
-	if (fstat(comp_fd, &file_stat) < 0) {
-		pr_perror("couldn't stat comp_fd");
-		return -1;
-	}
-
-	compbuf = mapped_addr = mmap(NULL, file_stat.st_size, PROT_READ, MAP_PRIVATE, comp_fd, 0);
-	if (MAP_FAILED == mapped_addr) {
-		pr_perror("failed mmap on comp_fd=%d with length=%lu", comp_fd, (unsigned long)file_stat.st_size);
-		return -1;
-	}
-
-	lz4err = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
-	if (LZ4F_isError(lz4err)) {
-		pr_err("Can't create LZ4 decompression context\n");
-		munmap(mapped_addr, file_stat.st_size);
-		return -1;
-	}
 
 	snprintf(decompressed_filename, sizeof(decompressed_filename), decompressed_filename_format, (int)getpid());
 	pr_debug("Creating tmp file at '%s'\n", decompressed_filename);
@@ -101,13 +79,11 @@ static int decompress_image(int comp_fd) {
 
 	if (0 > decomp_fd) {
 		pr_err("Can't create file, errno=%d\n", errno);
-		LZ4F_freeDecompressionContext(dctx);
-		munmap(mapped_addr, file_stat.st_size);
 		return -1;
 	}
 
 	while (1) {
-		size_t insize = file_stat.st_size - (compbuf - mapped_addr);
+		size_t insize = mapped_size - (compbuf - mapped_addr);
 		if (!insize) {
 			/* reached end of file or stream, no data left to decompress */
 			decompressionResult = 0;
@@ -123,7 +99,7 @@ static int decompress_image(int comp_fd) {
 
 			totalread += insize;
 			compbuf += insize;
-			if (file_stat.st_size < (compbuf - mapped_addr)) {
+			if (mapped_size < (compbuf - mapped_addr)) {
 				pr_err("decompression went wrong, compression buffer is out of bounds\n");
 				break;
 			}
@@ -160,15 +136,52 @@ static int decompress_image(int comp_fd) {
 	if (0 > close(decomp_fd)) {
 		pr_perror("failed closing decompressed file");
 	}
+	pr_debug("decompression completed, read %lu, wrote %lu\n", (unsigned long)totalread, (unsigned long)totalwrite);
+	return decompressionResult;
+}
+
+static inline int decompress_image2(const char *mapped_addr, size_t mapped_size) {
+	LZ4F_errorCode_t lz4err;
+	LZ4F_decompressionContext_t dctx;
+	int res;
+
+	lz4err = LZ4F_createDecompressionContext(&dctx, LZ4F_VERSION);
+	if (LZ4F_isError(lz4err)) {
+		pr_err("Can't create LZ4 decompression context, %s\n", LZ4F_getErrorName(lz4err));
+		return -1;
+	}
+
+	res = decompress_image3(mapped_addr, mapped_size, dctx);
+
 	lz4err = LZ4F_freeDecompressionContext(dctx);
 	if (LZ4F_isError(lz4err)) {
 		pr_err("LZ4 free context error: %s\n", LZ4F_getErrorName(lz4err));
 	}
+	return res;
+}
+
+static inline int decompress_image(int comp_fd) {
+	char *mapped_addr = NULL;
+	struct stat file_stat;
+	int res;
+
+	if (fstat(comp_fd, &file_stat) < 0) {
+		pr_perror("couldn't stat comp_fd");
+		return -1;
+	}
+
+	mapped_addr = mmap(NULL, file_stat.st_size, PROT_READ, MAP_PRIVATE, comp_fd, 0);
+	if (MAP_FAILED == mapped_addr) {
+		pr_perror("failed mmap on comp_fd=%d with length=%lu", comp_fd, (unsigned long)file_stat.st_size);
+		return -1;
+	}
+
+	res = decompress_image2(mapped_addr, file_stat.st_size);
+
 	if (0 > munmap(mapped_addr, file_stat.st_size)) {
 		pr_perror("failed unmapping a file");
 	}
-	pr_debug("decompression completed, read %lu, wrote %lu\n", (unsigned long)totalread, (unsigned long)totalwrite);
-	return 0;
+	return res;
 }
 
 static pthread_t decomp_thread = 0;
