@@ -99,6 +99,8 @@
 
 #include "cr-errno.h"
 
+#include "pages-compress.h"
+
 #ifndef arch_export_restore_thread
 #define arch_export_restore_thread __export_restore_thread
 #endif
@@ -1449,6 +1451,15 @@ static inline int fork_with_pid(struct pstree_item *item)
 		}
 	}
 
+	if (opts.compress) {
+		// Sync with decompression thread before fork'ing
+		pr_debug("Waiting for decompression thread is completed...\n");
+		if (decompression_thread_join()) {
+			pr_err("Failed to join decompression thread\n");
+			return -1;
+		}
+	}
+
 	if (kdat.has_clone3_set_tid) {
 		ret = clone3_with_pid_noasan(restore_task_with_children, &ca,
 					     (ca.clone_flags & ~(CLONE_NEWNET | CLONE_NEWCGROUP | CLONE_NEWTIME)),
@@ -2647,6 +2658,11 @@ int cr_restore_tasks(void)
 
 	timing_start(TIME_RESTORE);
 
+	// Automatically detect if decompression is needed
+	if (0 == decompression_thread_start()) {
+		opts.compress = 1;
+	}
+
 	if (cpu_init() < 0)
 		goto err;
 
@@ -2690,6 +2706,9 @@ clean_cgroup:
 	fini_cgroup();
 err:
 	cr_plugin_fini(CR_PLUGIN_STAGE__RESTORE, ret);
+	if (opts.compress) {
+		decompression_unlink_tmpfile();
+	}
 	return ret;
 }
 

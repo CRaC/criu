@@ -87,6 +87,8 @@
 #include "apparmor.h"
 #include "asm/dump.h"
 
+#include "pages-compress.h"
+
 /*
  * Architectures can overwrite this function to restore register sets that
  * are not covered by ptrace_set/get_regs().
@@ -1712,9 +1714,17 @@ static int dump_one_task(struct pstree_item *item, InventoryEntry *parent_ie)
 		goto err;
 	}
 
+	close_cr_imgset(&cr_imgset);
+
+	if (opts.compress) {
+		compress_images();
+	}
+
 	exit_code = 0;
 err:
-	close_cr_imgset(&cr_imgset);
+	if (exit_code) {
+		close_cr_imgset(&cr_imgset);
+	}
 	close_pid_proc();
 	free_mappings(&vmas);
 	xfree(dfds);

@@ -19,6 +19,7 @@
 #include "proc_parse.h"
 #include "img-streamer.h"
 #include "namespaces.h"
+#include "pages-compress.h"
 
 bool ns_per_id = false;
 bool img_common_magic = true;
@@ -366,8 +367,10 @@ struct cr_img *open_image_at(int dfd, int type, unsigned long flags, ...)
 		img->oflags = oflags;
 		img->path = xstrdup(path);
 		return img;
-	} else
+	} else {
 		img->fd = EMPTY_IMG_FD;
+		img->type = type;
+	}
 
 	if (do_open_image(img, dfd, type, oflags, path)) {
 		close_image(img);
@@ -463,8 +466,12 @@ static int do_open_image(struct cr_img *img, int dfd, int type, unsigned long of
 		ret = userns_call(userns_openat, UNS_FDOUT, &pa, sizeof(struct openat_args), dfd);
 		if (ret < 0)
 			errno = pa.err;
+	} else if (CR_FD_PAGES_COMP == type && flags == O_RDONLY) {
+		pr_debug("Wait for decompression thread, and replace file descriptor... (%s)\n", path);
+		ret = decompression_get_fd();
 	} else
 		ret = openat(dfd, path, flags, CR_FD_PERM);
+
 	if (ret < 0) {
 		if (!(flags & O_CREAT) && (errno == ENOENT || ret == -ENOENT)) {
 			pr_info("No %s image\n", path);
@@ -661,6 +668,10 @@ struct cr_img *open_pages_image_at(int dfd, unsigned long flags, struct cr_img *
 		*id = h.pages_id = page_ids++;
 		if (pb_write_one(pmi, &h, PB_PAGEMAP_HEAD) < 0)
 			return NULL;
+	}
+
+	if (opts.compress && flags == O_RDONLY) {
+		return open_image_at(dfd, CR_FD_PAGES_COMP, flags, *id);
 	}
 
 	return open_image_at(dfd, CR_FD_PAGES, flags, *id);

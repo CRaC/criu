@@ -38,6 +38,7 @@
 #define PAGEMAP_MAGIC	     0x56084025 /* Vladimir */
 #define SHMEM_PAGEMAP_MAGIC  PAGEMAP_MAGIC
 #define PAGES_MAGIC	     RAW_IMAGE_MAGIC
+#define PAGES_COMP_MAGIC	RAW_IMAGE_MAGIC
 #define CORE_MAGIC	     0x55053847 /* Kolomna */
 #define IDS_MAGIC	     0x54432030 /* Konigsberg */
 #define VMAS_MAGIC	     0x54123737 /* Tula */

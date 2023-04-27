@@ -425,6 +425,7 @@ usage:
 	       "  --network-lock METHOD\n"
 	       "                      network locking/unlocking method; argument\n"
 	       "                      can be 'nftables' or 'iptables' (default).\n"
+	       "  --compress            use compressed image files when possible\n"
 	       "\n"
 	       "* External resources support:\n"
 	       "  --external RES        dump objects from this list as external resources:\n"
