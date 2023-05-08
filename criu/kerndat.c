@@ -1006,14 +1006,10 @@ static int kerndat_has_move_mount_set_group(void)
 	}
 
 	if (mount("criu.move_mount_set_group", tmpdir, "tmpfs", 0, NULL)) {
-		if (errno == EPERM) {
-			kdat.has_move_mount_set_group = false;
-			rmdir(tmpdir);
-			return 0;
-		}
-		pr_perror("Fail to mount tmfps to %s", tmpdir);
+		pr_warn("Fail to mount tmfps to %s: %m\n", tmpdir);
+		kdat.has_move_mount_set_group = false;
 		rmdir(tmpdir);
-		return -1;
+		return 0;
 	}
 
 	if (mount(NULL, tmpdir, NULL, MS_PRIVATE, NULL)) {
