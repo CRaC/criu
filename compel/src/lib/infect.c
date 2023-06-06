@@ -73,12 +73,14 @@ static int parse_pid_status(int pid, struct seize_task_status *ss, void *data)
 			continue;
 		}
 
+#ifdef ENABLE_SECCOMP
 		if (!strncmp(aux, "Seccomp:", 8)) {
 			if (sscanf(aux + 9, "%d", &ss->seccomp_mode) != 1)
 				goto err_parse;
 
 			continue;
 		}
+#endif //ENABLE_SECCOMP
 
 		if (!strncmp(aux, "ShdPnd:", 7)) {
 			if (sscanf(aux + 7, "%llx", &ss->shdpnd) != 1)
