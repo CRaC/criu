@@ -68,13 +68,13 @@ static inline int set_compat_robust_list(uint32_t head_ptr, uint32_t len)
 		     "thread_run:				\n"	\
 		     "movl $"__stringify(__NR_gettid)", %%eax	\n"	\
 		     "syscall					\n"	\
-		     "cmpq %%rax, %7 \n" \
-		     "je cont \n" \
-		     "mov $2, %%rdi \n" \
+		     "cmpq %%rax, %7 				\n" 	\
+		     "je cont					\n" 	\
+		     "mov $2, %%rdi				\n" 	\
 		     "movl $"__stringify(__NR_exit)", %%eax	\n"	\
 		     "syscall					\n"	\
 									\
-		     "cont:\n" \
+		     "cont:					\n" 	\
 		     "xorq %%rbp, %%rbp				\n"	\
 		     "movq 0(%%rsp), %%rax			\n"	\
 		     "movq 8(%%rsp), %%rdi			\n"	\

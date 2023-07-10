@@ -30,6 +30,15 @@
 			"b   clone_end					\n"	\
 										\
 			"thread_run:					\n"	\
+		        "mov x8, #"__stringify(__NR_gettid)"       	\n"	\
+			"svc #0						\n"	\
+			"cmp x0, %7					\n" 	\
+			"beq cont					\n" 	\
+			"mov x0, #2					\n" 	\
+			"mov x8, #"__stringify(__NR_exit)"		\n"	\
+			"svc #0						\n"	\
+										\
+			"cont:						\n" 	\
 			"ldp x1, x0, [sp]				\n"	\
 			"br  x1						\n"	\
 										\
@@ -40,7 +49,8 @@
 			  "r"(&parent_tid),					\
 			  "r"(&thread_args[i].pid),				\
 			  "r"(clone_restore_fn),				\
-			  "r"(&thread_args[i])					\
+			  "r"(&thread_args[i]),					\
+		          "r"(thread_args[i].pid)                               \
 			: "x0", "x1", "x2", "x3", "x8", "memory")
 
 /*
