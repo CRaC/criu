@@ -790,26 +790,20 @@ err:
 static int restore_content(void *data, struct cr_img *img, const IpcShmEntry *shm)
 {
 	int ifd;
-	ssize_t size, off;
+	ssize_t size, ret;
 
 	ifd = img_raw_fd(img);
 	if (ifd < 0) {
 		pr_err("Failed getting raw image fd\n");
 		return -1;
 	}
+
 	size = round_up(shm->size, sizeof(u32));
-	off = 0;
-	do {
-		ssize_t ret;
-
-		ret = read(ifd, data + off, size - off);
-		if (ret <= 0) {
-			pr_perror("Failed to write IPC shared memory data");
-			return (int)ret;
-		}
-
-		off += ret;
-	} while (off < size);
+	ret = read_all(ifd, data, size);
+	if (ret != size) {
+		pr_perror("Failed to write IPC shared memory data");
+		return (int)ret;
+	}
 
 	return 0;
 }
