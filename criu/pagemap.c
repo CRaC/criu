@@ -235,7 +235,6 @@ static int read_local_page(struct page_read *pr, unsigned long vaddr, unsigned l
 {
 	int fd;
 	ssize_t ret;
-	size_t curr = 0;
 
 	fd = img_raw_fd(pr->pi);
 	if (fd < 0) {
@@ -250,15 +249,10 @@ static int read_local_page(struct page_read *pr, unsigned long vaddr, unsigned l
 		return -1;
 
 	pr_debug("\tpr%lu-%u Read page from self %lx/%" PRIx64 "\n", pr->img_id, pr->id, pr->cvaddr, pr->pi_off);
-	while (1) {
-		ret = pread(fd, buf + curr, len - curr, pr->pi_off + curr);
-		if (ret < 1) {
-			pr_perror("Can't read mapping page %zd", ret);
-			return -1;
-		}
-		curr += ret;
-		if (curr == len)
-			break;
+	ret = pread_all(fd, buf, len, pr->pi_off);
+	if (ret != len) {
+		pr_perror("Can't read mapping page %zd", ret);
+		return -1;
 	}
 
 	if (opts.auto_dedup) {
@@ -407,7 +401,6 @@ static int maybe_read_page_img_streamer(struct page_read *pr, unsigned long vadd
 	unsigned long len = nr * PAGE_SIZE;
 	int fd;
 	int ret;
-	size_t curr = 0;
 
 	fd = img_raw_fd(pr->pi);
 	if (fd < 0) {
@@ -420,18 +413,13 @@ static int maybe_read_page_img_streamer(struct page_read *pr, unsigned long vadd
 	/* We can't seek. The requested address better match */
 	BUG_ON(pr->cvaddr != vaddr);
 
-	while (1) {
-		ret = read(fd, buf + curr, len - curr);
-		if (ret == 0) {
-			pr_err("Reached EOF unexpectedly while reading page from image\n");
-			return -1;
-		} else if (ret < 0) {
-			pr_perror("Can't read mapping page %d", ret);
-			return -1;
-		}
-		curr += ret;
-		if (curr == len)
-			break;
+	ret = read_all(fd, buf, len);
+	if (ret < len) {
+		pr_err("Reached EOF unexpectedly while reading page from image\n");
+		return -1;
+	} else if (ret < 0) {
+		pr_perror("Can't read mapping page %d", ret);
+		return -1;
 	}
 
 	if (opts.auto_dedup)

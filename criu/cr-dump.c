@@ -467,7 +467,7 @@ static int get_task_auxv(pid_t pid, MmEntry *mm)
 	if (fd < 0)
 		return -1;
 
-	ret = read(fd, mm_saved_auxv, sizeof(mm_saved_auxv));
+	ret = read_all(fd, mm_saved_auxv, sizeof(mm_saved_auxv));
 	if (ret < 0) {
 		ret = -1;
 		pr_perror("Error reading %d's auxv", pid);
