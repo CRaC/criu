@@ -802,7 +802,7 @@ static int restore_content(void *data, struct cr_img *img, const IpcShmEntry *sh
 	ret = read_all(ifd, data, size);
 	if (ret != size) {
 		pr_perror("Failed to write IPC shared memory data");
-		return (int)ret;
+		return -1;
 	}
 
 	return 0;
