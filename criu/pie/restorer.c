@@ -1435,6 +1435,26 @@ static ssize_t mmap_image(int fd, const struct iovec *iov, int iovcnt,
 	return mmaped;
 }
 
+static void anonymize_range(const char *name, unsigned long start, unsigned long end, bool executable) {
+	unsigned long anon;
+	size_t size;
+	size = end - start + (start & (PAGE_SIZE - 1));
+	size = ((size - 1) & PAGE_MASK) + PAGE_SIZE;
+	anon = sys_mmap(NULL, size, PROT_READ | PROT_WRITE | (executable ? PROT_EXEC : 0),
+		MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (IS_ERR((void *) anon)) {
+		pr_err("sys_mmap(%s) failed with %d\n", name, -(int) anon);
+	} else {
+		unsigned long target, to;
+		target = start & PAGE_MASK;
+		memcpy((void *) anon, (void *) target, size);
+		to = sys_mremap(anon, size, size, MREMAP_MAYMOVE | MREMAP_FIXED, target);
+		if (to != target) {
+			pr_err("sys_mremap(%s) failed with %d\n", name, -(int) to);
+		}
+	}
+}
+
 /*
  * The main routine to restore task via sigreturn.
  * This one is very special, we never return there
@@ -1811,6 +1831,18 @@ long __export_restore_task(struct task_restore_args *args)
 
 	if (ret)
 		goto core_restore_end;
+
+	/*
+	 * When args and env are mmapped from a file, /proc/<pid>/cmdline and /proc/<pid>/environ
+	 * will be empty. Therefore we have to mmap+memcpy+mremap
+	 */
+	if (args->mmap_page_image && args->mm.mm_arg_start != args->mm.mm_arg_end) {
+		anonymize_range("args", args->mm.mm_arg_start, args->mm.mm_arg_end, false);
+	}
+	/* We might be anonymizing the pages twice but this is simple enough */
+	if (args->mmap_page_image && args->mm.mm_env_start != args->mm.mm_env_end) {
+		anonymize_range("env", args->mm.mm_env_start, args->mm.mm_env_end, false);
+	}
 
 	/* SELinux (1) process context needs to be set before creating threads. */
 	if (args->lsm_type == LSMTYPE__SELINUX) {
