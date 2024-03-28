@@ -1800,8 +1800,7 @@ long __export_restore_task(struct task_restore_args *args)
 		ret |= restore_self_exe_late(args);
 
 		if (ret) {
-			pr_warn("Ignoring restore_task error 1 %ld\n", ret);
-			ret = 0;
+			pr_warn("Failures above might be caused by missing CAP_SYS_RESOURCE\n");
 		}
 	} else {
 		if (ret)
