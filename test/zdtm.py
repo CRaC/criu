@@ -32,6 +32,20 @@ from zdtm.criu_config import criu_config
 # File to store content of streamed images
 STREAMED_IMG_FILE_NAME = "img.criu"
 
+# A library used to preload C functions to simulate
+# cases such as partial read with pread().
+LIBFAULT_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "libfault",
+    "libfault.so"
+)
+
+# A directory that contains the CRIU plugins.
+PLUGINS_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "plugins"
+)
+
 prev_line = None
 uuid = uuid.uuid4()
 
@@ -66,7 +80,10 @@ tests_root = None
 def clean_tests_root():
     global tests_root
     if tests_root and tests_root[0] == os.getpid():
+        subprocess.call(["./umount2", os.path.join(tests_root[1], "dev")])
+        os.rmdir(os.path.join(tests_root[1], "root/root"))
         os.rmdir(os.path.join(tests_root[1], "root"))
+        os.rmdir(os.path.join(tests_root[1], "dev"))
         os.rmdir(tests_root[1])
 
 
@@ -77,8 +94,18 @@ def make_tests_root():
         tests_root = (os.getpid(), tempfile.mkdtemp("", "criu-root-", tmpdir))
         atexit.register(clean_tests_root)
         os.mkdir(os.path.join(tests_root[1], "root"))
-    os.chmod(tests_root[1], 0o777)
-    return os.path.join(tests_root[1], "root")
+        os.mkdir(os.path.join(tests_root[1], "root", "root"))
+        # The current file system can be mounted with nodev, so let's create a
+        # new tmpfs mount for /dev.
+        devpath = os.path.join(tests_root[1], "dev")
+        os.mkdir(devpath)
+        # zdtm wants to create files on this mount. User namespace tests are
+        # running with custom user and group mappings.
+        subprocess.check_call(["mount", "-t", "tmpfs", "criu-test-dev", devpath])
+        os.chmod(devpath, 0o777)
+    os.chmod(tests_root[1], 0o755)
+    os.chmod(os.path.join(tests_root[1], "root"), 0o755)
+    return os.path.join(tests_root[1], "root", "root"), os.path.join(tests_root[1], "dev")
 
 
 # Report generation
@@ -174,15 +201,16 @@ class host_flavor:
 
 class ns_flavor:
     __root_dirs = [
-        "/bin", "/sbin", "/etc", "/lib", "/lib64", "/dev", "/dev/pts",
-        "/dev/net", "/tmp", "/usr", "/proc", "/run"
+        "/bin", "/sbin", "/etc", "/lib", "/lib64", "/dev",
+        "/tmp", "/usr", "/proc", "/run"
     ]
+    __dev_dirs = ["pts", "net"]
 
     def __init__(self, opts):
         self.name = "ns"
         self.ns = True
         self.uns = False
-        self.root = make_tests_root()
+        self.root, self.devpath = make_tests_root()
         self.root_mounted = False
 
     def __copy_one(self, fname):
@@ -228,16 +256,19 @@ class ns_flavor:
             self.__copy_one(lib)
 
     def __mknod(self, name, rdev=None):
-        name = "/dev/" + name
+        tdev = stat.S_IFCHR
         if not rdev:
-            if not os.access(name, os.F_OK):
+            if not os.access(os.path.join("/dev", name), os.F_OK):
                 print("Skipping %s at root" % name)
                 return
             else:
-                rdev = os.stat(name).st_rdev
+                s = os.stat(os.path.join("/dev", name))
+                rdev = s.st_rdev
+                if stat.S_ISBLK(s.st_mode):
+                    tdev = stat.S_IFBLK
 
-        name = self.root + name
-        os.mknod(name, stat.S_IFCHR, rdev)
+        name = os.path.join(self.devpath, name)
+        os.mknod(name, tdev, rdev)
         os.chmod(name, 0o666)
 
     def __construct_root(self):
@@ -248,11 +279,18 @@ class ns_flavor:
         for ldir in ["/bin", "/sbin", "/lib", "/lib64"]:
             os.symlink(".." + ldir, self.root + "/usr" + ldir)
 
+    def __construct_dev(self):
+        for dir in self.__dev_dirs:
+            os.mkdir(os.path.join(self.devpath, dir))
+            os.chmod(os.path.join(self.devpath, dir), 0o755)
         self.__mknod("tty", os.makedev(5, 0))
         self.__mknod("null", os.makedev(1, 3))
         self.__mknod("net/tun")
         self.__mknod("rtc")
         self.__mknod("autofs", os.makedev(10, 235))
+        ext_dev = os.getenv("ZDTM_MNT_EXT_DEV")
+        if ext_dev:
+            self.__mknod(os.path.basename(ext_dev))
 
     def __copy_deps(self, deps):
         for d in deps.split('|'):
@@ -275,6 +313,9 @@ class ns_flavor:
                     self.__construct_root()
                     os.mknod(self.root + "/.constructed", stat.S_IFREG | 0o600)
 
+        if not os.access(self.devpath + "/.constructed", os.F_OK):
+            self.__construct_dev()
+            os.mknod(self.devpath + "/.constructed", stat.S_IFREG | 0o600)
         for b in l_bins:
             self.__copy_libs(b)
         for b in x_bins:
@@ -472,6 +513,7 @@ class zdtm_test:
         if self.__flavor.ns:
             env['ZDTM_NEWNS'] = "1"
             env['ZDTM_ROOT'] = self.__flavor.root
+            env['ZDTM_DEV'] = self.__flavor.devpath
             env['PATH'] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
             if self.__flavor.uns:
@@ -579,12 +621,18 @@ class zdtm_test:
         return opts
 
     def getdopts(self):
-        return self.__getcropts() + self.__freezer.getdopts(
-        ) + self.__desc.get('dopts', '').split()
+        opts = self.__getcropts() + self.__freezer.getdopts() + \
+            self.__desc.get('dopts', '').split()
+        if self.__flavor.ns:
+            opts += ["--external", "mnt[/dev]:ZDTM_DEV"]
+        return opts
 
     def getropts(self):
-        return self.__getcropts() + self.__freezer.getropts(
-        ) + self.__desc.get('ropts', '').split()
+        opts = self.__getcropts() + self.__freezer.getropts() + \
+            self.__desc.get('ropts', '').split()
+        if self.__flavor.ns:
+            opts += ["--external", "mnt[ZDTM_DEV]:%s" % self.__flavor.devpath]
+        return opts
 
     def unlink_pidfile(self):
         self.__pid = 0
@@ -628,6 +676,16 @@ class zdtm_test:
                 ["make", "zdtm_ct"], env=dict(os.environ, MAKEFLAGS=""))
         if not os.access("zdtm/lib/libzdtmtst.a", os.F_OK):
             subprocess.check_call(["make", "-C", "zdtm/"])
+        if 'preload_libfault' in opts and opts['preload_libfault']:
+            subprocess.check_call(["make", "-C", "libfault/"])
+
+        subprocess.check_call(["make", '--no-print-directory', "-C", "plugins/", "clean"])
+        if 'criu_plugin' in opts and opts['criu_plugin']:
+            for name in opts['criu_plugin']:
+                subprocess.check_call(["make", '--no-print-directory', "-C", "plugins/", f"{name}_plugin.so"])
+
+        if 'mocked_cuda_checkpoint' in opts and opts['mocked_cuda_checkpoint']:
+            subprocess.check_call(["make", "-C", "cuda-checkpoint/"])
         if 'rootless' in opts and opts['rootless']:
             return
         subprocess.check_call(
@@ -880,15 +938,21 @@ class criu_cli:
             fault=None,
             strace=[],
             preexec=None,
+            preload_libfault=False,
             nowait=False,
             timeout=60):
         env = dict(
             os.environ,
-            ASAN_OPTIONS="log_path=asan.log:disable_coredump=0:detect_leaks=0")
+            ASAN_OPTIONS="log_path=asan.log:disable_coredump=0:detect_leaks=0",
+            CRIU_LIBS_DIR=PLUGINS_DIR
+        )
 
         if fault:
             print("Forcing %s fault" % fault)
             env['CRIU_FAULT'] = fault
+
+        if preload_libfault:
+            env['LD_PRELOAD'] = LIBFAULT_PATH
 
         cr = subprocess.Popen(strace +
                               [criu_bin, action, "--no-default-config"] + args,
@@ -898,6 +962,10 @@ class criu_cli:
         if nowait:
             return cr
         return cr.wait(timeout=timeout)
+
+    @staticmethod
+    def exit_signal(ret):
+        return ret < 0
 
 
 class criu_rpc_process:
@@ -980,6 +1048,7 @@ class criu_rpc:
             fault=None,
             strace=[],
             preexec=None,
+            preload_libfault=False,
             nowait=False,
             timeout=None):
         if fault:
@@ -1018,8 +1087,11 @@ class criu_rpc:
             else:
                 raise test_fail_exc('RPC for %s required' % action)
         except crpc.CRIUExceptionExternal as e:
-            print("Fail", e)
-            ret = -1
+            if e.typ != e.resp_typ:
+                ret = -2
+            else:
+                print("Fail", e)
+                ret = -1
         else:
             ret = 0
 
@@ -1031,6 +1103,10 @@ class criu_rpc:
             return p
 
         return ret
+
+    @staticmethod
+    def exit_signal(ret):
+        return ret == -2
 
 
 class criu:
@@ -1065,7 +1141,9 @@ class criu:
         self.__criu_bin = opts['criu_bin']
         self.__crit_bin = opts['crit_bin']
         self.__pre_dump_mode = opts['pre_dump_mode']
+        self.__preload_libfault = bool(opts['preload_libfault'])
         self.__mntns_compat_mode = bool(opts['mntns_compat_mode'])
+        self.__cuda_checkpoint = bool(opts['mocked_cuda_checkpoint'])
 
         if opts['rpc']:
             self.__criu = criu_rpc
@@ -1148,6 +1226,9 @@ class criu:
         s_args = ["--log-file", log, "--images-dir", self.__ddir(),
                   "--verbosity=4"] + opts
 
+        if self.__cuda_checkpoint:
+            s_args += [ "--libdir" , os.path.join(os.getcwd(), "..", "plugins", "cuda") ]
+
         with open(os.path.join(self.__ddir(), action + '.cropt'), 'w') as f:
             f.write(' '.join(s_args) + '\n')
 
@@ -1192,8 +1273,10 @@ class criu:
         with open("/proc/sys/kernel/ns_last_pid") as ns_last_pid_fd:
             ns_last_pid = ns_last_pid_fd.read()
 
+        preload_libfault = self.__preload_libfault and action in ['dump', 'pre-dump', 'restore']
+
         ret = self.__criu.run(action, s_args, self.__criu_bin, self.__fault,
-                              strace, preexec, nowait)
+                              strace, preexec, preload_libfault, nowait)
 
         if nowait:
             os.close(status_fds[1])
@@ -1233,8 +1316,8 @@ class criu:
                     return
             rst_succeeded = os.access(
                 os.path.join(__ddir, "restore-succeeded"), os.F_OK)
-            if self.__test.blocking() or (self.__sat and action == 'restore' and
-                                          rst_succeeded):
+            if (self.__test.blocking() and not self.__criu.exit_signal(ret)) or \
+               (self.__sat and action == 'restore' and rst_succeeded):
                 raise test_fail_expected_exc(action)
             else:
                 raise test_fail_exc("CRIU %s" % action)
@@ -2083,7 +2166,7 @@ class Launcher:
               'dedup', 'sbs', 'freezecg', 'user', 'dry_run', 'noauto_dedup',
               'remote_lazy_pages', 'show_stats', 'lazy_migrate', 'stream',
               'tls', 'criu_bin', 'crit_bin', 'pre_dump_mode', 'mntns_compat_mode',
-              'rootless')
+              'rootless', 'preload_libfault', 'mocked_cuda_checkpoint')
         arg = repr((name, desc, flavor, {d: self.__opts[d] for d in nd}))
 
         if self.__use_log:
@@ -2096,8 +2179,11 @@ class Launcher:
         if opts['rootless'] and os.getuid() == 0:
             os.setgid(NON_ROOT_UID)
             os.setuid(NON_ROOT_UID)
+        env = dict(os.environ, CR_CT_TEST_INFO=arg)
+        if opts['mocked_cuda_checkpoint']:
+            env['PATH'] = os.path.join(os.getcwd(), "cuda-checkpoint") + ":" + env["PATH"]
         sub = subprocess.Popen(["./zdtm_ct", "zdtm.py"],
-                               env=dict(os.environ, CR_CT_TEST_INFO=arg),
+                               env=env,
                                stdout=log,
                                stderr=subprocess.STDOUT,
                                close_fds=True)
@@ -2788,6 +2874,15 @@ def get_cli_args():
                     help="Select tests for a shard <index> (0-based)")
     rp.add_argument("--test-shard-count", type=int, default=0,
                     help="Specify how many shards are being run (0=sharding disabled; must be the same for all shards)")
+    rp.add_argument("--preload-libfault", action="store_true", help="Run criu with library preload to simulate special cases")
+    rp.add_argument("--criu-plugin",
+                    help="Run tests with CRIU plugin",
+                    choices=['amdgpu', 'cuda', 'inventory_test_enabled', 'inventory_test_disabled'],
+                    nargs='+',
+                    default=None)
+    rp.add_argument("--mocked-cuda-checkpoint",
+                    action="store_true",
+                    help="Run criu with the cuda plugin and the mocked cuda-checkpoint tool")
 
     lp = sp.add_parser("list", help="List tests")
     lp.set_defaults(action=list_tests)

@@ -26,6 +26,15 @@ bool img_common_magic = true;
 TaskKobjIdsEntry *root_ids;
 u32 root_cg_set;
 Lsmtype image_lsm;
+char dump_criu_run_id[RUN_ID_HASH_LENGTH];
+
+struct inventory_plugin {
+	struct list_head node;
+	char *name;
+};
+
+struct list_head inventory_plugins_list = LIST_HEAD_INIT(inventory_plugins_list);
+static int n_inventory_plugins;
 
 int check_img_inventory(bool restore)
 {
@@ -100,6 +109,37 @@ int check_img_inventory(bool restore)
 		} else {
 			opts.network_lock_method = he->network_lock_method;
 		}
+
+		if (!he->plugins_entry) {
+			/* backwards compatibility: if the 'plugins_entry' field is missing,
+			 * all plugins should be enabled during restore.
+			 */
+			n_inventory_plugins = -1;
+		} else {
+			PluginsEntry *pe = he->plugins_entry;
+			for (int i = 0; i < pe->n_plugins; i++) {
+				if (add_inventory_plugin(pe->plugins[i]))
+					goto out_err;
+			}
+		}
+
+		/**
+		 * This contains the criu_run_id during dumping of the process.
+		 * For things like removing network locking (nftables) this
+		 * information is needed to identify the name of the network
+		 * locking table.
+		 */
+		if (he->dump_criu_run_id) {
+			strncpy(dump_criu_run_id, he->dump_criu_run_id, sizeof(dump_criu_run_id) - 1);
+			pr_info("Dump CRIU run id = %s\n", dump_criu_run_id);
+		} else {
+			/**
+			 * If restoring from an old image this is a marker
+			 * that no dump_criu_run_id exists.
+			 */
+			dump_criu_run_id[0] = NO_DUMP_CRIU_RUN_ID;
+		}
+
 	}
 
 	ret = 0;
@@ -111,8 +151,92 @@ out_close:
 	return ret;
 }
 
+/**
+ * Check if the 'plugins' field in the inventory image contains
+ * the specified plugin name. If found, the plugin is removed
+ * from the linked list.
+ */
+bool check_and_remove_inventory_plugin(const char *name, size_t n)
+{
+	if (n_inventory_plugins == -1)
+		return true; /* backwards compatibility */
+
+	if (n_inventory_plugins > 0) {
+		struct inventory_plugin *p, *tmp;
+
+		list_for_each_entry_safe(p, tmp, &inventory_plugins_list, node) {
+			if (!strncmp(name, p->name, n)) {
+				xfree(p->name);
+				list_del(&p->node);
+				xfree(p);
+				n_inventory_plugins--;
+				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+/**
+ * We expect during restore all loaded plugins to be removed from
+ * the inventory_plugins_list. If the list is not empty, show an
+ * error message for each missing plugin.
+ */
+int check_inventory_plugins(void)
+{
+	struct inventory_plugin *p;
+
+	if (n_inventory_plugins <= 0)
+		return 0;
+
+	list_for_each_entry(p, &inventory_plugins_list, node) {
+		pr_err("Missing required plugin: %s\n", p->name);
+	}
+
+	return -1;
+}
+
+/**
+ * Add plugin name to the inventory image. These values
+ * can be used to identify required plugins during restore.
+ */
+int add_inventory_plugin(const char *name)
+{
+	struct inventory_plugin *p;
+
+	p = xmalloc(sizeof(struct inventory_plugin));
+	if (p == NULL)
+		return -1;
+
+	p->name = xstrdup(name);
+	if (!p->name) {
+		xfree(p);
+		return -1;
+	}
+	list_add(&p->node, &inventory_plugins_list);
+	n_inventory_plugins++;
+
+	return 0;
+}
+
+void free_inventory_plugins_list(void)
+{
+	struct inventory_plugin *p, *tmp;
+
+	if (!list_empty(&inventory_plugins_list)) {
+		list_for_each_entry_safe(p, tmp, &inventory_plugins_list, node) {
+			xfree(p->name);
+			list_del(&p->node);
+			xfree(p);
+		}
+	}
+	n_inventory_plugins = 0;
+}
+
 int write_img_inventory(InventoryEntry *he)
 {
+	PluginsEntry pe = PLUGINS_ENTRY__INIT;
 	struct cr_img *img;
 	int ret;
 
@@ -122,7 +246,26 @@ int write_img_inventory(InventoryEntry *he)
 	if (!img)
 		return -1;
 
+	if (!list_empty(&inventory_plugins_list)) {
+		struct inventory_plugin *p;
+		int i = 0;
+
+		pe.n_plugins = n_inventory_plugins;
+		pe.plugins = xmalloc(n_inventory_plugins * sizeof(char *));
+		if (!pe.plugins)
+			return -1;
+
+		list_for_each_entry(p, &inventory_plugins_list, node) {
+			pe.plugins[i] = p->name;
+			i++;
+		}
+	}
+	he->plugins_entry = &pe;
+
 	ret = pb_write_one(img, he, PB_INVENTORY);
+
+	free_inventory_plugins_list();
+	xfree(pe.plugins);
 
 	xfree(he->root_ids);
 	close_image(img);
@@ -243,6 +386,17 @@ int prepare_inventory(InventoryEntry *he)
 	/* Save network lock method to reuse in restore */
 	he->has_network_lock_method = true;
 	he->network_lock_method = opts.network_lock_method;
+
+	/**
+	 * This contains the criu_run_id during dumping of the process.
+	 * For things like removing network locking (nftables) this
+	 * information is needed to identify the name of the network
+	 * locking table.
+	 */
+	he->dump_criu_run_id = xstrdup(criu_run_id);
+
+	if (!he->dump_criu_run_id)
+		return -1;
 
 	return 0;
 }

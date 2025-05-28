@@ -9,7 +9,6 @@
 #include "common/compiler.h"
 #include "types.h"
 #include "protobuf.h"
-#include "images/sa.pb-c.h"
 #include "images/timer.pb-c.h"
 #include "images/creds.pb-c.h"
 #include "images/core.pb-c.h"
@@ -104,16 +103,19 @@ static int alloc_groups_copy_creds(CredsEntry *ce, struct parasite_dump_creds *c
 	BUILD_BUG_ON(sizeof(ce->cap_prm[0]) != sizeof(c->cap_prm[0]));
 	BUILD_BUG_ON(sizeof(ce->cap_eff[0]) != sizeof(c->cap_eff[0]));
 	BUILD_BUG_ON(sizeof(ce->cap_bnd[0]) != sizeof(c->cap_bnd[0]));
+	BUILD_BUG_ON(sizeof(ce->cap_amb[0]) != sizeof(c->cap_amb[0]));
 
 	BUG_ON(ce->n_cap_inh != CR_CAP_SIZE);
 	BUG_ON(ce->n_cap_prm != CR_CAP_SIZE);
 	BUG_ON(ce->n_cap_eff != CR_CAP_SIZE);
 	BUG_ON(ce->n_cap_bnd != CR_CAP_SIZE);
+	BUG_ON(ce->n_cap_amb != CR_CAP_SIZE);
 
 	memcpy(ce->cap_inh, c->cap_inh, sizeof(c->cap_inh[0]) * CR_CAP_SIZE);
 	memcpy(ce->cap_prm, c->cap_prm, sizeof(c->cap_prm[0]) * CR_CAP_SIZE);
 	memcpy(ce->cap_eff, c->cap_eff, sizeof(c->cap_eff[0]) * CR_CAP_SIZE);
 	memcpy(ce->cap_bnd, c->cap_bnd, sizeof(c->cap_bnd[0]) * CR_CAP_SIZE);
+	memcpy(ce->cap_amb, c->cap_amb, sizeof(c->cap_amb[0]) * CR_CAP_SIZE);
 
 	if (c->no_new_privs > 0) {
 		ce->no_new_privs = c->no_new_privs;
@@ -226,206 +228,6 @@ int parasite_dump_thread_seized(struct parasite_thread_ctl *tctl, struct parasit
 
 	tid->ns[0].virt = args->tid;
 	return dump_thread_core(pid, core, args);
-}
-
-int parasite_dump_sigacts_seized(struct parasite_ctl *ctl, struct pstree_item *item)
-{
-	TaskCoreEntry *tc = item->core[0]->tc;
-	struct parasite_dump_sa_args *args;
-	int ret, sig;
-	SaEntry *sa, **psa;
-
-	args = compel_parasite_args(ctl, struct parasite_dump_sa_args);
-
-	ret = compel_rpc_call_sync(PARASITE_CMD_DUMP_SIGACTS, ctl);
-	if (ret < 0)
-		return ret;
-
-	psa = xmalloc((SIGMAX - 2) * (sizeof(SaEntry *) + sizeof(SaEntry)));
-	if (!psa)
-		return -1;
-
-	sa = (SaEntry *)(psa + SIGMAX - 2);
-
-	tc->n_sigactions = SIGMAX - 2;
-	tc->sigactions = psa;
-
-	for (sig = 1; sig <= SIGMAX; sig++) {
-		int i = sig - 1;
-
-		if (sig == SIGSTOP || sig == SIGKILL)
-			continue;
-
-		sa_entry__init(sa);
-		ASSIGN_TYPED(sa->sigaction, encode_pointer(args->sas[i].rt_sa_handler));
-		ASSIGN_TYPED(sa->flags, args->sas[i].rt_sa_flags);
-		ASSIGN_TYPED(sa->restorer, encode_pointer(args->sas[i].rt_sa_restorer));
-#ifdef CONFIG_MIPS
-		sa->has_mask_extended = 1;
-		BUILD_BUG_ON(sizeof(sa->mask) * 2 != sizeof(args->sas[0].rt_sa_mask.sig));
-		memcpy(&sa->mask, &(args->sas[i].rt_sa_mask.sig[0]), sizeof(sa->mask));
-		memcpy(&sa->mask_extended, &(args->sas[i].rt_sa_mask.sig[1]), sizeof(sa->mask));
-#else
-		BUILD_BUG_ON(sizeof(sa->mask) != sizeof(args->sas[0].rt_sa_mask.sig));
-		memcpy(&sa->mask, args->sas[i].rt_sa_mask.sig, sizeof(sa->mask));
-#endif
-		sa->has_compat_sigaction = true;
-		sa->compat_sigaction = !compel_mode_native(ctl);
-
-		*(psa++) = sa++;
-	}
-
-	return 0;
-}
-
-static void encode_itimer(struct itimerval *v, ItimerEntry *ie)
-{
-	ie->isec = v->it_interval.tv_sec;
-	ie->iusec = v->it_interval.tv_usec;
-	ie->vsec = v->it_value.tv_sec;
-	ie->vusec = v->it_value.tv_usec;
-}
-
-int parasite_dump_itimers_seized(struct parasite_ctl *ctl, struct pstree_item *item)
-{
-	CoreEntry *core = item->core[0];
-	struct parasite_dump_itimers_args *args;
-	int ret;
-
-	args = compel_parasite_args(ctl, struct parasite_dump_itimers_args);
-
-	ret = compel_rpc_call_sync(PARASITE_CMD_DUMP_ITIMERS, ctl);
-	if (ret < 0)
-		return ret;
-
-	encode_itimer((&args->real), (core->tc->timers->real));
-	encode_itimer((&args->virt), (core->tc->timers->virt));
-	encode_itimer((&args->prof), (core->tc->timers->prof));
-
-	return 0;
-}
-
-static int core_alloc_posix_timers(TaskTimersEntry *tte, int n, PosixTimerEntry **pte)
-{
-	int sz;
-
-	/*
-	 * Will be free()-ed in core_entry_free()
-	 */
-
-	sz = n * (sizeof(PosixTimerEntry *) + sizeof(PosixTimerEntry));
-	tte->posix = xmalloc(sz);
-	if (!tte->posix)
-		return -1;
-
-	tte->n_posix = n;
-	*pte = (PosixTimerEntry *)(tte->posix + n);
-	return 0;
-}
-
-static int encode_notify_thread_id(pid_t rtid, struct pstree_item *item, PosixTimerEntry *pte)
-{
-	pid_t vtid = 0;
-	int i;
-
-	if (rtid == 0)
-		return 0;
-
-	if (!(root_ns_mask & CLONE_NEWPID)) {
-		/* Non-pid-namespace case */
-		pte->notify_thread_id = rtid;
-		pte->has_notify_thread_id = true;
-		return 0;
-	}
-
-	/* Pid-namespace case */
-	if (!kdat.has_nspid) {
-		pr_err("Have no NSpid support to dump notify thread id in pid namespace\n");
-		return -1;
-	}
-
-	for (i = 0; i < item->nr_threads; i++) {
-		if (item->threads[i].real != rtid)
-			continue;
-
-		vtid = item->threads[i].ns[0].virt;
-		break;
-	}
-
-	if (vtid == 0) {
-		pr_err("Unable to convert the notify thread id %d\n", rtid);
-		return -1;
-	}
-
-	pte->notify_thread_id = vtid;
-	pte->has_notify_thread_id = true;
-	return 0;
-}
-
-static int encode_posix_timer(struct pstree_item *item, struct posix_timer *v, struct proc_posix_timer *vp,
-			      PosixTimerEntry *pte)
-{
-	pte->it_id = vp->spt.it_id;
-	pte->clock_id = vp->spt.clock_id;
-	pte->si_signo = vp->spt.si_signo;
-	pte->it_sigev_notify = vp->spt.it_sigev_notify;
-	pte->sival_ptr = encode_pointer(vp->spt.sival_ptr);
-
-	pte->overrun = v->overrun;
-
-	pte->isec = v->val.it_interval.tv_sec;
-	pte->insec = v->val.it_interval.tv_nsec;
-	pte->vsec = v->val.it_value.tv_sec;
-	pte->vnsec = v->val.it_value.tv_nsec;
-
-	if (encode_notify_thread_id(vp->spt.notify_thread_id, item, pte))
-		return -1;
-
-	return 0;
-}
-
-int parasite_dump_posix_timers_seized(struct proc_posix_timers_stat *proc_args, struct parasite_ctl *ctl,
-				      struct pstree_item *item)
-{
-	CoreEntry *core = item->core[0];
-	TaskTimersEntry *tte = core->tc->timers;
-	PosixTimerEntry *pte;
-	struct proc_posix_timer *temp;
-	struct parasite_dump_posix_timers_args *args;
-	int ret, exit_code = -1;
-	int args_size;
-	int i;
-
-	if (core_alloc_posix_timers(tte, proc_args->timer_n, &pte))
-		return -1;
-
-	args_size = posix_timers_dump_size(proc_args->timer_n);
-	args = compel_parasite_args_s(ctl, args_size);
-	args->timer_n = proc_args->timer_n;
-
-	i = 0;
-	list_for_each_entry(temp, &proc_args->timers, list) {
-		args->timer[i].it_id = temp->spt.it_id;
-		i++;
-	}
-
-	ret = compel_rpc_call_sync(PARASITE_CMD_DUMP_POSIX_TIMERS, ctl);
-	if (ret < 0)
-		goto end_posix;
-
-	i = 0;
-	list_for_each_entry(temp, &proc_args->timers, list) {
-		posix_timer_entry__init(&pte[i]);
-		if (encode_posix_timer(item, &args->timer[i], temp, &pte[i]))
-			goto end_posix;
-		tte->posix[i] = &pte[i];
-		i++;
-	}
-
-	exit_code = 0;
-end_posix:
-	free_posix_timers(proc_args);
-	return exit_code;
 }
 
 int parasite_dump_misc_seized(struct parasite_ctl *ctl, struct parasite_dump_misc *misc)

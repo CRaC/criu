@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include "criu-log.h"
 #include "fault-injection.h"
+#include "seize.h"
 
 enum faults fi_strategy;
 
@@ -21,5 +22,13 @@ int fault_injection_init(void)
 	}
 
 	fi_strategy = start;
+
+	switch (fi_strategy) {
+	case FI_COMPEL_INTERRUPT_ONLY_MODE:
+		set_compel_interrupt_only_mode();
+		break;
+	default:
+		break;
+	};
 	return 0;
 }

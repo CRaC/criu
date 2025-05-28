@@ -21,6 +21,8 @@
 #include "log.h"
 #include "common/err.h"
 
+#include "compel/infect-util.h"
+
 #define PREF_SHIFT_OP(pref, op, size) ((size)op(pref##BYTES_SHIFT))
 #define KBYTES_SHIFT		      10
 #define MBYTES_SHIFT		      20
@@ -170,6 +172,7 @@ extern pid_t fork_and_ptrace_attach(int (*child_setup)(void));
 extern int cr_daemon(int nochdir, int noclose, int close_fd);
 extern int status_ready(void);
 extern int is_root_user(void);
+extern int close_fds(int minfd);
 
 extern int set_proc_self_fd(int fd);
 
@@ -386,6 +389,11 @@ static inline void print_stack_trace(pid_t pid)
 
 extern int mount_detached_fs(const char *fsname);
 
+extern int cr_fsopen(const char *fsname, unsigned int flags);
+extern int cr_fsconfig(int fd, unsigned int cmd, const char *key, const char *value, int aux);
+extern int cr_fsmount(int fd, unsigned int flags, unsigned int attr_flags);
+extern void fsfd_dump_messages(int fd);
+
 extern char *get_legacy_iptables_bin(bool ipv6, bool restore);
 
 extern int set_opts_cap_eff(void);
@@ -400,15 +408,27 @@ static inline void cleanup_freep(void *p)
 	free(*pp);
 }
 
+#define cleanup_file __attribute__((cleanup(cleanup_filep)))
+static inline void cleanup_filep(FILE **f)
+{
+	FILE *file = *f;
+	if (file)
+		(void)fclose(file);
+}
+
 extern int run_command(char *buf, size_t buf_size, int (*child_fn)(void *), void *args);
 
 /*
  * criu_run_id is a unique value of the current run. It can be used to
  * generate resource ID-s to avoid conflicts with other CRIU processes.
  */
-extern uint64_t criu_run_id;
+extern char criu_run_id[RUN_ID_HASH_LENGTH];
 extern void util_init(void);
+#define NO_DUMP_CRIU_RUN_ID 0x7f
+extern char dump_criu_run_id[RUN_ID_HASH_LENGTH];
 
 extern char *resolve_mountpoint(char *path);
+
+extern int cr_close_range(unsigned int fd, unsigned int max_fd, unsigned int flags);
 
 #endif /* __CR_UTIL_H__ */

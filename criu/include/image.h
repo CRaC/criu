@@ -35,6 +35,8 @@
  *  - stack
  *  	the memory area is used in application stack so we
  *  	should be careful about guard page here
+ *  - shadow stack
+ *      the memory area is used by shadow stack
  *  - vsyscall
  *  	special memory area injected into the task memory
  *  	space by the kernel itself, represent virtual syscall
@@ -84,6 +86,7 @@
 #define VMA_AREA_VVAR	 (1 << 12)
 #define VMA_AREA_AIORING (1 << 13)
 #define VMA_AREA_MEMFD	 (1 << 14)
+#define VMA_AREA_SHSTK	 (1 << 15)
 
 #define VMA_EXT_PLUGIN	  (1 << 27)
 #define VMA_CLOSE	  (1 << 28)
@@ -173,5 +176,9 @@ extern int read_img_buf(struct cr_img *, void *ptr, int size);
 extern int read_img_str(struct cr_img *, char **pstr, int size);
 
 extern void close_image(struct cr_img *);
+
+extern int add_inventory_plugin(const char *name);
+extern int check_inventory_plugins(void);
+extern bool check_and_remove_inventory_plugin(const char *name, size_t n);
 
 #endif /* __CR_IMAGE_H__ */

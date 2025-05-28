@@ -54,6 +54,7 @@
 #include "memfd.h"
 #include "mount-v2.h"
 #include "util-caps.h"
+#include "pagemap_scan.h"
 
 struct kerndat_s kdat = {};
 volatile int dummy_var;
@@ -62,6 +63,14 @@ static int check_pagemap(void)
 {
 	int ret, fd, retry;
 	u64 pfn = 0;
+	struct pm_scan_arg args = {
+		.size = sizeof(struct pm_scan_arg),
+		.flags = 0,
+		.category_inverted = PAGE_IS_PFNZERO | PAGE_IS_FILE,
+		.category_mask = PAGE_IS_PFNZERO | PAGE_IS_FILE,
+		.category_anyof_mask = PAGE_IS_PRESENT | PAGE_IS_SWAPPED,
+		.return_mask = PAGE_IS_PRESENT | PAGE_IS_SWAPPED | PAGE_IS_SOFT_DIRTY,
+	};
 
 	fd = __open_proc(PROC_SELF, EPERM, O_RDONLY, "pagemap");
 	if (fd < 0) {
@@ -72,6 +81,21 @@ static int check_pagemap(void)
 		}
 
 		return -1;
+	}
+
+	if (ioctl(fd, PAGEMAP_SCAN, &args) == 0) {
+		pr_debug("PAGEMAP_SCAN is supported\n");
+		kdat.has_pagemap_scan = true;
+	} else {
+		switch (errno) {
+		case EINVAL:
+		case ENOTTY:
+			pr_debug("PAGEMAP_SCAN isn't supported\n");
+			break;
+		default:
+			pr_perror("PAGEMAP_SCAN failed with unexpected errno");
+			return -1;
+		}
 	}
 
 	retry = 3;
@@ -622,7 +646,7 @@ static int kerndat_loginuid(void)
 static int kerndat_iptables_has_xtlocks(void)
 {
 	int fd;
-	char *argv[4] = { "sh", "-c", "iptables -w -L", NULL };
+	char *argv[4] = { "sh", "-c", "iptables -n -w -L", NULL };
 
 	fd = open("/dev/null", O_RDWR);
 	if (fd < 0) {
@@ -810,7 +834,7 @@ static int kerndat_detect_stack_guard_gap(void)
 		 * (see kernel commit 1be7107fbe18ee).
 		 *
 		 * Same time there was semi-complete
-		 * patch released which hitted a number
+		 * patch released which hit a number
 		 * of repos (Ubuntu, Fedora) where instead
 		 * of PAGE_SIZE the 1M gap is cut off.
 		 */
@@ -1134,6 +1158,24 @@ static int kerndat_has_openat2(void)
 		kdat.has_openat2 = true;
 	}
 
+	return 0;
+}
+
+int __attribute__((weak)) kdat_has_shstk(void)
+{
+	return 0;
+}
+
+static int kerndat_has_shstk(void)
+{
+	int ret = kdat_has_shstk();
+
+	if (ret < 0) {
+		pr_err("kdat_has_shstk failed\n");
+		return ret;
+	}
+
+	kdat.has_shstk = !!ret;
 	return 0;
 }
 
@@ -1575,7 +1617,9 @@ static int __has_nftables_concat(void *arg)
 		return 1;
 
 	if (NFT_RUN_CMD(nft, "create table inet CRIU")) {
-		pr_err("Can't create nftables table\n");
+		pr_warn("Can't create nftables table\n");
+		*has = false; /* kdat.has_nftables_concat = false */
+		ret = 0;
 		goto nft_ctx_free_out;
 	}
 
@@ -1670,6 +1714,27 @@ static int kerndat_has_membarrier_get_registrations(void)
 	return 0;
 }
 
+static int kerndat_has_close_range(void)
+{
+	/* fd is greater than max_fd, so close_range should return EINVAL. */
+	if (cr_close_range(2, 1, 0) == 0) {
+		pr_err("close_range succeeded unexpectedly\n");
+		return -1;
+	}
+
+	if (errno == ENOSYS) {
+		pr_debug("close_range isn't supported\n");
+		return 0;
+	}
+	if (errno != EINVAL) {
+		pr_perror("close_range returned unexpected error code");
+		return -1;
+	}
+
+	kdat.has_close_range = true;
+	return 0;
+}
+
 /*
  * Some features depend on resource that can be dynamically changed
  * at the OS runtime. There are cases that we cannot determine the
@@ -1693,6 +1758,12 @@ int kerndat_try_load_new(void)
 	ret = kerndat_has_ptrace_get_rseq_conf();
 	if (ret < 0) {
 		pr_err("kerndat_has_ptrace_get_rseq_conf failed when initializing kerndat.\n");
+		return ret;
+	}
+
+	ret = kerndat_has_shstk();
+	if (ret < 0) {
+		pr_err("kerndat_has_shstk failed when initializing kerndat.\n");
 		return ret;
 	}
 
@@ -1915,6 +1986,14 @@ int kerndat_init(void)
 	}
 	if (!ret && kerndat_has_membarrier_get_registrations()) {
 		pr_err("kerndat_has_membarrier_get_registrations failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_shstk()) {
+		pr_err("kerndat_has_shstk failed when initializing kerndat.\n");
+		ret = -1;
+	}
+	if (!ret && kerndat_has_close_range()) {
+		pr_err("kerndat_has_close_range has failed when initializing kerndat.\n");
 		ret = -1;
 	}
 

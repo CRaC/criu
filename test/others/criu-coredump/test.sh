@@ -43,5 +43,12 @@ function run_test {
 	echo "= done"
 }
 
+UNAME_M=$(uname -m)
+
+if [[ "$UNAME_M" != "aarch64" && "$UNAME_M" != "armv7l" &&"$UNAME_M" != "x86_64" ]]; then
+	echo "criu-coredump only supports aarch64 armv7l, and x86_64. skipping."
+	exit 0
+fi
+
 gen_imgs
 run_test

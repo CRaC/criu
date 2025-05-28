@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <inttypes.h>
 #include <stdbool.h>
 #include <unistd.h>
 #include <string.h>
@@ -324,7 +325,8 @@ static int vdso_clock_gettime_handler(void *func)
 	clock_gettime(CLOCK_REALTIME, &ts1);
 	vdso_clock_gettime(CLOCK_REALTIME, &ts2);
 
-	test_msg("clock_gettime: tv_sec %li vdso_clock_gettime: tv_sec %li\n", ts1.tv_sec, ts2.tv_sec);
+	test_msg("clock_gettime: tv_sec %" PRId64 " vdso_clock_gettime: tv_sec %" PRId64 "\n",
+		 (int64_t)ts1.tv_sec, (int64_t)ts2.tv_sec);
 
 	if (labs(ts1.tv_sec - ts2.tv_sec) > TIME_DELTA_SEC) {
 		pr_perror("Delta is too big");
@@ -354,7 +356,8 @@ static int vdso_gettimeofday_handler(void *func)
 	gettimeofday(&tv1, &tz);
 	vdso_gettimeofday(&tv2, &tz);
 
-	test_msg("gettimeofday: tv_sec %li vdso_gettimeofday: tv_sec %li\n", tv1.tv_sec, tv2.tv_sec);
+	test_msg("gettimeofday: tv_sec %" PRId64 " vdso_gettimeofday: tv_sec %" PRId64 "\n",
+		 (int64_t)tv1.tv_sec, (int64_t)tv2.tv_sec);
 
 	if (labs(tv1.tv_sec - tv2.tv_sec) > TIME_DELTA_SEC) {
 		pr_perror("Delta is too big");
@@ -372,7 +375,7 @@ static int vdso_time_handler(void *func)
 	t1 = time(NULL);
 	t2 = vdso_time(NULL);
 
-	test_msg("time: %li vdso_time: %li\n", (long)t1, (long)t1);
+	test_msg("time: %li vdso_time: %li\n", (long)t1, (long)t2);
 
 	if (labs(t1 - t2) > TIME_DELTA_SEC) {
 		pr_perror("Delta is too big");

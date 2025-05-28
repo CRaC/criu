@@ -103,6 +103,7 @@ mmap_status_map = [
     ('VMA_AREA_VVAR', 1 << 12),
     ('VMA_AREA_AIORING', 1 << 13),
     ('VMA_AREA_MEMFD', 1 << 14),
+    ('VMA_AREA_SHSTK', 1 << 15),
     ('VMA_UNSUPP', 1 << 31),
 ]
 
@@ -303,7 +304,7 @@ def _pb2dict_cast(field, value, pretty=False, is_hex=False):
         return field.enum_type.values_by_number.get(value, None).name
     elif field.type in _basic_cast:
         cast = _basic_cast[field.type]
-        if pretty and (cast == int):
+        if pretty and cast is int:
             if is_hex:
                 # Fields that have (criu).hex = true option set
                 # should be stored in hex string format.
@@ -358,7 +359,10 @@ def pb2dict(pb, pretty=False, is_hex=False):
         else:
             d_val = _pb2dict_cast(field, value, pretty, is_hex)
 
-        d[field.name] = d_val.decode() if type(d_val) == bytes else d_val
+        try:
+            d[field.name] = d_val.decode()
+        except (UnicodeDecodeError, AttributeError):
+            d[field.name] = d_val
     return d
 
 
@@ -372,7 +376,7 @@ def _dict2pb_cast(field, value):
         return field.enum_type.values_by_name.get(value, None).number
     elif field.type in _basic_cast:
         cast = _basic_cast[field.type]
-        if (cast == int) and is_string(value):
+        if cast is int and is_string(value):
             if _marked_as_dev(field):
                 return encode_dev(field, value)
 

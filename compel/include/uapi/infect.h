@@ -97,7 +97,7 @@ extern k_rtsigset_t *compel_thread_sigmask(struct parasite_thread_ctl *tctl);
 struct rt_sigframe;
 
 typedef int (*open_proc_fn)(int pid, int mode, const char *fmt, ...) __attribute__((__format__(__printf__, 3, 4)));
-typedef int (*save_regs_t)(void *, user_regs_struct_t *, user_fpregs_struct_t *);
+typedef int (*save_regs_t)(pid_t pid, void *, user_regs_struct_t *, user_fpregs_struct_t *);
 typedef int (*make_sigframe_t)(void *, struct rt_sigframe *, struct rt_sigframe *, k_rtsigset_t *);
 
 struct infect_ctx {
@@ -120,6 +120,7 @@ struct infect_ctx {
 	open_proc_fn open_proc;
 
 	int log_fd; /* fd for parasite code to send messages to */
+	unsigned long remote_map_addr; /* User-specified address where to mmap parasitic code, default not set */
 };
 
 extern struct infect_ctx *compel_infect_ctx(struct parasite_ctl *);
@@ -181,5 +182,22 @@ void compel_set_leader_ip(struct parasite_ctl *ctl, uint64_t v);
 void compel_set_thread_ip(struct parasite_thread_ctl *tctl, uint64_t v);
 
 extern void compel_get_stack(struct parasite_ctl *ctl, void **rstack, void **r_thread_stack);
+
+#ifndef compel_shstk_enabled
+static inline bool compel_shstk_enabled(user_fpregs_struct_t *ext_regs)
+{
+	return false;
+}
+#define compel_shstk_enabled
+#endif
+
+#ifndef parasite_setup_shstk
+static inline int parasite_setup_shstk(struct parasite_ctl *ctl,
+				       user_fpregs_struct_t *ext_regs)
+{
+	return 0;
+}
+#define parasite_setup_shstk parasite_setup_shstk
+#endif
 
 #endif

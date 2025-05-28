@@ -8,6 +8,7 @@ TST_NOFILE	:=				\
 		sleeping00			\
 		pid00				\
 		caps00				\
+		caps01				\
 		wait00				\
 		zombie00			\
 		zombie01			\
@@ -23,6 +24,7 @@ TST_NOFILE	:=				\
 		sse20				\
 		mprotect00			\
 		timers				\
+		timers01			\
 		timerfd				\
 		unbound_sock			\
 		sched_prio00			\
@@ -53,10 +55,18 @@ TST_NOFILE	:=				\
 		shm				\
 		shm-mp				\
 		ptrace_sig			\
+		pidfd_self			\
+		pidfd_of_thread			\
+		pidfd_dead			\
+		pidfd_diffdead			\
+		pidfd_child			\
+		pidfd_kill			\
+		fd_from_pidfd			\
 		pipe00				\
 		pipe01				\
 		pipe02				\
 		pthread00			\
+		pthread00-pac			\
 		pthread01			\
 		pthread02			\
 		pthread_timers			\
@@ -85,7 +95,8 @@ TST_NOFILE	:=				\
 		socket-tcp4v6			\
 		socket-tcp-local		\
 		socket-tcp-reuseport		\
-		socket-tcp-nfconntrack		\
+		socket-tcp-ipt-nfconntrack	\
+		socket-tcp-nft-nfconntrack	\
 		socket-tcp6-local		\
 		socket-tcp4v6-local		\
 		socket-tcpbuf			\
@@ -126,6 +137,8 @@ TST_NOFILE	:=				\
 		sock_opts02			\
 		sock_ip_opts00			\
 		sock_ip_opts01			\
+		sock_tcp_opts00			\
+		sock_tcp_opts01			\
 		sk-unix-unconn			\
 		sk-unix-unconn-seqpacket	\
 		ipc_namespace			\
@@ -277,7 +290,7 @@ pkg-config-check = $(shell sh -c '$(PKG_CONFIG) $(1) && echo y')
 ifeq ($(call pkg-config-check,libbpf),y)
 TST_NOFILE	+=				\
 		bpf_hash			\
-		bpf_array			
+		bpf_array
 endif
 
 ifneq ($(ARCH),arm)
@@ -401,6 +414,7 @@ TST_DIR		=				\
 		cgroup_ignore			\
 		cgroup_stray			\
 		cgroup_yard			\
+		cgroup_threads			\
 		unlink_fstat04			\
 		unlink_fstat041			\
 		mntns_remap			\
@@ -483,6 +497,12 @@ STATE	= $(TST_STATE:%=%.state)
 STATE_OUT	= $(TST_STATE:%=%.out)
 
 include ../Makefile.inc
+
+ifeq ($(ARCH),aarch64)
+	PAC_CFLAGS := -mbranch-protection=standard
+else
+	PAC_CFLAGS :=
+endif
 
 all:	$(TST) criu-rtc.so
 install: all
@@ -575,6 +595,8 @@ uptime_grow:		LDLIBS += -lrt -pthread
 unlink_largefile:	CFLAGS += -D_FILE_OFFSET_BITS=64 -D_LARGEFILE64_SOURCE
 inotify_system_nodel:	CFLAGS += -DNO_DEL
 pthread00:		LDLIBS += -pthread
+pthread00-pac:		CFLAGS += ${PAC_CFLAGS}
+pthread00-pac:		LDLIBS += -pthread
 pthread01:		LDLIBS += -pthread
 pthread02:		LDLIBS += -pthread
 pthread_timers:		LDLIBS += -lrt -pthread
@@ -598,7 +620,8 @@ socket-tcpbuf6-local:	CFLAGS += -D ZDTM_TCP_LOCAL -D ZDTM_IPV6
 socket-tcp6-local:	CFLAGS += -D ZDTM_TCP_LOCAL -D ZDTM_IPV6
 socket-tcp4v6-local:	CFLAGS += -D ZDTM_TCP_LOCAL -D ZDTM_IPV4V6
 socket-tcp-local:	CFLAGS += -D ZDTM_TCP_LOCAL
-socket-tcp-nfconntrack: CFLAGS += -D ZDTM_TCP_LOCAL -DZDTM_CONNTRACK
+socket-tcp-ipt-nfconntrack: CFLAGS += -D ZDTM_TCP_LOCAL -DZDTM_IPT_CONNTRACK
+socket-tcp-nft-nfconntrack: CFLAGS += -D ZDTM_TCP_LOCAL -DZDTM_NFT_CONNTRACK
 socket_listen6:		CFLAGS += -D ZDTM_IPV6
 socket_listen4v6:	CFLAGS += -D ZDTM_IPV4V6
 socket-tcp6-closed:	CFLAGS += -D ZDTM_IPV6
@@ -606,6 +629,7 @@ socket-tcp6-closed:	CFLAGS += -D ZDTM_IPV4V6
 socket-tcp-closed-last-ack:	CFLAGS += -D ZDTM_TCP_LAST_ACK
 socket-tcp-skip-in-flight:	CFLAGS += -D ZDTM_IPV4V6
 sock_ip_opts01:		CFLAGS += -DZDTM_VAL_ZERO
+sock_tcp_opts01:	CFLAGS += -DZDTM_VAL_ZERO
 tun_ns:			CFLAGS += -DTUN_NS
 mnt_ext_manual:		CFLAGS += -D ZDTM_EXTMAP_MANUAL
 mntns_pivot_root_ro:	CFLAGS += -DMNTNS_PIVOT_ROOT_RO
@@ -681,6 +705,8 @@ s390x_regs_check:	LDFLAGS += -pthread
 s390x_gs_threads:	LDFLAGS += -pthread
 
 thread_different_uid_gid:	LDLIBS += -pthread -lcap
+
+cgroup_threads:		LDFLAGS += -pthread
 
 bpf_hash:		LDLIBS += -lbpf
 bpf_array:		LDLIBS += -lbpf

@@ -15,8 +15,7 @@ DEPS_NOK 		:= ;
 __nmk_dir ?= ../../scripts/nmk/scripts/
 include $(__nmk_dir)msg.mk
 
-CC      		:= gcc
-PLUGIN_CFLAGS  		:= -g -Wall -Werror -D _GNU_SOURCE -shared -nostartfiles -fPIC -DCR_PLUGIN_DEFAULT="$(PLUGINDIR)"
+PLUGIN_CFLAGS  		:= -g -Wall -Werror -D _GNU_SOURCE -shared -nostartfiles -fPIC
 PLUGIN_LDFLAGS		:= -lpthread -lrt -ldrm -ldrm_amdgpu
 
 ifeq ($(CONFIG_AMDGPU),y)
@@ -28,7 +27,7 @@ endif
 criu-amdgpu.pb-c.c: criu-amdgpu.proto
 		protoc-c --proto_path=. --c_out=. criu-amdgpu.proto
 
-amdgpu_plugin.so: amdgpu_plugin.c amdgpu_plugin_topology.c criu-amdgpu.pb-c.c
+amdgpu_plugin.so: amdgpu_plugin.c amdgpu_plugin_drm.c amdgpu_plugin_topology.c amdgpu_plugin_util.c criu-amdgpu.pb-c.c
 	$(CC) $(PLUGIN_CFLAGS) $(shell $(COMPEL) includes) $^ -o $@ $(PLUGIN_INCLUDE) $(PLUGIN_LDFLAGS) $(LIBDRM_INC)
 
 amdgpu_plugin_clean:
@@ -54,7 +53,7 @@ install:
 ifeq ($(CONFIG_AMDGPU),y)
 	$(Q) mkdir -p $(DESTDIR)$(PLUGINDIR)
 	$(E) "  INSTALL " $(PLUGIN_NAME)
-	$(Q) install -m 644 $(PLUGIN_SOBJ) $(DESTDIR)$(PLUGINDIR)
+	$(Q) install -m 755 $(PLUGIN_SOBJ) $(DESTDIR)$(PLUGINDIR)
 endif
 .PHONY: install
 

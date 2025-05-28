@@ -135,7 +135,8 @@ void cpt_unlock_tcp_connections(void)
 static int dump_tcp_conn_state(struct inet_sk_desc *sk)
 {
 	struct libsoccr_sk *socr = sk->priv;
-	int ret, aux;
+	int exit_code = -1;
+	int ret;
 	struct cr_img *img;
 	TcpStreamEntry tse = TCP_STREAM_ENTRY__INIT;
 	char *buf;
@@ -144,11 +145,11 @@ static int dump_tcp_conn_state(struct inet_sk_desc *sk)
 	ret = libsoccr_save(socr, &data, sizeof(data));
 	if (ret < 0) {
 		pr_err("libsoccr_save() failed with %d\n", ret);
-		goto err_r;
+		goto err;
 	}
 	if (ret != sizeof(data)) {
 		pr_err("This libsocr is not supported (%d vs %d)\n", ret, (int)sizeof(data));
-		goto err_r;
+		goto err;
 	}
 
 	sk->state = data.state;
@@ -186,42 +187,21 @@ static int dump_tcp_conn_state(struct inet_sk_desc *sk)
 	}
 
 	/*
-	 * TCP socket options
-	 */
-
-	if (dump_opt(sk->rfd, SOL_TCP, TCP_NODELAY, &aux))
-		goto err_opt;
-
-	if (aux) {
-		tse.has_nodelay = true;
-		tse.nodelay = true;
-	}
-
-	if (dump_opt(sk->rfd, SOL_TCP, TCP_CORK, &aux))
-		goto err_opt;
-
-	if (aux) {
-		tse.has_cork = true;
-		tse.cork = true;
-	}
-
-	/*
 	 * Push the stuff to image
 	 */
-
 	img = open_image(CR_FD_TCP_STREAM, O_DUMP, sk->sd.ino);
 	if (!img)
-		goto err_img;
+		goto err;
 
 	ret = pb_write_one(img, &tse, PB_TCP_STREAM);
 	if (ret < 0)
-		goto err_iw;
+		goto err_close;
 
 	buf = libsoccr_get_queue_bytes(socr, TCP_RECV_QUEUE, SOCCR_MEM_EXCL);
 	if (buf) {
 		ret = write_img_buf(img, buf, tse.inq_len);
 		if (ret < 0)
-			goto err_iw;
+			goto err_close;
 
 		xfree(buf);
 	}
@@ -230,40 +210,40 @@ static int dump_tcp_conn_state(struct inet_sk_desc *sk)
 	if (buf) {
 		ret = write_img_buf(img, buf, tse.outq_len);
 		if (ret < 0)
-			goto err_iw;
+			goto err_close;
 
 		xfree(buf);
 	}
 
 	pr_info("Done\n");
-err_iw:
+	exit_code = 0;
+err_close:
 	close_image(img);
-err_img:
-err_opt:
-err_r:
+err:
+	return exit_code;
+}
+
+int dump_tcp_opts(int fd, TcpOptsEntry *toe)
+{
+	int ret = 0;
+
+	ret |= dump_opt(fd, SOL_TCP, TCP_NODELAY, &toe->nodelay);
+	ret |= dump_opt(fd, SOL_TCP, TCP_CORK, &toe->cork);
+	ret |= dump_opt(fd, SOL_TCP, TCP_KEEPCNT, &toe->keepcnt);
+	ret |= dump_opt(fd, SOL_TCP, TCP_KEEPIDLE, &toe->keepidle);
+	ret |= dump_opt(fd, SOL_TCP, TCP_KEEPINTVL, &toe->keepintvl);
+
+	toe->has_nodelay = !!toe->nodelay;
+	toe->has_cork = !!toe->cork;
+	toe->has_keepcnt = !!toe->keepcnt;
+	toe->has_keepidle = !!toe->keepidle;
+	toe->has_keepintvl = !!toe->keepintvl;
+
 	return ret;
 }
 
 int dump_one_tcp(int fd, struct inet_sk_desc *sk, SkOptsEntry *soe)
 {
-	soe->has_tcp_keepcnt = true;
-	if (dump_opt(fd, SOL_TCP, TCP_KEEPCNT, &soe->tcp_keepcnt)) {
-		pr_perror("Can't read TCP_KEEPCNT");
-		return -1;
-	}
-
-	soe->has_tcp_keepidle = true;
-	if (dump_opt(fd, SOL_TCP, TCP_KEEPIDLE, &soe->tcp_keepidle)) {
-		pr_perror("Can't read TCP_KEEPIDLE");
-		return -1;
-	}
-
-	soe->has_tcp_keepintvl = true;
-	if (dump_opt(fd, SOL_TCP, TCP_KEEPINTVL, &soe->tcp_keepintvl)) {
-		pr_perror("Can't read TCP_KEEPINTVL");
-		return -1;
-	}
-
 	if (sk->dst_port == 0)
 		return 0;
 
@@ -397,6 +377,11 @@ static int restore_tcp_conn_state(int sk, struct libsoccr_sk *socr, struct inet_
 	if (libsoccr_restore(socr, &data, sizeof(data)))
 		goto err_c;
 
+	/*
+	 * Restoring TCP socket options in TcpStreamEntry is
+	 * for backward compatibility only, newer versions
+	 * of CRIU use TcpOptsEntry.
+	 */
 	if (tse->has_nodelay && tse->nodelay) {
 		aux = 1;
 		if (restore_opt(sk, SOL_TCP, TCP_NODELAY, &aux))
@@ -447,6 +432,27 @@ int prepare_tcp_socks(struct task_restore_args *ta)
 	}
 
 	return 0;
+}
+
+int restore_tcp_opts(int sk, TcpOptsEntry *toe)
+{
+	int ret = 0;
+
+	if(!toe)
+		return ret;
+
+	if (toe->has_nodelay)
+		ret |= restore_opt(sk, SOL_TCP, TCP_NODELAY, &toe->nodelay);
+	if (toe->has_cork)
+		ret |= restore_opt(sk, SOL_TCP, TCP_CORK, &toe->cork);
+	if (toe->has_keepcnt)
+		ret |= restore_opt(sk, SOL_TCP, TCP_KEEPCNT, &toe->keepcnt);
+	if (toe->has_keepidle)
+		ret |= restore_opt(sk, SOL_TCP, TCP_KEEPIDLE, &toe->keepidle);
+	if (toe->has_keepintvl)
+		ret |= restore_opt(sk, SOL_TCP, TCP_KEEPINTVL, &toe->keepintvl);
+
+	return ret;
 }
 
 int restore_one_tcp(int fd, struct inet_sk_info *ii)

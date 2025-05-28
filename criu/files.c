@@ -49,6 +49,7 @@
 #include "kerndat.h"
 #include "fdstore.h"
 #include "bpfmap.h"
+#include "pidfd.h"
 
 #include "protobuf.h"
 #include "util.h"
@@ -545,6 +546,8 @@ static int dump_one_file(struct pid *pid, int fd, int lfd, struct fd_opts *opts,
 			ops = &signalfd_dump_ops;
 		else if (is_timerfd_link(link))
 			ops = &timerfd_dump_ops;
+		else if (is_pidfd_link(link))
+			ops = &pidfd_dump_ops;
 #ifdef CONFIG_HAS_LIBBPF
 		else if (is_bpfmap_link(link))
 			ops = &bpfmap_dump_ops;
@@ -552,6 +555,11 @@ static int dump_one_file(struct pid *pid, int fd, int lfd, struct fd_opts *opts,
 		else
 			return dump_unsupp_fd(&p, lfd, "anon", link, e);
 
+		return do_dump_gen_file(&p, lfd, ops, e);
+	}
+
+	if (p.fs_type == PID_FS_MAGIC) {
+		ops = &pidfd_dump_ops;
 		return do_dump_gen_file(&p, lfd, ops, e);
 	}
 
@@ -978,7 +986,7 @@ static int receive_fd(struct fdinfo_list_entry *fle);
 static void transport_name_gen(struct sockaddr_un *addr, int *len, int pid)
 {
 	addr->sun_family = AF_UNIX;
-	snprintf(addr->sun_path, UNIX_PATH_MAX, "x/crtools-fd-%d-%" PRIx64, pid, criu_run_id);
+	snprintf(addr->sun_path, UNIX_PATH_MAX, "x/crtools-fd-%d-%s", pid, criu_run_id);
 	*len = SUN_LEN(addr);
 	*addr->sun_path = '\0';
 }
@@ -1840,6 +1848,9 @@ static int collect_one_file(void *o, ProtobufCMessage *base, struct cr_img *i)
 	case FD_TYPES__MEMFD:
 		ret = collect_one_file_entry(fe, fe->memfd->id, &fe->memfd->base, &memfd_cinfo);
 		break;
+	case FD_TYPES__PIDFD:
+		ret = collect_one_file_entry(fe, fe->pidfd->id, &fe->pidfd->base, &pidfd_cinfo);
+		break;
 #ifdef CONFIG_HAS_LIBBPF
 	case FD_TYPES__BPFMAP:
 		ret = collect_one_file_entry(fe, fe->bpf->id, &fe->bpf->base, &bpfmap_cinfo);
@@ -1862,5 +1873,6 @@ int prepare_files(void)
 {
 	init_fdesc_hash();
 	init_sk_info_hash();
+	init_dead_pidfd_hash();
 	return collect_image(&files_cinfo);
 }

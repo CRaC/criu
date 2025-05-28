@@ -1,6 +1,7 @@
 #ifndef __CR_RST_INFO_H__
 #define __CR_RST_INFO_H__
 
+#include "asm/restore.h"
 #include "common/lock.h"
 #include "common/list.h"
 #include "vma.h"
@@ -14,6 +15,7 @@ struct task_entries {
 	futex_t start;
 	atomic_t cr_err;
 	mutex_t userns_sync_lock;
+	mutex_t cgroupd_sync_lock;
 	mutex_t last_pid_mutex;
 };
 
@@ -22,7 +24,7 @@ struct fdt {
 	pid_t pid; /* Who should restore this fd table */
 	/*
 	 * The fd table is ready for restoing, if fdt_lock is equal to nr
-	 * The fdt table was restrored, if fdt_lock is equal to nr + 1
+	 * The fdt table was restored, if fdt_lock is equal to nr + 1
 	 */
 	futex_t fdt_lock;
 };
@@ -31,6 +33,11 @@ struct rst_rseq {
 	uint64_t rseq_abi_pointer;
 	uint64_t rseq_cs_pointer;
 };
+
+#ifndef ARCH_RST_INFO
+struct rst_arch_info {
+};
+#endif
 
 struct rst_info {
 	struct list_head fds;
@@ -75,7 +82,12 @@ struct rst_info {
 
 	struct rst_rseq *rseqe;
 
+	futex_t shstk_enable;
+	futex_t shstk_unlock;
+
 	void *breakpoint;
+
+	struct rst_arch_info arch_info;
 };
 
 extern struct task_entries *task_entries;

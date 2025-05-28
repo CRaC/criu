@@ -19,7 +19,7 @@ endif
 
 #
 # Supported Architectures
-ifneq ($(filter-out x86 arm aarch64 ppc64 s390 mips loongarch64,$(ARCH)),)
+ifneq ($(filter-out x86 arm aarch64 ppc64 s390 mips loongarch64 riscv64,$(ARCH)),)
         $(error "The architecture $(ARCH) isn't supported")
 endif
 
@@ -84,6 +84,10 @@ ifeq ($(ARCH),loongarch64)
         DEFINES		:= -DCONFIG_LOONGARCH64
 endif
 
+ifeq ($(ARCH),riscv64)
+        DEFINES		:= -DCONFIG_RISCV64
+endif
+
 #
 # CFLAGS_PIE:
 #
@@ -106,6 +110,7 @@ export PROTOUFIX DEFINES
 #
 # Independent options for all tools.
 DEFINES			+= -D_FILE_OFFSET_BITS=64
+DEFINES			+= -D_LARGEFILE64_SOURCE
 DEFINES			+= -D_GNU_SOURCE
 
 WARNINGS		:= -Wall -Wformat-security -Wdeclaration-after-statement -Wstrict-prototypes
@@ -127,12 +132,16 @@ WARNINGS		:= -rdynamic
 endif
 
 ifeq ($(ARCH),loongarch64)
-WARNINGS		:= -Wno-implicit-function-declaration
+WARNINGS		+= -Wno-implicit-function-declaration
 endif
 
 ifneq ($(GCOV),)
         LDFLAGS         += -lgcov
         CFLAGS          += $(CFLAGS-GCOV)
+endif
+
+ifneq ($(NETWORK_LOCK_DEFAULT),)
+	CFLAGS		+= -DNETWORK_LOCK_DEFAULT=$(NETWORK_LOCK_DEFAULT)
 endif
 
 ifeq ($(ASAN),1)
@@ -164,7 +173,7 @@ HOSTCFLAGS		+= $(WARNINGS) $(DEFINES) -iquote include/
 export AFLAGS CFLAGS USERCLFAGS HOSTCFLAGS
 
 # Default target
-all: criu lib crit
+all: criu lib crit cuda_plugin
 .PHONY: all
 
 #
@@ -312,15 +321,19 @@ clean-amdgpu_plugin:
 	$(Q) $(MAKE) -C plugins/amdgpu clean
 .PHONY: clean-amdgpu_plugin
 
+clean-cuda_plugin:
+	$(Q) $(MAKE) -C plugins/cuda clean
+.PHONY: clean-cuda_plugin
+
 clean-top:
 	$(Q) $(MAKE) -C Documentation clean
 	$(Q) $(MAKE) $(build)=test/compel clean
 	$(Q) $(RM) .gitid
 .PHONY: clean-top
 
-clean: clean-top clean-amdgpu_plugin
+clean: clean-top clean-amdgpu_plugin clean-cuda_plugin
 
-mrproper-top: clean-top clean-amdgpu_plugin
+mrproper-top: clean-top clean-amdgpu_plugin clean-cuda_plugin
 	$(Q) $(RM) $(CONFIG_HEADER)
 	$(Q) $(RM) $(VERSION_HEADER)
 	$(Q) $(RM) $(COMPEL_VERSION_HEADER)
@@ -351,6 +364,10 @@ test: zdtm
 amdgpu_plugin: criu
 	$(Q) $(MAKE) -C plugins/amdgpu all
 .PHONY: amdgpu_plugin
+
+cuda_plugin: criu
+	$(Q) $(MAKE) -C plugins/cuda all
+.PHONY: cuda_plugin
 
 crit: lib
 	$(Q) $(MAKE) -C crit
@@ -438,22 +455,26 @@ help:
 	@echo '      lint            - Run code linters'
 	@echo '      indent          - Indent C code'
 	@echo '      amdgpu_plugin   - Make AMD GPU plugin'
+	@echo '      cuda_plugin     - Make NVIDIA CUDA plugin'
 .PHONY: help
 
-lint:
-	flake8 --version
-	flake8 --config=scripts/flake8.cfg test/zdtm.py
-	flake8 --config=scripts/flake8.cfg test/inhfd/*.py
-	flake8 --config=scripts/flake8.cfg test/others/rpc/config_file.py
-	flake8 --config=scripts/flake8.cfg lib/pycriu/images/pb2dict.py
-	flake8 --config=scripts/flake8.cfg lib/pycriu/images/images.py
-	flake8 --config=scripts/flake8.cfg scripts/criu-ns
-	flake8 --config=scripts/flake8.cfg test/others/criu-ns/run.py
-	flake8 --config=scripts/flake8.cfg crit/*.py
-	flake8 --config=scripts/flake8.cfg crit/crit/*.py
-	flake8 --config=scripts/flake8.cfg scripts/uninstall_module.py
-	flake8 --config=scripts/flake8.cfg coredump/ coredump/coredump
-	flake8 --config=scripts/flake8.cfg scripts/github-indent-warnings.py
+ruff:
+	@ruff --version
+	ruff check ${RUFF_FLAGS} --config=scripts/ruff.toml \
+		test/zdtm.py \
+		test/inhfd/*.py \
+		test/others/rpc/config_file.py \
+		lib/pycriu/images/pb2dict.py \
+		lib/pycriu/images/images.py \
+		scripts/criu-ns \
+		test/others/criu-ns/run.py \
+		crit/*.py \
+		crit/crit/*.py \
+		scripts/uninstall_module.py \
+		coredump/ coredump/coredump \
+		scripts/github-indent-warnings.py
+
+shellcheck:
 	shellcheck --version
 	shellcheck scripts/*.sh
 	shellcheck scripts/ci/*.sh scripts/ci/apt-install
@@ -462,7 +483,11 @@ lint:
 	shellcheck -x test/others/crit/*.sh test/others/criu-coredump/*.sh
 	shellcheck -x test/others/config-file/*.sh
 	shellcheck -x test/others/action-script/*.sh
-	codespell -S tags
+
+codespell:
+	codespell
+
+lint: ruff shellcheck codespell
 	# Do not append \n to pr_perror, pr_pwarn or fail
 	! git --no-pager grep -E '^\s*\<(pr_perror|pr_pwarn|fail)\>.*\\n"'
 	# Do not use %m with pr_* or fail
@@ -473,7 +498,7 @@ lint:
 	! git --no-pager grep -En '^\s*\<pr_(err|warn|msg|info|debug)\>.*);$$' | grep -v '\\n'
 	# No EOL whitespace for C files
 	! git --no-pager grep -E '\s+$$' \*.c \*.h
-.PHONY: lint
+.PHONY: lint ruff shellcheck codespell
 
 codecov: SHELL := $(shell which bash)
 codecov:

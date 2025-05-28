@@ -31,11 +31,11 @@ RUN pacman -Syu --noconfirm \
 	bash \
 	go \
 	python-yaml \
-	flake8 \
 	asciidoctor \
 	python-junit-xml \
 	python-importlib-metadata \
 	libdrm \
+	util-linux-libs \
 	diffutils
 
 COPY . /criu

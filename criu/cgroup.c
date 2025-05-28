@@ -28,7 +28,6 @@
 #include "images/cgroup.pb-c.h"
 #include "kerndat.h"
 #include "linux/mount.h"
-#include "syscall.h"
 
 /*
  * This structure describes set of controller groups
@@ -249,7 +248,7 @@ static int find_dir(const char *path, struct list_head *dirs, struct cgroup_dir 
 			return EXACT_MATCH;
 		}
 
-		if (strstartswith(path, d->path)) {
+		if (issubpath(path, d->path)) {
 			int ret = find_dir(path, &d->children, rdir);
 			if (ret == NO_MATCH) {
 				*rdir = d;
@@ -427,10 +426,11 @@ static int dump_cg_props_array(const char *fpath, struct cgroup_dir *ncd, const 
 		}
 
 		/*
-		 * Set the is_threaded flag if cgroup.type's value is threaded,
-		 * ignore all other values.
+		 * Set the is_threaded flag if cgroup.type's value is threaded
+		 * or it is a cgroup v1 (it has a 'tasks' property).
+		 * Ignore all other values.
 		 */
-		if (!strcmp("cgroup.type", prop->name) && !strcmp("threaded", prop->value))
+		if ((!strcmp("cgroup.type", prop->name) && !strcmp("threaded", prop->value)) || !strcmp("tasks", prop->name))
 			controller->is_threaded = true;
 
 		pr_info("Dumping value %s from %s/%s\n", prop->value, fpath, prop->name);
@@ -580,14 +580,15 @@ static int __new_open_cgroupfs(struct cg_ctl *cc)
 	int fsfd, fd;
 	char *name;
 
-	fsfd = sys_fsopen(fstype, 0);
+	fsfd = cr_fsopen(fstype, 0);
 	if (fsfd < 0) {
 		pr_perror("Unable to open the cgroup file system");
 		return -1;
 	}
 
 	if (strstartswith(cc->name, namestr)) {
-		if (sys_fsconfig(fsfd, FSCONFIG_SET_STRING, "name", cc->name + strlen(namestr), 0)) {
+		if (cr_fsconfig(fsfd, FSCONFIG_SET_STRING, "name", cc->name + strlen(namestr), 0)) {
+			fsfd_dump_messages(fsfd);
 			pr_perror("Unable to configure the cgroup (%s) file system", cc->name);
 			goto err;
 		}
@@ -595,7 +596,8 @@ static int __new_open_cgroupfs(struct cg_ctl *cc)
 		char *saveptr = NULL, *buf = strdupa(cc->name);
 		name = strtok_r(buf, ",", &saveptr);
 		while (name) {
-			if (sys_fsconfig(fsfd, FSCONFIG_SET_FLAG, name, NULL, 0)) {
+			if (cr_fsconfig(fsfd, FSCONFIG_SET_FLAG, name, NULL, 0)) {
+				fsfd_dump_messages(fsfd);
 				pr_perror("Unable to configure the cgroup (%s) file system", name);
 				goto err;
 			}
@@ -603,14 +605,17 @@ static int __new_open_cgroupfs(struct cg_ctl *cc)
 		}
 	}
 
-	if (sys_fsconfig(fsfd, FSCONFIG_CMD_CREATE, NULL, NULL, 0)) {
+	if (cr_fsconfig(fsfd, FSCONFIG_CMD_CREATE, NULL, NULL, 0)) {
+		fsfd_dump_messages(fsfd);
 		pr_perror("Unable to create the cgroup (%s) file system", cc->name);
 		goto err;
 	}
 
-	fd = sys_fsmount(fsfd, 0, 0);
-	if (fd < 0)
+	fd = cr_fsmount(fsfd, 0, 0);
+	if (fd < 0) {
+		fsfd_dump_messages(fsfd);
 		pr_perror("Unable to mount the cgroup (%s) file system", cc->name);
+	}
 	close(fsfd);
 
 	return fd;
@@ -1922,7 +1927,7 @@ static int prepare_cgroup_sfd(CgroupEntry *ce)
 			if (ctrl->cnames[0][0] == 0)
 				fstype = "cgroup2";
 
-			pr_debug("\tMaking controller dir %s (%s)\n", paux, opt);
+			pr_debug("\tMaking controller dir %s (%s), type %s\n", paux, opt, fstype);
 			if (mkdir(paux, 0700)) {
 				pr_perror("\tCan't make controller dir %s", paux);
 				return -1;
@@ -1946,6 +1951,21 @@ static int prepare_cgroup_sfd(CgroupEntry *ce)
 	return 0;
 }
 
+static int cgroupd_unblock_sigterm(void)
+{
+	sigset_t unblockmask;
+
+	sigemptyset(&unblockmask);
+	sigaddset(&unblockmask, SIGTERM);
+
+	if (sigprocmask(SIG_UNBLOCK, &unblockmask, NULL)) {
+		pr_perror("cgroupd: can't unblock SIGTERM");
+		return -1;
+	}
+
+	return 0;
+}
+
 /*
  * If a thread is a different cgroup set than the main thread in process,
  * it means it is in a threaded controller. This daemon receives the cg_set
@@ -1954,6 +1974,14 @@ static int prepare_cgroup_sfd(CgroupEntry *ce)
  */
 static int cgroupd(int sk)
 {
+	/*
+	 * This pairs with SIGTERM in stop_cgroupd(), and ensures that cgroupd
+	 * will receive termination signal, regardless of which signal block
+	 * mask was inherited.
+	 */
+	if (cgroupd_unblock_sigterm())
+		return -1;
+
 	pr_info("cgroud: Daemon started\n");
 
 	while (1) {
@@ -1985,6 +2013,7 @@ static int cgroupd(int sk)
 			CgMemberEntry *ce = cg_set_entry->ctls[i];
 			char aux[PATH_MAX];
 			CgControllerEntry *ctrl = NULL;
+			const char *format;
 
 			for (j = 0; j < n_controllers; j++) {
 				CgControllerEntry *cur = controllers[j];
@@ -2008,7 +2037,8 @@ static int cgroupd(int sk)
 				continue;
 
 			aux_off = ctrl_dir_and_opt(ctrl, aux, sizeof(aux), NULL, 0);
-			snprintf(aux + aux_off, sizeof(aux) - aux_off, "/%s/cgroup.threads", ce->path);
+			format = ctrl->cnames[0][0] ? "/%s/tasks" : "/%s/cgroup.threads";
+			snprintf(aux + aux_off, sizeof(aux) - aux_off, format, ce->path);
 
 			/*
 			 * Cgroupd runs outside of the namespaces so we don't

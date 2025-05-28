@@ -6,9 +6,9 @@
 set -e
 set -x
 
-VAGRANT_VERSION=2.3.7
-FEDORA_VERSION=38
-FEDORA_BOX_VERSION=38.20230413.1
+VAGRANT_VERSION=2.4.1
+FEDORA_VERSION=40
+FEDORA_BOX_VERSION=40.20240414.0
 
 setup() {
 	if [ -n "$TRAVIS" ]; then
@@ -38,8 +38,8 @@ setup() {
 	ssh default sudo dnf upgrade -y
 	ssh default sudo dnf install -y gcc git gnutls-devel nftables-devel libaio-devel \
 		libasan libcap-devel libnet-devel libnl3-devel libbsd-devel make protobuf-c-devel \
-		protobuf-devel python3-flake8 python3-protobuf python3-importlib-metadata \
-		python3-junit_xml rubygem-asciidoctor iptables libselinux-devel libbpf-devel
+		protobuf-devel python3-protobuf python3-importlib-metadata python3-junit_xml \
+		rubygem-asciidoctor iptables libselinux-devel libbpf-devel python3-yaml libuuid-devel
 	# Disable sssd to avoid zdtm test failures in pty04 due to sssd socket
 	ssh default sudo systemctl mask sssd
 	ssh default cat /proc/cmdline
@@ -57,6 +57,11 @@ fedora-no-vdso() {
 }
 
 fedora-rawhide() {
+	# The 6.2 kernel of Fedora 38 in combination with rawhide userspace breaks
+	# zdtm/static/socket-tcp-nfconntrack. To activate the new kernel previously
+	# installed this reboots the VM.
+	vagrant reload
+	ssh default uname -a
 	#
 	# Workaround the problem:
 	# error running container: error from /usr/bin/crun creating container for [...]: sd-bus call: Transport endpoint is not connected
@@ -65,6 +70,10 @@ fedora-rawhide() {
 	#
 	ssh default 'sudo dnf remove -y crun || true'
 	ssh default sudo dnf install -y podman runc
+	# Some tests in the container need selinux to be disabled.
+	# In the container it is not possible to change the state of selinux.
+	# Let's just disable it for this test run completely.
+	ssh default 'sudo setenforce Permissive'
 	ssh default 'cd /vagrant; tar xf criu.tar; cd criu; sudo -E make -C scripts/ci fedora-rawhide CONTAINER_RUNTIME=podman BUILD_OPTIONS="--security-opt seccomp=unconfined"'
 }
 

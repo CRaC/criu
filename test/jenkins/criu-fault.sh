@@ -9,7 +9,7 @@ prep
 ./test/zdtm.py run -t zdtm/static/maps00 --fault 3 --report report -f h || fail
 
 # FIXME: fhandles looks broken on btrfs
-grep -P "/.* / " /proc/self/mountinfo | grep -q btrfs || NOBTRFS=$?
+findmnt --noheadings --target . | grep -q btrfs || NOBTRFS=$?
 if [ $NOBTRFS -eq 1 ] ; then
 	./test/zdtm.py run -t zdtm/static/inotify_irmap --fault 128 --pre 2 -f uns || fail
 fi
@@ -39,3 +39,13 @@ fi
 ./test/zdtm.py run -t zdtm/static/fpu03 --fault 134 -f h --norst || fail
 # also check for the main thread corruption
 ./test/zdtm.py run -t zdtm/static/fpu00 --fault 134 -f h --norst || fail
+
+# check set_compel_interrupt_only_mode
+./test/zdtm.py run -t zdtm/static/env00 --freezecg zdtm:t --fault 137
+./test/zdtm.py run -t zdtm/static/env00 --freezecg zdtm:t --fault 137 --norst
+# check set_compel_interrupt_only_mode when test cgroup is frozen
+./test/zdtm.py run -t zdtm/static/env00 --freezecg zdtm:f --fault 137
+
+if ./test/zdtm.py run -t zdtm/static/vfork00 --fault 136 --report report -f h ; then
+	fail
+fi

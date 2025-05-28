@@ -57,6 +57,8 @@ static cr_plugin_desc_t *cr_gen_plugin_desc(void *h, char *path)
 	__assign_hook(HANDLE_DEVICE_VMA, "cr_plugin_handle_device_vma");
 	__assign_hook(UPDATE_VMA_MAP, "cr_plugin_update_vma_map");
 	__assign_hook(RESUME_DEVICES_LATE, "cr_plugin_resume_devices_late");
+	__assign_hook(PAUSE_DEVICES, "cr_plugin_pause_devices");
+	__assign_hook(CHECKPOINT_DEVICES, "cr_plugin_checkpoint_devices");
 
 #undef __assign_hook
 
@@ -253,6 +255,9 @@ int cr_plugin_init(int stage)
 		if (cr_lib_load(stage, path))
 			goto err;
 	}
+
+	if (stage == CR_PLUGIN_STAGE__RESTORE && check_inventory_plugins())
+		goto err;
 
 	exit_code = 0;
 err:

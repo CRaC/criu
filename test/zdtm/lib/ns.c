@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <inttypes.h>
 #include <grp.h>
 #include <string.h>
 #include <errno.h>
@@ -27,7 +28,7 @@ extern int pivot_root(const char *new_root, const char *put_old);
 static int prepare_mntns(void)
 {
 	int dfd, ret;
-	char *root, *criu_path;
+	char *root, *criu_path, *dev_path;
 	char path[PATH_MAX];
 
 	root = getenv("ZDTM_ROOT");
@@ -49,6 +50,19 @@ static int prepare_mntns(void)
 	if (mount(root, root, NULL, MS_BIND | MS_REC, NULL)) {
 		fprintf(stderr, "Can't bind-mount root: %m\n");
 		return -1;
+	}
+
+	dev_path = getenv("ZDTM_DEV");
+	if (dev_path) {
+		snprintf(path, sizeof(path), "%s/dev", root);
+		if (mount(dev_path, path, NULL, MS_BIND, NULL)) {
+			pr_perror("Unable to mount %s",  path);
+			return -1;
+		}
+		if (mount(NULL, path, NULL, MS_PRIVATE, NULL)) {
+			pr_perror("Unable to mount %s",  path);
+			return -1;
+		}
 	}
 
 	criu_path = getenv("ZDTM_CRIU");
@@ -218,7 +232,7 @@ static inline int _settime(clockid_t clk_id, time_t offset)
 	if (clk_id == CLOCK_MONOTONIC_COARSE || clk_id == CLOCK_MONOTONIC_RAW)
 		clk_id = CLOCK_MONOTONIC;
 
-	len = snprintf(buf, sizeof(buf), "%d %ld 0", clk_id, offset);
+	len = snprintf(buf, sizeof(buf), "%d %" PRId64 " 0", clk_id, (int64_t)offset);
 
 	fd = open("/proc/self/timens_offsets", O_WRONLY);
 	if (fd < 0) {

@@ -20,9 +20,13 @@ sed -i 's/#runtime\s*=\s*.*/runtime = "runc"/' /usr/share/containers/containers.
 # Test checkpoint/restore with action script
 echo "action-script /usr/bin/true" | sudo tee /etc/criu/default.conf
 
+cat /proc/self/mountinfo
 podman info
 
 podman run --name cr -d docker.io/library/alpine /bin/sh -c 'i=0; while true; do echo $i; i=$(expr $i + 1); sleep 1; done'
+
+# Show criu logs in case of error
+trap 'cat /var/lib/containers/storage/overlay-containers/*/userdata/*.log' EXIT
 
 sleep 1
 for i in $(seq 20); do
@@ -64,3 +68,5 @@ for i in $(seq 20); do
 	podman ps -a
 	rm -f /tmp/chkpt.tar.gz
 done
+
+trap 'echo PASS' EXIT

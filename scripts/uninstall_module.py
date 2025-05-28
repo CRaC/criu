@@ -10,6 +10,16 @@ import site
 import subprocess
 import sys
 
+# With Python 3.13 the subprocess module now uses the `posix_spawn()`
+# function which requires loading the `signal` module:
+#     https://docs.python.org/3/whatsnew/3.13.html#subprocess
+#
+# We need to load this module here, before PYTHONPATH and sys.path
+# have been modified to use the path specified with `--prefix`.
+#
+# flake8: noqa: F401
+import signal
+
 import importlib_metadata
 
 
@@ -38,8 +48,9 @@ def uninstall_module(package_name: str, prefix=None):
     if prefix:
         add_site_dir(prefix)
         try:
-            dist_info_path = str(importlib_metadata.distribution(package_name)._path)
-        except importlib_metadata.PackageNotFoundError:
+            distribution = next(importlib_metadata.Distribution.discover(name=package_name))
+            dist_info_path = str(distribution._path)
+        except StopIteration:
             print(f"Skipping {package_name} as it is not installed.")
             sys.exit(0)
 

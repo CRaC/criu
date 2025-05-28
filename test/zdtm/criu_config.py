@@ -11,6 +11,7 @@ class criu_config:
             fault=None,
             strace=[],
             preexec=None,
+            preload=False,
             nowait=False):
 
         config_path = tempfile.mktemp(".conf", "criu-%s-" % action)
@@ -40,3 +41,7 @@ class criu_config:
         if nowait:
             return cr
         return cr.wait()
+
+    @staticmethod
+    def exit_signal(ret):
+        return ret < 0

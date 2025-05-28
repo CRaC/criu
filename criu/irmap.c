@@ -67,6 +67,7 @@ static struct irmap hints[] = {
 		.path = "/var/log",
 		.nr_kids = -1,
 	},
+	{ .path = "/usr/share/dbus-1/services", .nr_kids = -1 },
 	{ .path = "/usr/share/dbus-1/system-services", .nr_kids = -1 },
 	{ .path = "/var/lib/polkit-1/localauthority", .nr_kids = -1 },
 	{ .path = "/usr/share/polkit-1/actions", .nr_kids = -1 },
@@ -499,7 +500,12 @@ int irmap_scan_path_add(char *path)
 		return -1;
 	}
 
-	o->ir->path = path;
+	o->ir->path = xstrdup(path);
+	if (!o->ir->path) {
+		xfree(o->ir);
+		xfree(o);
+		return -1;
+	}
 	o->ir->nr_kids = -1;
 	list_add_tail(&o->node, &opts.irmap_scan_paths);
 	return 0;
