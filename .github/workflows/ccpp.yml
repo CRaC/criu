@@ -29,30 +29,27 @@ jobs:
           done
 
       - name: Start build container
-        run: echo ${GITHUB_TOKEN} | docker login -u ${GITHUB_ACTOR} --password-stdin docker.pkg.github.com;
+        run:
           docker run -d --name build
           -w $PWD
           -v /home/runner:/home/runner
           -u $(id -u):$(id -g)
           --entrypoint tail
-          docker.pkg.github.com/crac/docker-build/image:ubuntu-16.04
+          ghcr.io/crac/docker-build/image:ubuntu-16.04
           -f /dev/null
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: actions/checkout@v2
-
-      - name: Submodule init
-        run: |
-          git submodule init
-          git submodule update
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
 
       - run: make DESTDIR=. PREFIX=/${{ steps.compute.outputs.BUNDLENAME }} install-criu V=1
         shell: docker exec build bash -e {0}
 
       - run: tar -zcf ${{ steps.compute.outputs.BUNDLENAME }}.tar.gz ${{ steps.compute.outputs.BUNDLENAME }}
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ${{ steps.compute.outputs.BUNDLENAME }}
           path: ${{ steps.compute.outputs.BUNDLENAME }}.tar.gz
@@ -62,10 +59,10 @@ jobs:
     needs: build
     if: ${{ startsWith(github.ref, 'refs/tags/') }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: ${{ needs.build.outputs.BUNDLENAME }}
-      - uses: softprops/action-gh-release@v1
+      - uses: softprops/action-gh-release@v2
         with:
           files: |
             ${{ needs.build.outputs.BUNDLENAME }}.tar.gz
