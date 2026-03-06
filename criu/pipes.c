@@ -110,7 +110,8 @@ static int mark_pipe_master_cb(struct pprep_head *ph)
 
 			list_move(&pic->list, &head);
 			f = file_master(&pic->d);
-			if (fdinfo_rst_prio(f, fle)) {
+			/* Pipe that is going to inherit can't be a master */
+			if (fdinfo_rst_prio(f, fle) || p->d.fds_inherited >= FDIH_FROM_0) {
 				p = pic;
 				fle = f;
 			}

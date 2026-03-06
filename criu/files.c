@@ -855,6 +855,7 @@ int collect_fd(int pid, FdinfoEntry *e, struct rst_info *rst_info, bool fake)
 	if (!collect_fd_to(pid, e, rst_info, fdesc, fake, false))
 		return -1;
 
+	snprintf(inh_id, sizeof(inh_id), "fd[%d]", e->fd);
 	if (inherit_fd_lookup_id(inh_id) < 0) {
 		fdesc->fds_inherited = FDIH_UNINHERITED;
 	} else if (fdesc->fds_inherited == FDIH_UNKNOWN) {
@@ -1116,7 +1117,7 @@ int setup_and_serve_out(struct fdinfo_list_entry *fle, int new_fd)
 	struct file_desc *d = fle->desc;
 	pid_t pid = fle->pid;
 
-	if (reopen_fd_as(fle->fe->fd, new_fd))
+	if (reopen_fd_as_nocheck(fle->fe->fd, new_fd))
 		return -1;
 
 	if (fcntl(fle->fe->fd, F_SETFD, fle->fe->flags) == -1) {
