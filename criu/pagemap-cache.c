@@ -153,7 +153,7 @@ static int pmc_fill_cache(pmc_t *pmc, const struct vma_area *vma)
 	BUG_ON(pmc->map_len < size_map);
 	BUG_ON(pmc->fd < 0);
 
-	if (pread(pmc->fd, pmc->map, size_map, PAGEMAP_PFN_OFF(pmc->start)) != size_map) {
+	if (pread_all(pmc->fd, pmc->map, size_map, PAGEMAP_PFN_OFF(pmc->start)) != size_map) {
 		pmc_zap(pmc);
 		pr_perror("Can't read %d's pagemap file", pmc->pid);
 		return -1;

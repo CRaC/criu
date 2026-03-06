@@ -71,7 +71,7 @@ static int check_pagemap(void)
 	}
 
 	/* Get the PFN of some present page. Stack is here, so try it :) */
-	ret = pread(fd, &pfn, sizeof(pfn), (((unsigned long)&ret) / page_size()) * sizeof(pfn));
+	ret = pread_all(fd, &pfn, sizeof(pfn), (((unsigned long)&ret) / page_size()) * sizeof(pfn));
 	if (ret != sizeof(pfn)) {
 		pr_perror("Can't read pagemap");
 		return -1;
@@ -1090,7 +1090,7 @@ static int kerndat_try_load_cache(void)
 		return 1;
 	}
 
-	ret = read(fd, &kdat, sizeof(kdat));
+	ret = read_all(fd, &kdat, sizeof(kdat));
 	if (ret < 0) {
 		pr_perror("Can't read kdat cache");
 		close(fd);
@@ -1361,7 +1361,7 @@ static int kerndat_has_pidfd_getfd(void)
 		goto close_all;
 	}
 
-	if (read(fds[1], &val_b, sizeof(val_b)) != sizeof(val_b)) {
+	if (read_all(fds[1], &val_b, sizeof(val_b)) != sizeof(val_b)) {
 		pr_perror("Can't read from socket");
 		ret = -1;
 		goto close_all;

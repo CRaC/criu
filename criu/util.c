@@ -840,7 +840,7 @@ int vaddr_to_pfn(int fd, unsigned long vaddr, u64 *pfn)
 	}
 
 	off = (vaddr / page_size()) * sizeof(u64);
-	ret = pread(fd, pfn, sizeof(*pfn), off);
+	ret = pread_all(fd, pfn, sizeof(*pfn), off);
 	if (ret != sizeof(*pfn)) {
 		pr_perror("Can't read pme for pid %d", getpid());
 		ret = -1;
@@ -1682,6 +1682,32 @@ ssize_t write_all(int fd, const void *buf, size_t size)
 		n += ret;
 		buf = (char *)buf + ret;
 		size -= ret;
+	}
+	return n;
+}
+
+ssize_t pread_all(int fd, void *buf, size_t size, off_t offset)
+{
+	ssize_t n = 0;
+	while (size > 0) {
+		ssize_t ret = pread(fd, buf, size, offset);
+		if (ret == -1) {
+			if (errno == EINTR)
+				continue;
+			/*
+			 * The caller should use standard read() for
+			 * non-blocking I/O.
+			 */
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				errno = EINVAL;
+			return ret;
+		}
+		if (ret == 0)
+			break;
+		n += ret;
+		buf = (char *)buf + ret;
+		size -= ret;
+		offset += ret;
 	}
 	return n;
 }

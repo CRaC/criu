@@ -1576,7 +1576,7 @@ static int get_build_id(const int fd, const struct stat *fd_status, unsigned cha
 	size_t mapped_size;
 	int ret = -1;
 
-	if (read(fd, buf, SELFMAG + 1) != SELFMAG + 1)
+	if (read_all(fd, buf, SELFMAG + 1) != SELFMAG + 1)
 		return -1;
 
 	/*

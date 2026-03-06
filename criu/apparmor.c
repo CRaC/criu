@@ -141,7 +141,7 @@ static int collect_profile(char *path, int offset, char *dir, AaNamespace *ns)
 	if (!cur->blob.data)
 		goto close;
 
-	n = read(fd, cur->blob.data, sb.st_size);
+	n = read_all(fd, cur->blob.data, sb.st_size);
 	if (n < 0) {
 		pr_perror("failed to read %s", path);
 		goto close;
