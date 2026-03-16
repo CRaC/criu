@@ -30,7 +30,6 @@ static inline unsigned page_shift(void)
  * page_size() across sources (as it may differ on aarch64).
  */
 #define PAGE_SIZE  page_size()
-#define PAGE_MASK  (~(PAGE_SIZE - 1))
 #define PAGE_SHIFT page_shift()
 
 #define PAGE_PFN(addr) ((addr) / PAGE_SIZE)
@@ -41,4 +40,7 @@ extern unsigned page_size(void);
 #define PAGE_SIZE page_size()
 
 #endif /* CR_NOGLIBC */
+
+#define PAGE_MASK  (~(PAGE_SIZE - 1))
+
 #endif /* __CR_ASM_PAGE_H__ */
