@@ -689,7 +689,6 @@ static int tty_set_sid(int fd)
 
 static int tty_set_prgp(int fd, int group)
 {
-
 	if (ioctl(fd, TIOCSPGRP, &group)) {
 #if 1
 		if (tolerate_tty_error(fd)) {
@@ -1066,7 +1065,9 @@ out:
 		 * the process which keeps the master peer.
 		 */
 		if (root_item->sid != vpid(root_item)) {
-			if (root_item->pgid == vpid(root_item)) {
+			if (getppid() != tcgetpgrp(0)) {
+				pr_debug("Running in background, not setting foreground process");
+			} else if (root_item->pgid == vpid(root_item)) {
 				if (tty_set_prgp(fd, root_item->pgid))
 					goto err;
 			} else {
